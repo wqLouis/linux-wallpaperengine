@@ -1,5 +1,5 @@
-use serde_derive::Deserialize;
-use serde_derive::Serialize;
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -149,7 +149,7 @@ pub struct Constantshadervalues {
     pub colorstart: Option<String>,
     pub distortion: Option<f64>,
     pub feather: Option<f64>,
-    pub scale: Value,
+    pub scale: Option<Value>,
     pub smoothness: Option<f64>,
     pub speed: Option<f64>,
     pub threshold: Option<f64>,
