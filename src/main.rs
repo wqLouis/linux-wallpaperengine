@@ -38,5 +38,4 @@ fn main() {
         }
     }
     let scene: scene::Root = serde_json::from_str(jsons.get("scene.json").unwrap()).unwrap();
-    println!("{:?}", scene);
 }

@@ -149,7 +149,7 @@ pub struct Constantshadervalues {
     pub colorstart: Option<String>,
     pub distortion: Option<f64>,
     pub feather: Option<f64>,
-    pub scale: Option<Value>,
+    pub scale: Option<Value>, // String or float
     pub smoothness: Option<f64>,
     pub speed: Option<f64>,
     pub threshold: Option<f64>,
