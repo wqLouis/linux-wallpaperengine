@@ -9,3 +9,4 @@ indicatif = "0.18.3"
 serde = {version = "1.0.228", features = ["derive"]}
 serde_json = {version = "1.0.149"}
 wgpu = "28.0.0"
+winit = "0.30.12"

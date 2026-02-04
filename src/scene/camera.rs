@@ -1,3 +1,5 @@
 use super::Camera;
 
-impl Camera {}
+impl Camera {
+    pub fn new(&self) {}
+}
