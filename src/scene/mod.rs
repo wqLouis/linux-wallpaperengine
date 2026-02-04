@@ -1,3 +1,5 @@
+pub mod camera;
+
 use serde::Deserialize;
 use serde::Serialize;
 

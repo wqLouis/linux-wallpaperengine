@@ -1,4 +1,3 @@
-mod camera;
 mod scene;
 
 use std::{collections::HashMap, path::Path};
