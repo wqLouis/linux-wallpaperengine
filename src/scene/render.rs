@@ -1,7 +1,13 @@
 use std::sync::Arc;
 
 use wgpu::*;
-use winit::window::Window;
+use winit::{
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::WindowEvent,
+    event_loop::EventLoop,
+    window::{Window, WindowAttributes},
+};
 
 pub struct State {
     surface: Surface<'static>,
@@ -72,4 +78,41 @@ impl State {
             is_surface_configured: false,
         })
     }
+}
+
+#[derive(Default)]
+struct App {
+    window: Option<Window>,
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let window_attr = WindowAttributes::default().with_inner_size(PhysicalSize::new(800, 800));
+
+        self.window = Some(event_loop.create_window(window_attr).unwrap());
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => {
+                println!("Window closed");
+                event_loop.exit();
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn create_window() {
+    let eventloop = EventLoop::new().unwrap();
+
+    eventloop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+
+    let mut app = App::default();
+    eventloop.run_app(&mut app).unwrap();
 }
