@@ -46,7 +46,9 @@ fn main() {
                     String::from_utf8_lossy(payload).to_string(),
                 );
             }
-            _ => {}
+            _ => {
+                pb.inc(1);
+            }
         }
     }
 
@@ -54,7 +56,6 @@ fn main() {
         handle.join().unwrap();
         pb.inc(1);
     }
-    pb.finish_and_clear();
 
     let scene: scene::Root = serde_json::from_str(jsons.get("scene.json").unwrap()).unwrap();
 
