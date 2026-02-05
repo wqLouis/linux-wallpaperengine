@@ -26,10 +26,10 @@ fn main() {
                 let payload = payload.to_vec();
                 let path = path_str.clone();
 
-                let tex = Tex::new(&payload).unwrap();
                 let texs_ptr = Arc::clone(&texs);
 
                 let tex_handle = thread::spawn(move || {
+                    let tex = Tex::new(&payload).unwrap();
                     let mut texs = texs_ptr.lock().unwrap();
 
                     texs.insert((path, tex.extension.clone()), tex.parse_to_rgba().unwrap());
