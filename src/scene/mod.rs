@@ -1,6 +1,5 @@
 pub mod camera;
 pub mod render;
-pub mod tex;
 
 use serde::Deserialize;
 use serde::Serialize;
