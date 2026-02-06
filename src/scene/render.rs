@@ -3,8 +3,11 @@ use std::sync::{Arc, Mutex};
 use pollster::block_on;
 use wgpu::{wgt::DeviceDescriptor, *};
 use winit::{
-    application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
-    event_loop::ActiveEventLoop, window::Window,
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::WindowEvent,
+    event_loop::{self, ActiveEventLoop, EventLoop},
+    window::Window,
 };
 
 struct WgpuApp {
@@ -17,6 +20,7 @@ struct WgpuApp {
     size_changed: bool,
 }
 
+#[derive(Default)]
 struct WgpuAppHandler {
     app: Arc<Mutex<Option<WgpuApp>>>,
 }
@@ -42,7 +46,7 @@ impl WgpuApp {
         let (device, queue) = adapter
             .request_device(&DeviceDescriptor {
                 label: None,
-                required_features: Features::all(),
+                required_features: Features::empty(),
                 required_limits: Limits::defaults(),
                 experimental_features: ExperimentalFeatures::disabled(),
                 memory_hints: MemoryHints::Performance,
@@ -155,6 +159,10 @@ impl ApplicationHandler for WgpuAppHandler {
     }
 }
 
-fn start() {
-    
+pub fn start() {
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(event_loop::ControlFlow::Wait);
+
+    let mut app = WgpuAppHandler::default();
+    event_loop.run_app(&mut app).unwrap();
 }
