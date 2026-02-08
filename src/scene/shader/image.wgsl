@@ -16,5 +16,5 @@ fn vs_main(@location(0) pos: vec3f, @location(1) uv: vec2f) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-    return vec4f(1, 1, 1, 1);
+    return textureSample(tex, tex_sampler, input.uv);
 }

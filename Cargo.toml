@@ -1,6 +1,7 @@
 [package]
 name = "linux-wallpaperengine"
 version = "0.1.0"
+description = "Yet another linux wallpaperengine"
 edition = "2024"
 
 [dependencies]

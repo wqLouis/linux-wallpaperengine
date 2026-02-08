@@ -1,11 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use bytemuck::bytes_of;
+use depkg::pkg_parser::tex_parser::Tex;
 use pollster::block_on;
-use wgpu::{
-    wgt::{DeviceDescriptor, SamplerDescriptor},
-    *,
-};
+use wgpu::{wgt::DeviceDescriptor, *};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -13,6 +14,8 @@ use winit::{
     event_loop::{self, ActiveEventLoop, EventLoop},
     window::Window,
 };
+
+use crate::scene::render_tex::create_tex_bind_group;
 
 struct WgpuApp {
     window: Arc<Window>,
@@ -26,14 +29,25 @@ struct WgpuApp {
     render_pipeline: RenderPipeline,
     vertex_buffer: Buffer,
     index_buffer: Buffer,
-    bind_group: BindGroup,
+    bind_groups: Vec<BindGroup>,
+    bind_group_layout: BindGroupLayout,
     index_len: u32,
     vertex_len: u32,
+
+    general: crate::scene::General,
+    objects: Vec<crate::scene::Object>,
+    texs: HashMap<String, Tex>,
+    jsons: HashMap<String, String>,
 }
 
 #[derive(Default)]
 struct WgpuAppHandler {
     app: Arc<Mutex<Option<WgpuApp>>>,
+
+    general: crate::scene::General,
+    objects: Vec<crate::scene::Object>,
+    jsons: HashMap<String, String>,
+    texs: HashMap<String, Tex>,
 }
 
 #[repr(C)]
@@ -44,7 +58,13 @@ struct Vertex {
 }
 
 impl WgpuApp {
-    async fn new(window: Arc<Window>) -> Self {
+    async fn new(
+        window: Arc<Window>,
+        general: crate::scene::General,
+        objects: Vec<crate::scene::Object>,
+        texs: HashMap<String, Tex>,
+        jsons: HashMap<String, String>,
+    ) -> Self {
         const MAX_RECT: u64 = 1024;
         const MAX_VERTICES: u64 = MAX_RECT * 4;
         const MAX_INDICES: u64 = MAX_RECT * 6;
@@ -151,49 +171,6 @@ impl WgpuApp {
             ],
         });
 
-        let diffuse_tex = device.create_texture(&TextureDescriptor {
-            size: Extent3d {
-                width: 1024,
-                height: 1024,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8UnormSrgb,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-            label: None,
-            view_formats: &[],
-        });
-
-        let diffuse_sampler = device.create_sampler(&SamplerDescriptor {
-            label: None,
-            address_mode_u: AddressMode::ClampToEdge,
-            address_mode_v: AddressMode::ClampToEdge,
-            address_mode_w: AddressMode::ClampToEdge,
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Nearest,
-            mipmap_filter: MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-
-        let bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label: None,
-            layout: &bind_group_layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(
-                        &diffuse_tex.create_view(&TextureViewDescriptor::default()),
-                    ),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(&diffuse_sampler),
-                },
-            ],
-        });
-
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("Pipeline layout"),
             bind_group_layouts: &[&bind_group_layout],
@@ -247,11 +224,16 @@ impl WgpuApp {
             size,
             size_changed: false,
             render_pipeline,
-            bind_group,
+            bind_groups: Vec::new(),
             index_len: 0,
             vertex_len: 0,
             vertex_buffer,
             index_buffer,
+            objects,
+            jsons,
+            general,
+            texs,
+            bind_group_layout,
         }
     }
 
@@ -259,19 +241,19 @@ impl WgpuApp {
         let rect = [
             Vertex {
                 position: [pos[0], pos[1], 0.0],
-                uv: [0.0, 0.0],
-            },
-            Vertex {
-                position: [pos[0] + w, pos[1], 0.0],
-                uv: [1.0, 0.0],
-            },
-            Vertex {
-                position: [pos[0], pos[1] + h, 0.0],
                 uv: [0.0, 1.0],
             },
             Vertex {
-                position: [pos[0] + w, pos[1] + h, 0.0],
+                position: [pos[0] + w, pos[1], 0.0],
                 uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [pos[0], pos[1] + h, 0.0],
+                uv: [0.0, 0.0],
+            },
+            Vertex {
+                position: [pos[0] + w, pos[1] + h, 0.0],
+                uv: [1.0, 0.0],
             },
         ];
 
@@ -331,9 +313,9 @@ impl WgpuApp {
 
             render_pass.set_pipeline(&self.render_pipeline);
             self.render_main();
-            if self.index_len > 0 {
+            if self.index_len > 0 && self.bind_groups.len() > 0 {
                 // if there is something then add to render pass
-                render_pass.set_bind_group(0, &self.bind_group, &[]);
+                render_pass.set_bind_group(0, &self.bind_groups[0], &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
                 render_pass.draw_indexed(0..self.index_len, 0, 0..1);
@@ -348,7 +330,15 @@ impl WgpuApp {
 
     fn render_main(&mut self) {
         // Put all the render stuff here
-        Self::draw_rect(self, [0.0, 0.0], 0.5, 0.5);
+        self.bind_groups.clear();
+
+        self.bind_groups.push(create_tex_bind_group(
+            &self.device,
+            &self.queue,
+            &self.bind_group_layout,
+            self.texs.get("materials/画师-雨野拓展.tex").unwrap(),
+        ));
+        Self::draw_rect(self, [-1.0, -1.0], 2.0, 2.0);
     }
 }
 
@@ -360,7 +350,13 @@ impl ApplicationHandler for WgpuAppHandler {
 
         let window_attributes = Window::default_attributes().with_title("Linux wallpaper engine");
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-        let wgpu_app = block_on(WgpuApp::new(window));
+        let wgpu_app = block_on(WgpuApp::new(
+            window,
+            self.general.to_owned(),
+            self.objects.to_owned(),
+            self.texs.to_owned(),
+            self.jsons.to_owned(),
+        ));
         self.app.lock().unwrap().replace(wgpu_app);
     }
 
@@ -384,15 +380,36 @@ impl ApplicationHandler for WgpuAppHandler {
                 }
             }
 
+            WindowEvent::Resized(physical_size) => {
+                let app = app.as_mut().unwrap();
+                app.size = physical_size;
+                app.config.width = physical_size.width;
+                app.config.height = physical_size.height;
+
+                app.surface.configure(&app.device, &app.config);
+
+                app.window.request_redraw();
+            }
+
             _ => {}
         }
     }
 }
 
-pub fn start() {
+pub fn start(
+    scene: crate::scene::Root,
+    jsons: HashMap<String, String>,
+    texs: HashMap<String, Tex>,
+) {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(event_loop::ControlFlow::Wait);
 
-    let mut app = WgpuAppHandler::default();
+    let mut app = WgpuAppHandler {
+        general: scene.general,
+        jsons: jsons,
+        texs: texs,
+        ..Default::default()
+    };
+
     event_loop.run_app(&mut app).unwrap();
 }

@@ -1,7 +1,7 @@
 mod scene;
 
 use std::{
-    collections::BTreeMap,
+    collections::HashMap,
     path::Path,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
@@ -14,9 +14,8 @@ fn main() {
     const PATH: &str = "./test/scene.pkg";
 
     let pkg = Pkg::new(Path::new(PATH));
-    let texs: Arc<Mutex<BTreeMap<(String, String), Vec<u8>>>> =
-        Arc::new(Mutex::new(BTreeMap::new()));
-    let mut jsons: BTreeMap<String, String> = BTreeMap::new();
+    let texs: Arc<Mutex<HashMap<String, Tex>>> = Arc::new(Mutex::new(HashMap::new()));
+    let mut jsons: HashMap<String, String> = HashMap::new();
 
     let mut handles: Vec<JoinHandle<()>> = Vec::new();
     let pb = ProgressBar::new(pkg.files.len() as u64);
@@ -31,10 +30,11 @@ fn main() {
                 let texs_ptr = Arc::clone(&texs);
 
                 let tex_handle = thread::spawn(move || {
-                    let tex = Tex::new(&payload).unwrap();
+                    let mut tex = Tex::new(&payload).unwrap();
                     let mut texs = texs_ptr.lock().unwrap();
+                    tex.parse_to_rgba().unwrap();
 
-                    texs.insert((path, tex.extension.clone()), tex.parse_to_rgba().unwrap());
+                    texs.insert(path, tex);
                 });
 
                 handles.push(tex_handle);
@@ -60,5 +60,8 @@ fn main() {
 
     let scene: scene::Root = serde_json::from_str(jsons.get("scene.json").unwrap()).unwrap();
 
-    scene::render::start();
+    let mut texs = texs.lock().unwrap();
+    let texs = std::mem::take(&mut *texs);
+
+    scene::render::start(scene, jsons, texs);
 }
