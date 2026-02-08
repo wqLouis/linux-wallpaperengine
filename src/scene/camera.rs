@@ -1,4 +1,4 @@
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 
 use crate::scene::General;
 
@@ -55,5 +55,16 @@ impl Camera {
             farz: general.farz as f32,
             fov: general.fov as f32,
         }
+    }
+}
+
+impl Projection {
+    pub fn create_projection_matrix(&self) -> Mat4 {
+        let view = Mat4::look_at_rh(self.eye, self.center, self.up);
+
+        let projection =
+            Mat4::orthographic_rh(0.0, self.width, 0.0, self.height, self.nearz, self.farz);
+
+        projection * view
     }
 }
