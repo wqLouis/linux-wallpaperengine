@@ -15,7 +15,7 @@ use winit::{
     window::Window,
 };
 
-use crate::scene::render_tex::create_tex_bind_group;
+use crate::scene::{Root, camera::CameraUniform, render_tex::create_tex_bind_group};
 
 struct WgpuApp {
     window: Arc<Window>,
@@ -29,12 +29,13 @@ struct WgpuApp {
     render_pipeline: RenderPipeline,
     vertex_buffer: Buffer,
     index_buffer: Buffer,
+    projection_buffer: Buffer,
     bind_groups: Vec<BindGroup>,
     bind_group_layout: BindGroupLayout,
     index_len: u32,
     vertex_len: u32,
 
-    general: crate::scene::General,
+    root: crate::scene::Root,
     objects: Vec<crate::scene::Object>,
     texs: HashMap<String, Tex>,
     jsons: HashMap<String, String>,
@@ -44,8 +45,7 @@ struct WgpuApp {
 struct WgpuAppHandler {
     app: Arc<Mutex<Option<WgpuApp>>>,
 
-    general: crate::scene::General,
-    objects: Vec<crate::scene::Object>,
+    root: crate::scene::Root,
     jsons: HashMap<String, String>,
     texs: HashMap<String, Tex>,
 }
@@ -64,8 +64,9 @@ impl WgpuApp {
         objects: Vec<crate::scene::Object>,
         texs: HashMap<String, Tex>,
         jsons: HashMap<String, String>,
+        root: Root,
     ) -> Self {
-        const MAX_RECT: u64 = 1024;
+        const MAX_RECT: u64 = 512;
         const MAX_VERTICES: u64 = MAX_RECT * 4;
         const MAX_INDICES: u64 = MAX_RECT * 6;
 
@@ -132,6 +133,19 @@ impl WgpuApp {
             mapped_at_creation: false,
         });
 
+        let projection_buffer = device.create_buffer(&BufferDescriptor {
+            label: None,
+            size: std::mem::size_of::<CameraUniform>() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        queue.write_buffer(
+            &projection_buffer,
+            0,
+            bytes_of(&root.camera.new(&general).create_projection_matrix()),
+        );
+
         let vertex_buffer_layout = VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: VertexStepMode::Vertex,
@@ -166,6 +180,16 @@ impl WgpuApp {
                     binding: 1,
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::VERTEX,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
             ],
@@ -231,28 +255,29 @@ impl WgpuApp {
             index_buffer,
             objects,
             jsons,
-            general,
+            root,
             texs,
             bind_group_layout,
+            projection_buffer,
         }
     }
 
-    pub fn draw_rect(&mut self, pos: [f32; 2], w: f32, h: f32) {
+    pub fn draw_rect(&mut self, pos: [f32; 2], w: f32, h: f32, z: f32) {
         let rect = [
             Vertex {
-                position: [pos[0], pos[1], 0.0],
+                position: [pos[0], pos[1], z],
                 uv: [0.0, 1.0],
             },
             Vertex {
-                position: [pos[0] + w, pos[1], 0.0],
+                position: [pos[0] + w, pos[1], z],
                 uv: [1.0, 1.0],
             },
             Vertex {
-                position: [pos[0], pos[1] + h, 0.0],
+                position: [pos[0], pos[1] + h, z],
                 uv: [0.0, 0.0],
             },
             Vertex {
-                position: [pos[0] + w, pos[1] + h, 0.0],
+                position: [pos[0] + w, pos[1] + h, z],
                 uv: [1.0, 0.0],
             },
         ];
@@ -337,8 +362,10 @@ impl WgpuApp {
             &self.queue,
             &self.bind_group_layout,
             self.texs.get("materials/画师-雨野拓展.tex").unwrap(),
+            &self.root,
+            &self.projection_buffer,
         ));
-        Self::draw_rect(self, [-1.0, -1.0], 2.0, 2.0);
+        Self::draw_rect(self, [0.0, 0.0], 1920.0, 1080.0, -1.0);
     }
 }
 
@@ -352,10 +379,11 @@ impl ApplicationHandler for WgpuAppHandler {
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         let wgpu_app = block_on(WgpuApp::new(
             window,
-            self.general.to_owned(),
-            self.objects.to_owned(),
+            self.root.general.to_owned(),
+            self.root.objects.to_owned(),
             self.texs.to_owned(),
             self.jsons.to_owned(),
+            self.root.to_owned(),
         ));
         self.app.lock().unwrap().replace(wgpu_app);
     }
@@ -382,9 +410,15 @@ impl ApplicationHandler for WgpuAppHandler {
 
             WindowEvent::Resized(physical_size) => {
                 let app = app.as_mut().unwrap();
-                app.size = physical_size;
-                app.config.width = physical_size.width;
-                app.config.height = physical_size.height;
+                app.size = PhysicalSize {
+                    width: (physical_size.width as f32
+                        * self.root.camera.new(&self.root.general).aspect)
+                        .round() as u32,
+                    height: physical_size.height,
+                };
+
+                app.config.width = 1920;
+                app.config.height = 1080;
 
                 app.surface.configure(&app.device, &app.config);
 
@@ -405,7 +439,7 @@ pub fn start(
     event_loop.set_control_flow(event_loop::ControlFlow::Wait);
 
     let mut app = WgpuAppHandler {
-        general: scene.general,
+        root: scene,
         jsons: jsons,
         texs: texs,
         ..Default::default()

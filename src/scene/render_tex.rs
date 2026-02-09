@@ -1,11 +1,16 @@
+use bytemuck::bytes_of;
 use depkg::pkg_parser::tex_parser::Tex;
 use wgpu::*;
+
+use crate::scene::{Camera, Root, camera::CameraUniform};
 
 pub fn create_tex_bind_group(
     device: &Device,
     queue: &Queue,
     bind_group_layout: &BindGroupLayout,
     tex: &Tex,
+    root: &Root,
+    projection_buffer: &Buffer,
 ) -> BindGroup {
     let diffuse_tex = device.create_texture(&TextureDescriptor {
         size: Extent3d {
@@ -47,6 +52,10 @@ pub fn create_tex_bind_group(
                 binding: 1,
                 resource: BindingResource::Sampler(&diffuse_sampler),
             },
+            BindGroupEntry {
+                binding: 2,
+                resource: projection_buffer.as_entire_binding(),
+            },
         ],
     });
 
@@ -68,6 +77,12 @@ pub fn create_tex_bind_group(
             height: tex.dimension[1],
             depth_or_array_layers: 1,
         },
+    );
+
+    queue.write_buffer(
+        &projection_buffer,
+        0,
+        bytes_of(&root.camera.new(&root.general).create_projection_matrix()),
     );
 
     bind_group
