@@ -1,4 +1,4 @@
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 use winit::dpi::PhysicalSize;
 
 use crate::scene::General;
@@ -66,15 +66,18 @@ impl Projection {
         let scaled_w = self.width * h_ratio;
         let overflow_w = (scaled_w - window_size.width) / 2.0;
 
-        println!("{:?}", overflow_w);
-
         let projection = Mat4::orthographic_rh(
             overflow_w,
             scaled_w - overflow_w,
-            0.0,
             window_size.height,
+            0.0,
             self.nearz,
             self.farz,
+        );
+
+        println!(
+            "{}",
+            (projection * view) * Vec4::new(2000.0, 1080.0, 0.0, 1.0)
         );
 
         CameraUniform {
