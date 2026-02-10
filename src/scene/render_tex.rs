@@ -1,6 +1,6 @@
 use bytemuck::bytes_of;
 use depkg::pkg_parser::tex_parser::Tex;
-use wgpu::*;
+use wgpu::{wgt::TextureViewDescriptor, *};
 use winit::dpi::PhysicalSize;
 
 use crate::scene::Root;
@@ -15,6 +15,8 @@ pub fn create_tex_bind_group(
     projection_buffer: &Buffer,
     window_size: &PhysicalSize<f32>,
 ) -> (BindGroup, BindGroup) {
+    const TEX_COUNT: usize = 256;
+
     let diffuse_texs: Vec<Texture> = texs
         .iter()
         .map(|tex| {
@@ -35,10 +37,57 @@ pub fn create_tex_bind_group(
         })
         .collect();
 
-    let diffuse_tex_views = diffuse_texs
+    let mut padding_tex: Vec<TextureView> = Vec::new();
+    if diffuse_texs.len() < TEX_COUNT {
+        let dummy_tex = vec![vec![0u8; 4]; TEX_COUNT - diffuse_texs.len()];
+        padding_tex = dummy_tex
+            .iter()
+            .map(|tex_raw| {
+                let tex = device.create_texture(&TextureDescriptor {
+                    size: Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: TextureDimension::D2,
+                    format: TextureFormat::Rgba8UnormSrgb,
+                    usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+                    label: None,
+                    view_formats: &[],
+                });
+                queue.write_texture(
+                    TexelCopyTextureInfo {
+                        texture: &tex,
+                        mip_level: 0,
+                        origin: Origin3d::ZERO,
+                        aspect: TextureAspect::All,
+                    },
+                    tex_raw,
+                    TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4),
+                        rows_per_image: Some(1),
+                    },
+                    Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                tex.create_view(&TextureViewDescriptor::default())
+            })
+            .collect::<Vec<TextureView>>();
+    }
+
+    let mut diffuse_tex_views = diffuse_texs
         .iter()
         .map(|tex| tex.create_view(&TextureViewDescriptor::default()))
         .collect::<Vec<TextureView>>();
+    if diffuse_tex_views.len() < TEX_COUNT {
+        diffuse_tex_views.append(&mut padding_tex);
+    }
 
     let diffuse_sampler = device.create_sampler(&SamplerDescriptor {
         label: None,
@@ -68,10 +117,6 @@ pub fn create_tex_bind_group(
             BindGroupEntry {
                 binding: 1,
                 resource: BindingResource::Sampler(&diffuse_sampler),
-            },
-            BindGroupEntry {
-                binding: 2,
-                resource: projection_buffer.as_entire_binding(),
             },
         ],
     });

@@ -64,7 +64,7 @@ struct Vertex {
     tex_index: u32,
 }
 
-const MAX_RECT: u64 = 512;
+const MAX_RECT: u64 = 256;
 const MAX_VERTICES: u64 = MAX_RECT * 4;
 const MAX_INDICES: u64 = MAX_RECT * 6;
 
@@ -101,7 +101,7 @@ impl WgpuApp {
                 required_features: Features::TEXTURE_BINDING_ARRAY
                     | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
                 required_limits: Limits {
-                    max_binding_array_elements_per_shader_stage: 512,
+                    max_binding_array_elements_per_shader_stage: MAX_RECT as u32,
                     ..Default::default()
                 },
                 experimental_features: ExperimentalFeatures::disabled(),
@@ -207,7 +207,7 @@ impl WgpuApp {
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("Pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[&bind_group_layout, &projection_bind_group_layout],
             immediate_size: 0,
         });
 
@@ -402,16 +402,9 @@ impl WgpuApp {
 
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
-
-            /*
-            for (index, render_object) in self.render_objects.iter().enumerate() {
-                render_pass.set_bind_group(index as u32 % 4, &render_object.bind_group, &[]);
-                render_pass.draw_indexed(
-                    render_object.start_index..render_object.end_index,
-                    0,
-                    0..1,
-                );
-            }  */
+            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.set_bind_group(1, &projection_bind_group, &[]);
+            render_pass.draw_indexed(0..self.index_len, 0, 0..1);
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -422,6 +415,8 @@ impl WgpuApp {
 
     fn render_main(&mut self) {
         // Put all the render stuff here
+        self.render_tex.clear();
+
         struct Draw {
             origin: [f32; 3],
             scale: [f32; 3],
@@ -513,7 +508,7 @@ impl ApplicationHandler for WgpuAppHandler {
 
         let window_attributes = Window::default_attributes().with_title("Linux wallpaper engine");
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-        let wgpu_app = block_on(WgpuApp::new(
+        let mut wgpu_app = block_on(WgpuApp::new(
             window,
             self.root.general.to_owned(),
             self.root.objects.to_owned(),
