@@ -35,13 +35,13 @@ impl Camera {
         Projection {
             // Very rough may breaks
             center: Vec3 {
-                x: center[0] as f32,
-                y: center[1] as f32,
+                x: 0.0,
+                y: 0.0,
                 z: center[2] as f32,
             },
             eye: Vec3 {
-                x: eye[0] as f32,
-                y: eye[1] as f32,
+                x: 0.0,
+                y: 0.0,
                 z: eye[2] as f32,
             },
             up: Vec3 {
