@@ -15,7 +15,7 @@ pub struct Projection {
     center: Vec3,
     eye: Vec3,
     up: Vec3,
-    pub aspect: f32,
+    aspect: f32,
     nearz: f32,
     farz: f32,
     pub height: f32,

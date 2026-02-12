@@ -561,13 +561,14 @@ impl WgpuApp {
         self.projection_bind_group = Some(projection_bind_group);
 
         for draw in draw_queue {
+            let scaled_size = [draw.size[0] * draw.scale[0], draw.size[1] * draw.scale[1]];
             self.draw_rect(
                 [
-                    draw.origin[0] - (draw.size[0] / 2.0),
-                    draw.origin[1] - (draw.size[1] / 2.0),
+                    draw.origin[0] - (scaled_size[0] / 2.0),
+                    draw.origin[1] - (scaled_size[1] / 2.0),
                 ],
-                draw.size[0] * draw.scale[0],
-                draw.size[1] * draw.scale[1],
+                scaled_size[0],
+                scaled_size[1],
                 draw.origin[2],
                 draw.tex_index,
                 draw.angles[2],
