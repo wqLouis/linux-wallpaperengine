@@ -507,7 +507,7 @@ impl WgpuApp {
             };
             let tex = tex.to_owned();
 
-            if tex.payload.len() != (tex.dimension[0] * tex.dimension[0] * 4) as usize {
+            if tex.payload.len() != (tex.dimension[0] * tex.dimension[1] * 4) as usize {
                 println!("Broken texture: {:?}", tex_path);
                 println!(
                     "format: {:?}    dimensions: {:?}",
@@ -527,11 +527,7 @@ impl WgpuApp {
                 "format: {:?}    dimensions: {:?}",
                 tex.extension, tex.dimension
             );
-            println!(
-                "size: {:?}    actual_size: {:?}",
-                (tex.dimension[0] * tex.dimension[0] * 4),
-                tex.payload.len()
-            );
+            println!("origin: {:?}    angles: {:?}", origin, angles);
             println!();
 
             draw_queue.push(Draw {
