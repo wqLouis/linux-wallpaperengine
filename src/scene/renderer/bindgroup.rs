@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytemuck::bytes_of;
 use depkg::pkg_parser::tex_parser::Tex;
 use wgpu::{wgt::TextureViewDescriptor, *};
@@ -10,7 +12,7 @@ pub fn create_tex_bind_group(
     queue: &Queue,
     bind_group_layout: &BindGroupLayout,
     projection_bind_group_layout: &BindGroupLayout,
-    texs: &Vec<Tex>,
+    texs: &Vec<Arc<Tex>>,
     root: &Root,
     projection_buffer: &Buffer,
     window_size: &PhysicalSize<f32>,

@@ -11,7 +11,7 @@ use depkg::pkg_parser::{parser::Pkg, tex_parser::Tex};
 use indicatif::ProgressBar;
 
 fn main() {
-    const PATH: &str = "./test/SAO.pkg";
+    const PATH: &str = "./test/scene.pkg";
 
     let pkg = Pkg::new(Path::new(PATH));
     let texs: Arc<Mutex<HashMap<String, Tex>>> = Arc::new(Mutex::new(HashMap::new()));

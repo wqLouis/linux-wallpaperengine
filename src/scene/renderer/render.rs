@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     num::NonZeroU32,
-    path::Path,
     sync::{Arc, Mutex},
 };
 
@@ -9,7 +8,6 @@ use bytemuck::bytes_of;
 use depkg::pkg_parser::tex_parser::Tex;
 use glam::{Mat2, Vec2};
 use pollster::block_on;
-use serde_json::Value;
 use wgpu::{
     wgt::{BufferDescriptor, DeviceDescriptor},
     *,
@@ -22,9 +20,7 @@ use winit::{
     window::Window,
 };
 
-use crate::scene::{
-    Root, Vectors, camera::CameraUniform, renderer::bindgroup::create_tex_bind_group,
-};
+use crate::scene::{Root, camera::CameraUniform, renderer::bindgroup::create_tex_bind_group};
 
 struct WgpuApp {
     window: Arc<Window>,
@@ -47,9 +43,9 @@ struct WgpuApp {
 
     root: crate::scene::Root,
     objects: Vec<crate::scene::Object>,
-    texs: HashMap<String, Tex>,
-    jsons: HashMap<String, String>,
-    render_tex: Vec<Tex>,
+    texs: Arc<HashMap<String, Arc<Tex>>>,
+    jsons: Arc<HashMap<String, String>>,
+    render_tex: Vec<Arc<Tex>>,
 }
 
 #[derive(Default)]
@@ -57,8 +53,8 @@ struct WgpuAppHandler {
     app: Arc<Mutex<Option<WgpuApp>>>,
 
     root: crate::scene::Root,
-    jsons: HashMap<String, String>,
-    texs: HashMap<String, Tex>,
+    jsons: Arc<HashMap<String, String>>,
+    texs: Arc<HashMap<String, Arc<Tex>>>,
 }
 
 #[repr(C)]
@@ -75,12 +71,12 @@ const MAX_VERTICES: u64 = MAX_RECT * 4;
 const MAX_INDICES: u64 = MAX_RECT * 6;
 
 impl WgpuApp {
-    async fn new(
+    async fn new<'tex>(
         window: Arc<Window>,
         general: crate::scene::General,
         objects: Vec<crate::scene::Object>,
-        texs: HashMap<String, Tex>,
-        jsons: HashMap<String, String>,
+        texs: Arc<HashMap<String, Arc<Tex>>>,
+        jsons: Arc<HashMap<String, String>>,
         root: Root,
     ) -> Self {
         let texs_len = texs.len();
@@ -441,7 +437,7 @@ impl WgpuApp {
             angles: [f32; 3],
             size: [f32; 2],
             tex_index: u32,
-            tex: Tex,
+            tex: Arc<Tex>,
             alpha: f32,
         }
 
@@ -449,95 +445,32 @@ impl WgpuApp {
         let mut tex_index = 0;
 
         for object in &self.objects {
-            if object.image.is_none() {
-                continue;
-            }
-
-            let visible = match &object.visible {
-                Some(val) => val.value,
-                None => true,
-            };
-
-            if !visible {
-                continue;
-            }
-
-            let image = Path::new(object.image.as_ref().unwrap_or(&"".to_string())).to_path_buf();
-            let origin = match &object.origin {
-                Some(val) => val.parse().unwrap(),
-                None => continue,
-            };
-
-            let scale = &object
-                .scale
-                .as_ref()
-                .unwrap_or(&Vectors::Vectors("1.0 1.0 1.0".to_string()))
-                .parse()
-                .unwrap_or_default();
-            let size = &object
-                .size
-                .as_ref()
-                .unwrap_or(&Vectors::default())
-                .parse()
-                .unwrap_or_default();
-            let angles = &object
-                .angles
-                .as_ref()
-                .unwrap_or(&Vectors::Vectors("0.0 0.0 0.0".to_string()))
-                .parse()
-                .unwrap_or_default()
-                .to_vec();
-            let alpha = object.alpha.unwrap_or(1.0) as f32;
-
-            let model_path = image.clone();
-            let Some(model) = self.jsons.get(model_path.to_str().unwrap_or_default()) else {
+            let Some(object_para) =
+                super::load_object::load_from_json(object, &self.jsons, &self.texs)
+            else {
                 continue;
             };
-            let model = serde_json::from_str::<crate::scene::models::Root>(model);
-            let model = match model {
-                Ok(val) => val,
-                Err(_) => continue,
-            };
-
-            let mut tex_path = Path::new(&model.material).to_path_buf();
-            tex_path.set_extension("tex");
-
-            let Some(tex) = self.texs.get(tex_path.to_str().unwrap_or_default()) else {
-                continue;
-            };
-            let tex = tex.to_owned();
-
-            if tex.payload.len() != (tex.dimension[0] * tex.dimension[1] * 4) as usize {
-                println!("Broken texture: {:?}", tex_path);
-                println!(
-                    "format: {:?}    dimensions: {:?}",
-                    tex.extension, tex.dimension
-                );
-                println!(
-                    "size: {:?}    actual_size: {:?}",
-                    (tex.dimension[0] * tex.dimension[0] * 4),
-                    tex.payload.len()
-                );
-                println!();
-                continue;
-            }
-
-            println!("Loaded texture: {:?}", tex_path);
-            println!(
-                "format: {:?}    dimensions: {:?}",
-                tex.extension, tex.dimension
-            );
-            println!("origin: {:?}    angles: {:?}", origin, angles);
-            println!();
 
             draw_queue.push(Draw {
-                origin: [origin[0] as f32, origin[1] as f32, origin[2] as f32 - 1.0],
-                scale: [scale[0] as f32, scale[1] as f32, scale[2] as f32],
-                size: [size[0] as f32, size[1] as f32],
-                angles: [angles[0] as f32, angles[1] as f32, angles[2] as f32],
+                origin: [
+                    object_para.origin[0],
+                    object_para.origin[1],
+                    object_para.origin[2] - 1.0,
+                ],
+                scale: [
+                    object_para.scale[0],
+                    object_para.scale[1],
+                    object_para.scale[2],
+                ],
+                size: [object_para.size[0], object_para.size[1]],
+                angles: [
+                    object_para.angles[0],
+                    object_para.angles[1],
+                    object_para.angles[2],
+                ],
                 tex_index,
-                tex,
-                alpha,
+                tex: object_para.tex,
+                alpha: object_para.alpha,
             });
 
             tex_index += 1;
@@ -550,8 +483,8 @@ impl WgpuApp {
             &self.projection_bind_group_layout,
             &draw_queue
                 .iter()
-                .map(|draw| draw.tex.clone())
-                .collect::<Vec<Tex>>(),
+                .map(|draw| Arc::clone(&draw.tex))
+                .collect::<Vec<Arc<Tex>>>(),
             &self.root,
             &self.projection_buffer,
             &self.window.inner_size().cast::<f32>(),
@@ -591,8 +524,8 @@ impl ApplicationHandler for WgpuAppHandler {
             window,
             self.root.general.to_owned(),
             self.root.objects.to_owned(),
-            self.texs.to_owned(),
-            self.jsons.to_owned(),
+            Arc::clone(&self.texs),
+            Arc::clone(&self.jsons),
             self.root.to_owned(),
         ));
         self.app.lock().unwrap().replace(wgpu_app);
@@ -642,11 +575,13 @@ pub fn start(
 ) {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(event_loop::ControlFlow::Wait);
+    let jsons = Arc::new(jsons);
+    let texs: HashMap<String, Arc<Tex>> = texs.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
 
     let mut app = WgpuAppHandler {
         root: scene,
         jsons: jsons,
-        texs: texs,
+        texs: Arc::new(texs),
         ..Default::default()
     };
 
