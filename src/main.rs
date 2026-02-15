@@ -24,7 +24,7 @@ fn main() {
 
     let path = Path::new(&args.path);
 
-    if path.exists() == false && path.extension().unwrap_or_default() != "pkg" {
+    if path.exists() == false || path.extension().unwrap_or_default() != "pkg" {
         panic!("Path not exist or wrong file extension");
     }
 
