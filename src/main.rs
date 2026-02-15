@@ -7,13 +7,28 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+use clap::Parser;
 use depkg::pkg_parser::{parser::Pkg, tex_parser::Tex};
 use indicatif::ProgressBar;
 
-fn main() {
-    const PATH: &str = "./test/scene.pkg";
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Args {
+    // wallpaper .pkg file path
+    #[arg(default_value = "./scene.pkg")]
+    path: String,
+}
 
-    let pkg = Pkg::new(Path::new(PATH));
+fn main() {
+    let args = Args::parse();
+
+    let path = Path::new(&args.path);
+
+    if path.exists() == false && path.extension().unwrap_or_default() != "pkg" {
+        panic!("Path not exist or wrong file extension");
+    }
+
+    let pkg = Pkg::new(path);
     let texs: Arc<Mutex<HashMap<String, Tex>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut jsons: HashMap<String, String> = HashMap::new();
 
