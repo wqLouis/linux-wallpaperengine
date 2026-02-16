@@ -1,7 +1,7 @@
 mod scene;
 
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     path::Path,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
@@ -29,9 +29,9 @@ fn main() {
     }
 
     let pkg = Pkg::new(path);
-    let texs: Arc<Mutex<HashMap<String, Tex>>> = Arc::new(Mutex::new(HashMap::new()));
-    let mut jsons: HashMap<String, String> = HashMap::new();
-    let mut others: HashMap<String, Vec<u8>> = HashMap::new();
+    let texs: Arc<Mutex<BTreeMap<String, Tex>>> = Arc::new(Mutex::new(BTreeMap::new()));
+    let mut jsons: BTreeMap<String, String> = BTreeMap::new();
+    let mut others: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
     let mut handles: Vec<JoinHandle<()>> = Vec::new();
     let pb = ProgressBar::new(pkg.files.len() as u64);

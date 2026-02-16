@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use depkg::pkg_parser::tex_parser::Tex;
 use serde_json::{Value, json};
@@ -27,11 +27,14 @@ pub struct AudioParameters {
 
 pub fn load_from_json(
     object: &Object,
-    jsons: &HashMap<String, String>,
-    texs: &HashMap<String, Arc<Tex>>,
+    jsons: &BTreeMap<String, String>,
+    texs: &BTreeMap<String, Arc<Tex>>,
+    objects: &BTreeMap<i64, crate::scene::Object>,
 ) -> Option<ObjectType> {
     if object.image.is_some() {
-        return Some(ObjectType::Texture(load_texture(object, jsons, texs)?));
+        return Some(ObjectType::Texture(load_texture(
+            object, jsons, texs, objects,
+        )?));
     }
     if object.sound.len() != 0 {
         return Some(ObjectType::Audio(load_audio(object)?));
@@ -41,8 +44,9 @@ pub fn load_from_json(
 
 fn load_texture(
     object: &Object,
-    jsons: &HashMap<String, String>,
-    texs: &HashMap<String, Arc<Tex>>,
+    jsons: &BTreeMap<String, String>,
+    texs: &BTreeMap<String, Arc<Tex>>,
+    objects: &BTreeMap<i64, crate::scene::Object>,
 ) -> Option<TextureParameters> {
     if object.visible.is_some() {
         let visible = object.visible.clone().unwrap();
@@ -148,7 +152,6 @@ fn load_texture(
         println!();
         return None;
     }
-
     Some(TextureParameters {
         origin,
         angles,
