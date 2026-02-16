@@ -12,6 +12,10 @@ Currently, this software is **highly unstable**, under heavy development, and al
 
 ## Features
 
+
+https://github.com/user-attachments/assets/3a2a6ed8-ddf5-4f0a-8c0d-80f8fcfc4af0
+
+
 *   **Scene Parsing:** Reads and parses `.scene.pkg` files from Wallpaper Engine.
 *   **Rendering:** Hardware-accelerated rendering using **wgpu** (Vulkan backend).
 *   **Texture Support:** Handles texture loading with automatic alignment and format conversion.
