@@ -12,6 +12,8 @@ Currently, this software is **highly unstable**, under heavy development, and al
 
 ## Features
 
+![[2026-02-16 23-36-06.mp4]]
+
 *   **Scene Parsing:** Reads and parses `.scene.pkg` files from Wallpaper Engine.
 *   **Rendering:** Hardware-accelerated rendering using **wgpu** (Vulkan backend).
 *   **Texture Support:** Handles texture loading with automatic alignment and format conversion.
@@ -36,18 +38,20 @@ Currently, this software is **highly unstable**, under heavy development, and al
     ```
 
 ## Usage
-N/A
+
+```bash
+linux-wallpaper-engine {path to pkg file}
+```
+
 ## Known Issues & Limitations
 
-*   **Stability:** The software is prone to crashes and rendering artifacts.
-*   **Performance:** Optimization is ongoing; expect high CPU/GPU usage for complex scenes.
-*   **No Audio:** Audio playback is not supported in this version.
+*   **Compatibility:** In some wallpapers, the software might fail to parse the texture files
 
 ## Roadmap
 
-- [ ] Improve stability and error handling
+- [x] Improve stability and error handling
 - [ ] Add support for more shader types
-- [ ] Implement audio support
+- [x] Implement audio support
 - [ ] Animation support
 - [ ] .mdl file loading
 
