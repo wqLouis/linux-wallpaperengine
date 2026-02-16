@@ -12,7 +12,9 @@ Currently, this software is **highly unstable**, under heavy development, and al
 
 ## Features
 
-![[2026-02-16 23-36-06.mp4]]
+<video width="1920" height="1080" controls="controls">
+    <source src="demo/2026-02-16 23-36-06.mp4" type="video/mp4">
+</video>
 
 *   **Scene Parsing:** Reads and parses `.scene.pkg` files from Wallpaper Engine.
 *   **Rendering:** Hardware-accelerated rendering using **wgpu** (Vulkan backend).
@@ -32,9 +34,9 @@ Currently, this software is **highly unstable**, under heavy development, and al
     cd linux-wallpaper-engine
     ```
 
-2.  Build the project:
+2.  Install the project:
     ```bash
-    cargo build --release
+    cargo install --path . --profile=release
     ```
 
 ## Usage
