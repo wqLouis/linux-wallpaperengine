@@ -12,10 +12,6 @@ Currently, this software is **highly unstable**, under heavy development, and al
 
 ## Features
 
-<video width="1920" height="1080" controls="controls">
-    <source src="demo/2026-02-16 23-36-06.mp4" type="video/mp4">
-</video>
-
 *   **Scene Parsing:** Reads and parses `.scene.pkg` files from Wallpaper Engine.
 *   **Rendering:** Hardware-accelerated rendering using **wgpu** (Vulkan backend).
 *   **Texture Support:** Handles texture loading with automatic alignment and format conversion.
