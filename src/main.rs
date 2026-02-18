@@ -79,7 +79,8 @@ fn main() {
 
     pb.finish_and_clear();
 
-    let scene: scene::Root = serde_json::from_str(jsons.get("scene.json").unwrap()).unwrap();
+    let scene: scene::loader::scene::Root =
+        serde_json::from_str(jsons.get("scene.json").unwrap()).unwrap();
 
     let mut texs = texs.lock().unwrap();
     let texs = std::mem::take(&mut *texs);

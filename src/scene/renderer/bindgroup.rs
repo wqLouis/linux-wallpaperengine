@@ -5,7 +5,7 @@ use depkg::pkg_parser::tex_parser::Tex;
 use wgpu::{wgt::TextureViewDescriptor, *};
 use winit::dpi::PhysicalSize;
 
-use crate::scene::Root;
+use crate::scene::loader::scene::Root;
 
 pub fn create_tex_bind_group(
     device: &Device,

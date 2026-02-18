@@ -1,9 +1,8 @@
 use glam::{Mat4, Vec3};
 use winit::dpi::PhysicalSize;
 
-use crate::scene::General;
-
-use super::Camera;
+use crate::scene::loader::scene::Camera;
+use crate::scene::loader::scene::General;
 
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]

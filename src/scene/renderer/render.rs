@@ -23,11 +23,9 @@ use winit::{
     window::Window,
 };
 
-use crate::scene::{
-    Root,
-    camera::CameraUniform,
-    renderer::{bindgroup::create_tex_bind_group, object::ObjectType},
-};
+use crate::scene::loader::camera::CameraUniform;
+use crate::scene::loader::scene::Root;
+use crate::scene::renderer::{bindgroup::create_tex_bind_group, object::ObjectType};
 
 struct WgpuApp {
     window: Arc<Window>,
@@ -51,8 +49,8 @@ struct WgpuApp {
     index_len: u32,
     vertex_len: u32,
 
-    root: crate::scene::Root,
-    objects: Vec<crate::scene::Object>,
+    root: Root,
+    objects: Vec<crate::scene::loader::scene::Object>,
     texs: Arc<BTreeMap<String, Arc<Tex>>>,
     jsons: Arc<BTreeMap<String, String>>,
     others: Arc<BTreeMap<String, Arc<Vec<u8>>>>,
@@ -65,7 +63,7 @@ struct WgpuApp {
 struct WgpuAppHandler {
     app: Arc<Mutex<Option<WgpuApp>>>,
 
-    root: crate::scene::Root,
+    root: Root,
     jsons: Arc<BTreeMap<String, String>>,
     texs: Arc<BTreeMap<String, Arc<Tex>>>,
     others: Arc<BTreeMap<String, Arc<Vec<u8>>>>,
@@ -87,8 +85,8 @@ const MAX_INDICES: u64 = MAX_RECT * 6;
 impl WgpuApp {
     async fn new(
         window: Arc<Window>,
-        general: crate::scene::General,
-        objects: Vec<crate::scene::Object>,
+        general: crate::scene::loader::scene::General,
+        objects: Vec<crate::scene::loader::scene::Object>,
         texs: Arc<BTreeMap<String, Arc<Tex>>>,
         jsons: Arc<BTreeMap<String, String>>,
         others: Arc<BTreeMap<String, Arc<Vec<u8>>>>,
@@ -475,7 +473,7 @@ impl WgpuApp {
             .objects
             .iter()
             .map(|object| (object.id, object))
-            .collect::<BTreeMap<i64, &crate::scene::Object>>();
+            .collect::<BTreeMap<i64, &crate::scene::loader::scene::Object>>();
 
         for object in &self.objects {
             let Some(object_para) = super::object::load_from_json(
@@ -651,7 +649,7 @@ impl ApplicationHandler for WgpuAppHandler {
 }
 
 pub fn start(
-    scene: crate::scene::Root,
+    scene: Root,
     jsons: BTreeMap<String, String>,
     texs: BTreeMap<String, Tex>,
     others: BTreeMap<String, Vec<u8>>,

@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 use depkg::pkg_parser::tex_parser::Tex;
 use serde_json::{Value, json};
 
-use crate::scene::{Object, Vectors};
+use crate::scene::loader::scene::{Object, Vectors};
 
 pub enum ObjectType {
     Texture(TextureParameters),
@@ -29,7 +29,7 @@ pub fn load_from_json(
     object: &Object,
     jsons: &BTreeMap<String, String>,
     texs: &BTreeMap<String, Arc<Tex>>,
-    objects: &BTreeMap<i64, &crate::scene::Object>,
+    objects: &BTreeMap<i64, &crate::scene::loader::scene::Object>,
     object_tree: &BTreeMap<i64, Option<i64>>,
 ) -> Option<ObjectType> {
     if object.image.is_some() {
@@ -51,7 +51,7 @@ fn load_texture(
     object: &Object,
     jsons: &BTreeMap<String, String>,
     texs: &BTreeMap<String, Arc<Tex>>,
-    objects: &BTreeMap<i64, &crate::scene::Object>,
+    objects: &BTreeMap<i64, &crate::scene::loader::scene::Object>,
     object_tree: &BTreeMap<i64, Option<i64>>,
 ) -> Option<TextureParameters> {
     if object.visible.is_some() {
@@ -217,7 +217,7 @@ fn load_texture(
     let Some(model_string) = jsons.get(&model_path) else {
         return None;
     };
-    let model: crate::scene::models::Root = serde_json::from_str(model_string).unwrap();
+    let model: crate::scene::loader::models::Root = serde_json::from_str(model_string).unwrap();
     let mut tex_path = Path::new(&model.material).to_path_buf();
     tex_path.set_extension("tex");
     let tex = texs.get(&tex_path.to_str().unwrap().to_string())?;
