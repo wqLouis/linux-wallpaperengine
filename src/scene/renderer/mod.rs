@@ -1,3 +1,4 @@
+mod bindgroup;
 mod buffer;
 mod draw;
 mod projection;

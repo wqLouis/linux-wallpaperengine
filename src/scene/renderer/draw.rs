@@ -87,3 +87,34 @@ impl DrawTextureObject {
         // consume itself and write the data into buffers
     }
 }
+
+impl Vertex {
+    pub fn create_buffer_layout<'a>() -> VertexBufferLayout<'a> {
+        VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as BufferAddress,
+            step_mode: VertexStepMode::Vertex,
+            attributes: &[
+                VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: VertexFormat::Float32x3,
+                },
+                VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as BufferAddress,
+                    shader_location: 1,
+                    format: VertexFormat::Float32x2,
+                },
+                VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 5]>() as BufferAddress,
+                    shader_location: 2,
+                    format: VertexFormat::Uint32,
+                },
+                VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 6]>() as BufferAddress,
+                    shader_location: 3,
+                    format: VertexFormat::Float32,
+                },
+            ],
+        }
+    }
+}

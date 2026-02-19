@@ -11,7 +11,7 @@ const MAX_VERTEX: u32 = 512 * 4;
 const MAX_INDEX: u32 = 512 * 6;
 
 impl Buffers {
-    fn new(device: &Device) -> Self {
+    pub fn new(device: &Device) -> Self {
         let vertex = device.create_buffer(&BufferDescriptor {
             label: Some("vertex buffer"),
             usage: BufferUsages::COPY_DST | BufferUsages::VERTEX,

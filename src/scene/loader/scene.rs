@@ -297,6 +297,7 @@ pub struct Config {
 pub enum Vectors {
     Scaler(f64),
     Vectors(String),
+    Object(Value),
 }
 
 impl Default for Vectors {
@@ -308,12 +309,13 @@ impl Default for Vectors {
 impl Vectors {
     pub fn parse(&self) -> Option<Vec<f32>> {
         match self {
-            Vectors::Scaler(s) => Some(vec![s.to_owned() as f32]),
-            Vectors::Vectors(s) => s
+            Vectors::Scaler(val) => Some(vec![val.to_owned() as f32]),
+            Vectors::Vectors(val) => val
                 .split_whitespace()
                 .into_iter()
                 .map(|f| f.parse::<f32>().ok())
                 .collect(),
+            Vectors::Object(_) => None,
         }
     }
 }
