@@ -39,11 +39,8 @@ impl ObjectMap {
         let mut texture_map: BTreeMap<i64, Rc<RefCell<TextureObject>>> = BTreeMap::new();
         let mut audio_map: BTreeMap<i64, AudioObject> = BTreeMap::new();
 
-        println!("objects len: {:?}", objects.len());
-
         for object in objects {
             let Some(loaded_object) = load_object(object) else {
-                println!("failed to load object id: {:?}", object.id);
                 continue;
             };
             match loaded_object {
@@ -96,7 +93,6 @@ impl ObjectMap {
 }
 
 fn load_object(object: &Object) -> Option<ObjectType> {
-    println!("load object id: {:?}", object.id);
     if object.image.is_some() {
         // Texture
 
