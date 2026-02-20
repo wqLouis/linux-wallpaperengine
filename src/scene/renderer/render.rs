@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{fmt::Debug, io::Cursor, path::Path};
 
 use crate::{
     MAX_INDEX, MAX_TEXTURE,
@@ -11,6 +11,7 @@ use crate::{
             bindgroup::BindGroups,
             buffer::Buffers,
             draw::{DrawQueue, Vertex},
+            projection::Projection,
         },
     },
 };
@@ -37,6 +38,7 @@ pub struct WgpuApp {
     audio_stream: rodio::OutputStream,
 }
 
+#[derive(Debug)]
 struct AppSurface {
     surface: Surface<'static>,
     config: SurfaceConfiguration,
@@ -153,7 +155,7 @@ impl WgpuApp {
             queue,
             pipeline,
             custom_pipelines: Vec::new(),
-            audio_stream,
+            audio_stream: audio_stream,
         }
     }
 
@@ -165,7 +167,17 @@ impl WgpuApp {
             draw_queue.push(tex, &self.scene.jsons, &self.scene.textures);
         }
 
-        let audio_mixer = &self.audio_stream.mixer();
+        self.bindgroups
+            .create_texture_bindgroup(&mut draw_queue, &self.device, &self.queue);
+        self.bindgroups.create_projection_bindgroup(
+            &self.buffers,
+            &self.device,
+            &self.queue,
+            &Projection::new(&self.scene.root).create_camera_uniform(),
+        );
+
+        let audio_stream = &self.audio_stream;
+        let audio_mixer = audio_stream.mixer();
         let audio_sink = rodio::Sink::connect_new(audio_mixer);
 
         for (_, audio) in object_map.audio {
@@ -173,8 +185,17 @@ impl WgpuApp {
                 let Some(raw) = self.scene.desc.get(&sound) else {
                     continue;
                 };
+
                 let cursor = Cursor::new(raw.to_owned());
-                let Some(source) = rodio::decoder::Decoder::new(cursor).ok() else {
+                let sound_pathbuf = Path::new(&sound).to_path_buf();
+                let hint = sound_pathbuf.extension().unwrap().to_str().unwrap();
+                let Some(source) = rodio::decoder::Decoder::builder()
+                    .with_data(cursor)
+                    .with_hint(hint)
+                    .build()
+                    .ok()
+                else {
+                    println!("failed to build audio: {:?} with hint: {:?}", sound, hint);
                     continue;
                 };
 
@@ -229,20 +250,28 @@ impl WgpuApp {
             });
 
             render_pass.set_pipeline(&self.pipeline);
-            if self.buffers.index_len < 1 {
-                return Ok(());
+            if self.buffers.index_len > 0 {
+                render_pass.set_vertex_buffer(0, self.buffers.vertex.slice(..));
+                render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint16);
+                render_pass.set_bind_group(0, &self.bindgroups.texture, &[]);
+                render_pass.set_bind_group(1, &self.bindgroups.projection, &[]);
+                render_pass.draw_indexed(0..MAX_INDEX, 0, 0..1);
             }
-            render_pass.set_vertex_buffer(0, self.buffers.vertex.slice(..));
-            render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint16);
-            render_pass.set_bind_group(0, &self.bindgroups.texture, &[]);
-            render_pass.set_bind_group(1, &self.bindgroups.projection, &[]);
-            render_pass.draw_indexed(0..MAX_INDEX, 0, 0..1);
         }
 
         self.queue.submit(Some(encoder.finish()));
         output.present();
 
         Ok(())
+    }
+
+    pub fn resize(&mut self, size: [u32; 2]) {
+        self.surface.config.width = size[0];
+        self.surface.config.height = size[1];
+
+        self.surface
+            .surface
+            .configure(&self.device, &self.surface.config);
     }
 }
 

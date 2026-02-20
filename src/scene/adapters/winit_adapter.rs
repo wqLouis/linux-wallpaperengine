@@ -1,13 +1,19 @@
 use std::sync::{Arc, Mutex};
 
 use pollster::block_on;
-use winit::{application::ApplicationHandler, event::WindowEvent, window::Window};
+use winit::{
+    application::ApplicationHandler,
+    event::WindowEvent,
+    event_loop::{self, EventLoop},
+    window::Window,
+};
 
 use crate::scene::renderer::render::WgpuApp;
 
+#[derive(Default)]
 struct WinitApp {
     app: Arc<Mutex<Option<WgpuApp>>>,
-    window: Arc<Window>,
+    window: Option<Arc<Window>>,
 
     pkg_path: String,
 }
@@ -20,17 +26,18 @@ impl ApplicationHandler for WinitApp {
 
         let window_attributes = Window::default_attributes().with_title("Linux wallpaper engine");
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-        let window_pointer = Arc::clone(&window);
         let size = window.inner_size();
 
-        let wgpu_app = block_on(WgpuApp::new(
+        let mut wgpu_app = block_on(WgpuApp::new(
             self.pkg_path.clone(),
-            window,
+            Arc::clone(&window),
             [size.width, size.height],
         ));
 
+        wgpu_app.load();
+
         self.app.lock().unwrap().replace(wgpu_app);
-        self.window = window_pointer;
+        self.window = Some(window);
     }
 
     fn window_event(
@@ -44,7 +51,7 @@ impl ApplicationHandler for WinitApp {
         match event {
             WindowEvent::RedrawRequested => {
                 let app = app.as_mut().unwrap();
-                self.window.pre_present_notify();
+                self.window.as_ref().unwrap().pre_present_notify();
 
                 match app.render() {
                     Ok(_) => {}
@@ -53,8 +60,21 @@ impl ApplicationHandler for WinitApp {
             }
             WindowEvent::Resized(physical_size) => {
                 let app = app.as_mut().unwrap();
+                app.resize([physical_size.width, physical_size.height]);
+                self.window.as_ref().unwrap().request_redraw();
             }
             _ => {}
         }
     }
+}
+
+pub fn start(pkg_path: String) {
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(event_loop::ControlFlow::Wait);
+    let mut app = WinitApp {
+        pkg_path,
+        ..Default::default()
+    };
+
+    event_loop.run_app(&mut app).unwrap();
 }

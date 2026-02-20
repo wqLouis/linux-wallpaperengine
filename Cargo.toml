@@ -11,10 +11,7 @@ depkg = "1.1.1"
 glam = "0.31.0"
 indicatif = "0.18.3"
 pollster = "0.4.0"
-rodio = { version = "0.21.1", default-features = false, features = [
-  "lewton",
-  "playback"
-] }
+rodio = { version = "0.21.1" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149" }
 wayland-protocols = "0.32.10"

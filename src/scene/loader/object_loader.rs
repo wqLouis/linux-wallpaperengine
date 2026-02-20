@@ -39,30 +39,37 @@ impl ObjectMap {
         let mut texture_map: BTreeMap<i64, Rc<RefCell<TextureObject>>> = BTreeMap::new();
         let mut audio_map: BTreeMap<i64, AudioObject> = BTreeMap::new();
 
+        println!("objects len: {:?}", objects.len());
+
         for object in objects {
             let Some(loaded_object) = load_object(object) else {
+                println!("failed to load object id: {:?}", object.id);
                 continue;
             };
             match loaded_object {
                 ObjectType::Audio(audio_object) => {
-                    audio_map.insert(object.id, audio_object).unwrap();
+                    audio_map.insert(object.id, audio_object);
                 }
                 ObjectType::Texture(texture_object) => {
-                    texture_map
-                        .insert(object.id, Rc::new(RefCell::new(texture_object)))
-                        .unwrap();
+                    texture_map.insert(object.id, Rc::new(RefCell::new(texture_object)));
                 }
             }
         }
 
-        for (_, texture) in &texture_map {
-            let mut texture = texture.borrow_mut();
+        for id in texture_map.keys().copied().collect::<Vec<i64>>() {
+            let Some(texture_rc) = texture_map.get(&id) else {
+                continue;
+            };
+
+            let mut texture = texture_rc.borrow_mut();
+
             let Some(mut parent_id) = texture.parent else {
                 continue;
             };
+
             loop {
                 let Some(parent) = texture_map.get(&parent_id) else {
-                    continue;
+                    break;
                 };
                 let parent = parent.borrow();
                 texture.angles += parent.angles;
@@ -89,18 +96,8 @@ impl ObjectMap {
 }
 
 fn load_object(object: &Object) -> Option<ObjectType> {
-    if object.sound.len() > 0 {
-        // Audio
-        let playback_mode = match object.playbackmode.clone().unwrap_or_default().as_str() {
-            "loop" => PlaybackMode::Loop,
-            _ => PlaybackMode::Others(object.playbackmode.clone().unwrap_or_default()),
-        };
-
-        return Some(ObjectType::Audio(AudioObject {
-            sounds: object.sound.to_owned(),
-            playback_mode: playback_mode,
-        }));
-    } else if object.image.is_some() {
+    println!("load object id: {:?}", object.id);
+    if object.image.is_some() {
         // Texture
 
         if object.visible.is_some() {
@@ -150,5 +147,19 @@ fn load_object(object: &Object) -> Option<ObjectType> {
             model,
         }));
     }
+
+    if object.sound.len() > 0 {
+        // Audio
+        let playback_mode = match object.playbackmode.clone().unwrap_or_default().as_str() {
+            "loop" => PlaybackMode::Loop,
+            _ => PlaybackMode::Others(object.playbackmode.clone().unwrap_or_default()),
+        };
+
+        return Some(ObjectType::Audio(AudioObject {
+            sounds: object.sound.to_owned(),
+            playback_mode: playback_mode,
+        }));
+    }
+
     None
 }

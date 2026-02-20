@@ -111,9 +111,9 @@ impl BindGroups {
 
         if diffuse_texs.len() < MAX_TEXTURE as usize {
             let mut dummy_texs: Vec<Texture> =
-                Vec::with_capacity(diffuse_texs.len() - MAX_TEXTURE as usize);
+                Vec::with_capacity(MAX_TEXTURE as usize - diffuse_texs.len());
 
-            for _ in 0..(diffuse_texs.len() - MAX_TEXTURE as usize) {
+            for _ in 0..(MAX_TEXTURE as usize - diffuse_texs.len()) {
                 let diffuse_tex = device.create_texture(&TextureDescriptor {
                     size: Extent3d {
                         width: 1,

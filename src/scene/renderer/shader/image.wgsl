@@ -14,7 +14,6 @@ fn vs_main(@location(0) pos: vec3f, @location(1) uv: vec2f, @location(2) tex_idx
     output.clip_pos = projection_matrix * vec4f(pos, 1);
     output.uv = uv;
     output.tex_idx = tex_idx;
-    output.alpha = alpha;
     return output;
 }
 

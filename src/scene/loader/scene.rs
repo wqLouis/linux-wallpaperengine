@@ -323,11 +323,19 @@ impl Vectors {
                     .map(|f| f.parse::<f32>().unwrap_or_default())
                     .collect::<Vec<f32>>();
 
-                Some(Vec3 {
-                    x: vec[0],
-                    y: vec[1],
-                    z: vec[2],
-                })
+                match vec.as_slice() {
+                    [x, y] => Some(Vec3 {
+                        x: x.clone(),
+                        y: y.clone(),
+                        z: 0.0,
+                    }),
+                    [x, y, z] => Some(Vec3 {
+                        x: x.clone(),
+                        y: y.clone(),
+                        z: z.clone(),
+                    }),
+                    _ => None,
+                }
             }
             Vectors::Object(_) => None,
         }
@@ -335,6 +343,7 @@ impl Vectors {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+#[serde(untagged)]
 pub enum BindUserProperty<T> {
     Value(T),
     Object(serde_json::Map<String, Value>),

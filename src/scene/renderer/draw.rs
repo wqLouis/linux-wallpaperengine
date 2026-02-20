@@ -39,11 +39,8 @@ impl DrawQueue {
         jsons: &BTreeMap<String, String>,
         texs: &BTreeMap<String, Rc<Tex>>,
     ) -> Option<()> {
-        self.queue.push(DrawTextureObject::from_texture_object(
-            texture_object,
-            jsons,
-            texs,
-        )?);
+        self.queue
+            .push(DrawTextureObject::from_texture_object(texture_object, jsons, texs).unwrap());
         Some(())
     }
 
@@ -62,8 +59,11 @@ impl DrawTextureObject {
     ) -> Option<Self> {
         let model = serde_json::from_str::<Model>(jsons.get(&texture_object.model)?).ok()?;
 
+        let mut material = Path::new(&model.material).to_path_buf();
+        material.set_extension("tex");
+
         Some(Self {
-            texture: Rc::clone(texs.get(&model.material)?),
+            texture: Rc::clone(texs.get(material.to_str().unwrap())?),
             origin: texture_object.origin,
             angles: texture_object.angles,
             scale: texture_object.scale,
@@ -71,8 +71,14 @@ impl DrawTextureObject {
         })
     }
 
-    fn draw(self, buffers: &mut Buffers, queue: &Queue, texture_index: u32) {
+    fn draw(mut self, buffers: &mut Buffers, queue: &Queue, texture_index: u32) {
         // consume itself and write the data into buffers
+        let scale = Vec2 {
+            x: self.scale.x,
+            y: self.scale.y,
+        };
+
+        self.size *= scale;
 
         let rotation_mat = Mat2::from_angle(self.angles.z.to_radians());
         let rotated = vec![
@@ -114,7 +120,7 @@ impl DrawTextureObject {
             },
         ];
 
-        let indices: [u16; 6] = [0, 2, 1, 0, 3, 2].map(|f| f + buffers.index_len as u16);
+        let indices: [u16; 6] = [0, 2, 1, 0, 3, 2].map(|f| f + buffers.vertex_len as u16);
 
         queue.write_buffer(
             &buffers.vertex,
