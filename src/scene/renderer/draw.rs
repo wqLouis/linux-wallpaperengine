@@ -79,6 +79,7 @@ impl DrawTextureObject {
         };
 
         self.size *= scale;
+        self.origin.z -= 1.0;
 
         let rotation_mat = Mat2::from_angle(self.angles.z.to_radians());
         let rotated = vec![

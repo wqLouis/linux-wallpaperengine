@@ -255,7 +255,7 @@ impl WgpuApp {
                 render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint16);
                 render_pass.set_bind_group(0, &self.bindgroups.texture, &[]);
                 render_pass.set_bind_group(1, &self.bindgroups.projection, &[]);
-                render_pass.draw_indexed(0..MAX_INDEX, 0, 0..1);
+                render_pass.draw_indexed(0..self.buffers.index_len, 0, 0..1);
             }
         }
 
