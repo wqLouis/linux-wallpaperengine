@@ -39,8 +39,15 @@ impl DrawQueue {
         jsons: &BTreeMap<String, String>,
         texs: &BTreeMap<String, Rc<Tex>>,
     ) -> Option<()> {
-        self.queue
-            .push(DrawTextureObject::from_texture_object(texture_object, jsons, texs).unwrap());
+        let draw_obj = DrawTextureObject::from_texture_object(texture_object, jsons, texs)?;
+
+        if draw_obj.texture.dimension[0] * draw_obj.texture.dimension[1] * 4
+            != draw_obj.texture.payload.len() as u32
+        {
+            return Some(());
+        }
+
+        self.queue.push(draw_obj);
         Some(())
     }
 
