@@ -1,12 +1,22 @@
+use std::io::Cursor;
+
 use crate::{
-    MAX_TEXTURE,
+    MAX_INDEX, MAX_TEXTURE,
     scene::{
-        loader::scene_loader::Scene,
-        renderer::{bindgroup::BindGroups, buffer::Buffers, draw::Vertex},
+        loader::{
+            object_loader::{ObjectMap, PlaybackMode},
+            scene_loader::Scene,
+        },
+        renderer::{
+            bindgroup::BindGroups,
+            buffer::Buffers,
+            draw::{DrawQueue, Vertex},
+        },
     },
 };
 
 use super::*;
+use rodio::Source;
 use wgpu::*;
 
 pub struct WgpuApp {
@@ -146,6 +156,94 @@ impl WgpuApp {
             audio_stream,
         }
     }
+
+    pub fn load(&mut self) {
+        let mut draw_queue = DrawQueue::new();
+        let object_map = ObjectMap::new(&self.scene.root.objects);
+
+        for (_, tex) in object_map.texture {
+            draw_queue.push(tex, &self.scene.jsons, &self.scene.textures);
+        }
+
+        let audio_mixer = &self.audio_stream.mixer();
+        let audio_sink = rodio::Sink::connect_new(audio_mixer);
+
+        for (_, audio) in object_map.audio {
+            for sound in audio.sounds {
+                let Some(raw) = self.scene.desc.get(&sound) else {
+                    continue;
+                };
+                let cursor = Cursor::new(raw.to_owned());
+                let Some(source) = rodio::decoder::Decoder::new(cursor).ok() else {
+                    continue;
+                };
+
+                match audio.playback_mode {
+                    PlaybackMode::Loop => {
+                        audio_mixer.add(source.repeat_infinite());
+                    }
+                    PlaybackMode::Others(_) => {}
+                }
+            }
+        }
+
+        std::thread::spawn(move || {
+            audio_sink.play();
+            audio_sink.set_volume(1.0);
+            audio_sink.sleep_until_end();
+        });
+
+        draw_queue.submit_draw_queue(&mut self.buffers, &self.queue);
+    }
+
+    pub fn render(&mut self) -> Result<(), SurfaceError> {
+        let output = self.surface.surface.get_current_texture()?;
+        let view = output
+            .texture
+            .create_view(&TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                ..Default::default()
+            });
+
+        {
+            // render pass
+            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+
+            render_pass.set_pipeline(&self.pipeline);
+            if self.buffers.index_len < 1 {
+                return Ok(());
+            }
+            render_pass.set_vertex_buffer(0, self.buffers.vertex.slice(..));
+            render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint16);
+            render_pass.set_bind_group(0, &self.bindgroups.texture, &[]);
+            render_pass.set_bind_group(1, &self.bindgroups.projection, &[]);
+            render_pass.draw_indexed(0..MAX_INDEX, 0, 0..1);
+        }
+
+        self.queue.submit(Some(encoder.finish()));
+        output.present();
+
+        Ok(())
+    }
 }
 
 impl AppSurface {
@@ -173,6 +271,4 @@ impl AppSurface {
             },
         }
     }
-
-    fn init(&self) {}
 }

@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
+use glam::Vec3;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -99,7 +101,7 @@ pub struct Object {
     pub scale: Option<Vectors>,
     pub size: Option<Vectors>,
     pub solid: Option<bool>,
-    pub visible: Option<Value>,
+    pub visible: Option<BindUserProperty<bool>>,
     pub instanceoverride: Option<Instanceoverride>,
     pub particle: Option<String>,
     pub model: Option<Value>,
@@ -307,15 +309,44 @@ impl Default for Vectors {
 }
 
 impl Vectors {
-    pub fn parse(&self) -> Option<Vec<f32>> {
+    pub fn parse(&self) -> Option<Vec3> {
         match self {
-            Vectors::Scaler(val) => Some(vec![val.to_owned() as f32]),
-            Vectors::Vectors(val) => val
-                .split_whitespace()
-                .into_iter()
-                .map(|f| f.parse::<f32>().ok())
-                .collect(),
+            Vectors::Scaler(val) => Some(Vec3 {
+                x: val.clone() as f32,
+                y: val.clone() as f32,
+                z: val.clone() as f32,
+            }),
+            Vectors::Vectors(val) => {
+                let vec = val
+                    .split_whitespace()
+                    .into_iter()
+                    .map(|f| f.parse::<f32>().unwrap_or_default())
+                    .collect::<Vec<f32>>();
+
+                Some(Vec3 {
+                    x: vec[0],
+                    y: vec[1],
+                    z: vec[2],
+                })
+            }
             Vectors::Object(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+pub enum BindUserProperty<T> {
+    Value(T),
+    Object(serde_json::Map<String, Value>),
+}
+
+impl<T: DeserializeOwned> BindUserProperty<T> {
+    pub fn value(self) -> Option<T> {
+        match self {
+            BindUserProperty::Value(val) => Some(val),
+            BindUserProperty::Object(obj) => {
+                Some(serde_json::from_value::<T>(obj.get("value")?.clone()).ok()?)
+            }
         }
     }
 }

@@ -3,15 +3,16 @@ use indicatif::ProgressBar;
 use std::{
     collections::BTreeMap,
     path::Path,
+    rc::Rc,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
 };
 
 pub struct Scene {
-    root: crate::scene::loader::scene::Root,
-    textures: BTreeMap<String, Tex>,
-    jsons: BTreeMap<String, String>,
-    desc: BTreeMap<String, Vec<u8>>,
+    pub root: crate::scene::loader::scene::Root,
+    pub textures: BTreeMap<String, Rc<Tex>>,
+    pub jsons: BTreeMap<String, String>,
+    pub desc: BTreeMap<String, Vec<u8>>,
 }
 
 impl Scene {
@@ -67,7 +68,10 @@ impl Scene {
         let root: crate::scene::loader::scene::Root = serde_json::from_str(scene_string)
             .expect(&format!("Unsupported scene.json\n{:?}", scene_string));
         let mut texs_locked = texs.lock().unwrap();
-        let texs = std::mem::take(&mut *texs_locked);
+        let texs = std::mem::take(&mut *texs_locked)
+            .into_iter()
+            .map(|(k, v)| (k, Rc::new(v)))
+            .collect::<BTreeMap<String, Rc<Tex>>>();
 
         Self {
             root,

@@ -1,10 +1,11 @@
 use std::{collections::BTreeMap, path::Path, rc::Rc};
 
+use crate::scene::loader::{model::Model, object_loader::TextureObject};
+
 use super::buffer::Buffers;
 use bytemuck::bytes_of;
 use depkg::pkg_parser::tex_parser::Tex;
 use glam::{Mat2, Vec2, Vec3};
-use serde_json::{Map, Value, from_value};
 use wgpu::*;
 
 #[repr(C)]
@@ -21,7 +22,6 @@ pub struct DrawTextureObject {
     angles: Vec3,
     scale: Vec3,
     size: Vec2,
-    alpha: f32,
 }
 
 pub struct DrawQueue {
@@ -33,8 +33,18 @@ impl DrawQueue {
         Self { queue: Vec::new() }
     }
 
-    pub fn push(&mut self, draw_texture_object: DrawTextureObject) {
-        self.queue.push(draw_texture_object);
+    pub fn push(
+        &mut self,
+        texture_object: TextureObject,
+        jsons: &BTreeMap<String, String>,
+        texs: &BTreeMap<String, Rc<Tex>>,
+    ) -> Option<()> {
+        self.queue.push(DrawTextureObject::from_texture_object(
+            texture_object,
+            jsons,
+            texs,
+        )?);
+        Some(())
     }
 
     pub fn submit_draw_queue(self, buffers: &mut Buffers, queue: &Queue) {
@@ -45,62 +55,19 @@ impl DrawQueue {
 }
 
 impl DrawTextureObject {
-    pub fn new(
-        object: &crate::scene::loader::scene::Object,
+    fn from_texture_object(
+        texture_object: TextureObject,
         jsons: &BTreeMap<String, String>,
-        textures: &BTreeMap<String, Rc<Tex>>,
+        texs: &BTreeMap<String, Rc<Tex>>,
     ) -> Option<Self> {
-        let visible =
-            from_value::<bool>((&object.visible.clone().unwrap_or(Value::Bool(true))).to_owned());
-        let visible_object = from_value::<bool>(
-            (&object
-                .visible
-                .clone()
-                .unwrap_or(Value::Bool(true))
-                .as_object()
-                .unwrap_or(&Map::default())
-                .get("value")
-                .unwrap_or(&Value::Bool(true))
-                .to_owned())
-                .to_owned(),
-        );
-
-        if !visible.unwrap_or(true) | !visible_object.unwrap_or(true) {
-            return None;
-        }
-
-        let origin = &object.origin.clone()?.parse()?;
-        let angles = &object.angles.clone().unwrap_or_default().parse()?;
-        let scale = &object.scale.clone().unwrap_or_default().parse()?;
-        let size = &object.size.clone()?.parse()?;
-        let alpha = 1.0;
-        let image = &object.image.clone()?;
-        let mut model = Path::new(jsons.get(image)?).to_path_buf();
-        model.set_extension("tex");
-        let texture = Rc::clone(textures.get(model.to_str()?)?);
+        let model = serde_json::from_str::<Model>(jsons.get(&texture_object.model)?).ok()?;
 
         Some(Self {
-            texture,
-            origin: Vec3 {
-                x: origin[0],
-                y: origin[1],
-                z: origin[2],
-            },
-            angles: Vec3 {
-                x: angles[0],
-                y: angles[1],
-                z: angles[2],
-            },
-            scale: Vec3 {
-                x: scale[0],
-                y: scale[1],
-                z: scale[2],
-            },
-            size: Vec2 {
-                x: size[0],
-                y: size[1],
-            },
-            alpha,
+            texture: Rc::clone(texs.get(&model.material)?),
+            origin: texture_object.origin,
+            angles: texture_object.angles,
+            scale: texture_object.scale,
+            size: texture_object.size,
         })
     }
 
