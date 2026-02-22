@@ -27,7 +27,7 @@ pub struct WgpuApp {
 
     bindgroups: bindgroup::BindGroups,
 
-    scene: Scene,
+    scene_path: String,
 
     device: Device,
     queue: Queue,
@@ -51,9 +51,6 @@ impl WgpuApp {
         size: [u32; 2],
     ) -> Self {
         // init basic 2d scene rendering
-
-        let scene = Scene::new(scene_path);
-
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::VULKAN | Backends::METAL,
             ..Default::default()
@@ -150,7 +147,7 @@ impl WgpuApp {
             surface,
             buffers,
             bindgroups,
-            scene,
+            scene_path,
             device,
             queue,
             pipeline,
@@ -160,11 +157,13 @@ impl WgpuApp {
     }
 
     pub fn load(&mut self) {
+        let mut scene = Scene::new(self.scene_path.clone());
+
         let mut draw_queue = DrawQueue::new();
-        let object_map = ObjectMap::new(&self.scene.root.objects);
+        let object_map = ObjectMap::new(&scene.root.objects);
 
         for tex in object_map.texture {
-            draw_queue.push(tex, &self.scene.jsons, &self.scene.textures);
+            draw_queue.push(tex, &scene.jsons, &scene.textures);
         }
 
         self.bindgroups
@@ -173,7 +172,7 @@ impl WgpuApp {
             &self.buffers,
             &self.device,
             &self.queue,
-            &Projection::new(&self.scene.root).create_camera_uniform(),
+            &Projection::new(&scene.root).create_camera_uniform(),
         );
 
         let audio_stream = &self.audio_stream;
@@ -182,11 +181,11 @@ impl WgpuApp {
 
         for audio in object_map.audio {
             for sound in audio.sounds {
-                let Some(raw) = self.scene.desc.get(&sound) else {
+                let Some(raw) = scene.desc.remove(&sound) else {
                     continue;
                 };
 
-                let cursor = Cursor::new(raw.to_owned());
+                let cursor = Cursor::new(raw);
                 let sound_pathbuf = Path::new(&sound).to_path_buf();
                 let hint = sound_pathbuf.extension().unwrap().to_str().unwrap();
                 let Some(source) = rodio::decoder::Decoder::builder()
