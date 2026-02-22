@@ -163,7 +163,7 @@ impl WgpuApp {
         let mut draw_queue = DrawQueue::new();
         let object_map = ObjectMap::new(&self.scene.root.objects);
 
-        for (_, tex) in object_map.texture {
+        for tex in object_map.texture {
             draw_queue.push(tex, &self.scene.jsons, &self.scene.textures);
         }
 
@@ -180,7 +180,7 @@ impl WgpuApp {
         let audio_mixer = audio_stream.mixer();
         let audio_sink = rodio::Sink::connect_new(audio_mixer);
 
-        for (_, audio) in object_map.audio {
+        for audio in object_map.audio {
             for sound in audio.sounds {
                 let Some(raw) = self.scene.desc.get(&sound) else {
                     continue;
@@ -255,7 +255,7 @@ impl WgpuApp {
                 render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint16);
                 render_pass.set_bind_group(0, &self.bindgroups.texture, &[]);
                 render_pass.set_bind_group(1, &self.bindgroups.projection, &[]);
-                render_pass.draw_indexed(0..self.buffers.index_len, 0, 0..1);
+                render_pass.draw_indexed(0..MAX_INDEX, 0, 0..1);
             }
         }
 

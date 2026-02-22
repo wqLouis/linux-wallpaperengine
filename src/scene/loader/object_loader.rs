@@ -20,8 +20,8 @@ pub struct AudioObject {
 }
 
 pub struct ObjectMap {
-    pub texture: BTreeMap<i64, TextureObject>,
-    pub audio: BTreeMap<i64, AudioObject>,
+    pub texture: Vec<TextureObject>,
+    pub audio: Vec<AudioObject>,
 }
 
 pub enum PlaybackMode {
@@ -36,8 +36,10 @@ pub enum ObjectType {
 
 impl ObjectMap {
     pub fn new(objects: &Vec<Object>) -> Self {
+        let mut render_sequence: Vec<i64> = vec![];
+
         let mut texture_map: BTreeMap<i64, Rc<RefCell<TextureObject>>> = BTreeMap::new();
-        let mut audio_map: BTreeMap<i64, AudioObject> = BTreeMap::new();
+        let mut audio_vec: Vec<AudioObject> = Vec::new();
 
         for object in objects {
             let Some(loaded_object) = load_object(object) else {
@@ -45,9 +47,10 @@ impl ObjectMap {
             };
             match loaded_object {
                 ObjectType::Audio(audio_object) => {
-                    audio_map.insert(object.id, audio_object);
+                    audio_vec.push(audio_object);
                 }
                 ObjectType::Texture(texture_object) => {
+                    render_sequence.push(object.id);
                     texture_map.insert(object.id, Rc::new(RefCell::new(texture_object)));
                 }
             }
@@ -80,14 +83,18 @@ impl ObjectMap {
             }
         }
 
-        let texture_map = texture_map
-            .into_iter()
-            .map(|(k, v)| (k, Rc::into_inner(v).unwrap().into_inner()))
-            .collect::<BTreeMap<i64, TextureObject>>();
+        let mut texture_vec: Vec<TextureObject> = vec![];
+
+        for id in render_sequence {
+            let Some(tex_obj) = texture_map.remove(&id) else {
+                continue;
+            };
+            texture_vec.push(Rc::into_inner(tex_obj).unwrap().into_inner());
+        }
 
         Self {
-            texture: texture_map,
-            audio: audio_map,
+            texture: texture_vec,
+            audio: audio_vec,
         }
     }
 }

@@ -80,6 +80,7 @@ impl DrawTextureObject {
 
     fn draw(mut self, buffers: &mut Buffers, queue: &Queue, texture_index: u32) {
         // consume itself and write the data into buffers
+
         let scale = Vec2 {
             x: self.scale.x,
             y: self.scale.y,
