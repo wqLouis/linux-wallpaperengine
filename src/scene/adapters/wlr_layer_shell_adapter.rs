@@ -35,14 +35,14 @@ struct WaylandSurfaceHandle {
 }
 
 impl HasWindowHandle for WaylandSurfaceHandle {
-    fn window_handle(&self) -> Result<WindowHandle, HandleError> {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         let raw = RawWindowHandle::Wayland(WaylandWindowHandle::new(self.surface));
         Ok(unsafe { WindowHandle::borrow_raw(raw) })
     }
 }
 
 impl HasDisplayHandle for WaylandSurfaceHandle {
-    fn display_handle(&self) -> Result<DisplayHandle, HandleError> {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         let raw = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(self.display));
         Ok(unsafe { DisplayHandle::borrow_raw(raw) })
     }
@@ -131,7 +131,7 @@ impl LayerShellHandler for WlrLayerShellApp {
         qh: &QueueHandle<Self>,
         _layer: &smithay_client_toolkit::shell::wlr_layer::LayerSurface,
         configure: LayerSurfaceConfigure,
-        serial: u32,
+        _serial: u32,
     ) {
         let (width, height) = configure.new_size;
 
