@@ -5,7 +5,7 @@ use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{self, EventLoop},
-    window::Window,
+    window::{Fullscreen, Window},
 };
 
 use crate::scene::renderer::render::WgpuApp;
@@ -24,8 +24,15 @@ impl ApplicationHandler for WinitApp {
             return;
         }
 
-        let window_attributes = Window::default_attributes().with_title("Linux wallpaper engine");
+        let window_attributes = Window::default_attributes()
+            .with_decorations(false)
+            .with_fullscreen(Some(Fullscreen::Borderless(None)))
+            .with_window_level(winit::window::WindowLevel::AlwaysOnBottom)
+            .with_transparent(true)
+            .with_title("Linux wallpaper engine");
+
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+
         let size = window.inner_size();
 
         let mut wgpu_app = block_on(WgpuApp::new(

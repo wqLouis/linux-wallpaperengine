@@ -6,7 +6,7 @@
 
 > **⚠️ EXPERIMENTAL SOFTWARE**
 
-This project is an attempt to bring [Wallpaper Engine](https://www.wallpaperengine.io/en) compatibility to Linux. It is written in Rust and utilizes `wgpu` with the Vulkan backend to render scenes.
+This project is an attempt to bring [Wallpaper Engine](https://www.wallpaperengine.io/en) compatibility to Linux/MacOS. It is written in Rust and utilizes `wgpu` with the Vulkan and Metal backend to render scenes.
 
 Currently, this software is **highly unstable**, under heavy development, and almost certainly not working.
 
@@ -17,13 +17,13 @@ https://github.com/user-attachments/assets/3a2a6ed8-ddf5-4f0a-8c0d-80f8fcfc4af0
 
 
 *   **Scene Parsing:** Reads and parses `.scene.pkg` files from Wallpaper Engine.
-*   **Rendering:** Hardware-accelerated rendering using **wgpu** (Vulkan backend).
+*   **Rendering:** Hardware-accelerated rendering using **wgpu** (Vulkan + Metal).
 *   **Texture Support:** Handles texture loading with automatic alignment and format conversion.
-
 ## Requirements
 
 *   **Rust** (Latest stable version)
 *   **Vulkan Drivers:** Ensure your GPU drivers support Vulkan (Mesa for AMD/Intel, proprietary drivers for Nvidia).
+*   **MacOS Support:** Didn't tested (I am broke and dont have a mac QwQ) but you can try. 
 *   **Wallpaper Engine Assets:** You must have legal access to the `.pkg` files (e.g., via a purchased copy of Wallpaper Engine on Steam).
 
 ## Installation
