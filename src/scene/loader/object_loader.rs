@@ -26,7 +26,7 @@ pub struct ObjectMap {
 
 pub enum PlaybackMode {
     Loop,
-    Others(String),
+    Others,
 }
 
 pub enum ObjectType {
@@ -155,7 +155,7 @@ fn load_object(object: &Object) -> Option<ObjectType> {
         // Audio
         let playback_mode = match object.playbackmode.clone().unwrap_or_default().as_str() {
             "loop" => PlaybackMode::Loop,
-            _ => PlaybackMode::Others(object.playbackmode.clone().unwrap_or_default()),
+            _ => PlaybackMode::Others,
         };
 
         return Some(ObjectType::Audio(AudioObject {

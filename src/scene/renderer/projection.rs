@@ -16,7 +16,7 @@ pub struct Projection {
     farz: f32,
     height: f32,
     width: f32,
-    fov: f32,
+    _fov: f32,
 }
 
 impl Projection {
@@ -42,7 +42,7 @@ impl Projection {
             height: root.general.orthogonalprojection.height as f32,
             nearz: root.general.nearz as f32,
             farz: root.general.farz as f32,
-            fov: root.general.fov as f32,
+            _fov: root.general.fov as f32,
         }
     }
 

@@ -34,7 +34,7 @@ pub struct WgpuApp {
     queue: Queue,
     pipeline: RenderPipeline,
 
-    custom_pipelines: Vec<RenderPipeline>,
+    _custom_pipelines: Vec<RenderPipeline>,
 
     audio_stream: rodio::OutputStream,
 }
@@ -153,7 +153,7 @@ impl WgpuApp {
             device,
             queue,
             pipeline,
-            custom_pipelines: Vec::new(),
+            _custom_pipelines: Vec::new(),
             audio_stream: audio_stream,
         }
     }
@@ -204,7 +204,7 @@ impl WgpuApp {
                     PlaybackMode::Loop => {
                         audio_mixer.add(source.repeat_infinite());
                     }
-                    PlaybackMode::Others(_) => {}
+                    PlaybackMode::Others => {}
                 }
             }
         }
