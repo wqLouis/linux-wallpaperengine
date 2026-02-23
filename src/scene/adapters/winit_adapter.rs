@@ -37,7 +37,7 @@ impl ApplicationHandler for WinitApp {
 
         let mut wgpu_app = block_on(WgpuApp::new(
             self.pkg_path.clone(),
-            Arc::clone(&window),
+            crate::scene::renderer::render::InitAppSurface::Winit(Arc::clone(&window)),
             [size.width, size.height],
         ));
 

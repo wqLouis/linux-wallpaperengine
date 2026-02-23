@@ -1,4 +1,4 @@
-use std::{fmt::Debug, io::Cursor, path::Path};
+use std::{fmt::Debug, io::Cursor, path::Path, sync::Arc};
 
 use crate::{
     MAX_INDEX, MAX_TEXTURE,
@@ -17,6 +17,7 @@ use crate::{
 };
 
 use super::*;
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use rodio::Source;
 use wgpu::*;
 
@@ -44,12 +45,13 @@ struct AppSurface {
     config: SurfaceConfiguration,
 }
 
+pub enum InitAppSurface {
+    Raw((RawDisplayHandle, RawWindowHandle)),
+    Winit(Arc<winit::window::Window>),
+}
+
 impl WgpuApp {
-    pub async fn new(
-        scene_path: String,
-        surface: impl Into<SurfaceTarget<'static>>,
-        size: [u32; 2],
-    ) -> Self {
+    pub async fn new(scene_path: String, surface: InitAppSurface, size: [u32; 2]) -> Self {
         // init basic 2d scene rendering
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::VULKAN | Backends::METAL,
@@ -276,24 +278,38 @@ impl WgpuApp {
 
 impl AppSurface {
     fn new(
-        surface: impl Into<SurfaceTarget<'static>>,
+        surface: InitAppSurface,
         instance: &Instance,
         adapter: &Adapter,
         size: [u32; 2],
     ) -> Self {
-        let surface = instance.create_surface(surface).unwrap();
+        let wgpu_surface: Surface<'_>;
 
-        let cap = surface.get_capabilities(adapter);
+        match surface {
+            InitAppSurface::Raw((raw_display_handle, raw_window_handle)) => unsafe {
+                wgpu_surface = instance
+                    .create_surface_unsafe(SurfaceTargetUnsafe::RawHandle {
+                        raw_display_handle,
+                        raw_window_handle,
+                    })
+                    .unwrap();
+            },
+            InitAppSurface::Winit(window) => {
+                wgpu_surface = instance.create_surface(window).unwrap();
+            }
+        }
+
+        let cap = wgpu_surface.get_capabilities(adapter);
 
         Self {
-            surface: surface,
+            surface: wgpu_surface,
             config: SurfaceConfiguration {
                 usage: TextureUsages::RENDER_ATTACHMENT,
                 format: cap.formats[0],
                 width: size[0],
                 height: size[1],
-                present_mode: PresentMode::AutoNoVsync,
-                alpha_mode: cap.alpha_modes[0],
+                present_mode: PresentMode::Mailbox,
+                alpha_mode: CompositeAlphaMode::Auto,
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,
             },

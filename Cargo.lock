@@ -1372,7 +1372,6 @@ dependencies = [
  "serde_json",
  "smithay-client-toolkit 0.20.0",
  "wayland-client",
- "wayland-protocols-wlr",
  "wgpu",
  "winit",
 ]
