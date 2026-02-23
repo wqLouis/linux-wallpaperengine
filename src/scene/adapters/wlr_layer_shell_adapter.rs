@@ -4,7 +4,6 @@ use raw_window_handle::{
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
-    delegate_xdg_shell, delegate_xdg_window,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -12,10 +11,6 @@ use smithay_client_toolkit::{
     shell::{
         WaylandSurface,
         wlr_layer::{Anchor, Layer, LayerShell, LayerShellHandler},
-        xdg::{
-            XdgShell,
-            window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
-        },
     },
 };
 use std::ptr::NonNull;
@@ -68,7 +63,6 @@ pub fn start(pkg_path: String) {
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
 
-        exit: false,
         app,
     };
 
@@ -84,7 +78,6 @@ struct Wgpu {
     seat_state: SeatState,
     output_state: OutputState,
 
-    exit: bool,
     app: WgpuApp,
 }
 
@@ -172,18 +165,18 @@ impl OutputHandler for Wgpu {
 impl LayerShellHandler for Wgpu {
     fn closed(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        layer: &smithay_client_toolkit::shell::wlr_layer::LayerSurface,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _layer: &smithay_client_toolkit::shell::wlr_layer::LayerSurface,
     ) {
     }
     fn configure(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        layer: &smithay_client_toolkit::shell::wlr_layer::LayerSurface,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _layer: &smithay_client_toolkit::shell::wlr_layer::LayerSurface,
         configure: smithay_client_toolkit::shell::wlr_layer::LayerSurfaceConfigure,
-        serial: u32,
+        _serial: u32,
     ) {
         let (new_width, new_height) = configure.new_size;
         self.app.resize([new_width, new_height]);

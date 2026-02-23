@@ -4,7 +4,7 @@ use std::path::Path;
 
 use clap::Parser;
 
-use crate::scene::adapters::wlr_layer_shell_adapter;
+use crate::scene::adapters::{winit_adapter, wlr_layer_shell_adapter};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -12,6 +12,9 @@ struct Args {
     // wallpaper .pkg file path
     #[arg(default_value = "./scene.pkg")]
     path: String,
+
+    #[arg(default_value_t = false)]
+    use_winit: bool,
 }
 
 pub const MAX_TEXTURE: u32 = 512;
@@ -27,6 +30,9 @@ fn main() {
         panic!("Path not exist or wrong file extension");
     }
 
-    wlr_layer_shell_adapter::start(args.path);
-    // winit_adapter::start(args.path);
+    if args.use_winit {
+        winit_adapter::start(args.path);
+    } else {
+        wlr_layer_shell_adapter::start(args.path);
+    }
 }
