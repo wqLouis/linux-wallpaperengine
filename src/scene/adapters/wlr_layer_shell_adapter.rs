@@ -22,7 +22,7 @@ use wayland_client::{
 
 use crate::scene::renderer::render::{InitAppSurface, WgpuApp};
 
-pub fn start(pkg_path: String) {
+pub fn start(pkg_path: String, resolution: Option<[u32; 2]>) {
     let conn = Connection::connect_to_env().unwrap();
     let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
     let qh = event_queue.handle();
@@ -40,6 +40,7 @@ pub fn start(pkg_path: String) {
         None,
     );
 
+    layer.set_exclusive_zone(-1);
     layer.set_anchor(Anchor::all());
     layer.set_size(0, 0);
 
@@ -52,11 +53,15 @@ pub fn start(pkg_path: String) {
         NonNull::new(layer.wl_surface().id().as_ptr() as *mut _).unwrap(),
     ));
 
-    let app = pollster::block_on(WgpuApp::new(
+    let mut app = pollster::block_on(WgpuApp::new(
         pkg_path,
         InitAppSurface::Raw((raw_display_handle, raw_window_handle)),
         [256, 256],
     ));
+
+    let defualt_res = app.load();
+
+    let res = resolution.unwrap_or(defualt_res);
 
     let mut wgpu = Wgpu {
         registry_state: RegistryState::new(&globals),
@@ -64,9 +69,8 @@ pub fn start(pkg_path: String) {
         output_state: OutputState::new(&globals, &qh),
 
         app,
+        resolution: res,
     };
-
-    wgpu.app.load();
 
     loop {
         event_queue.blocking_dispatch(&mut wgpu).unwrap();
@@ -79,6 +83,7 @@ struct Wgpu {
     output_state: OutputState,
 
     app: WgpuApp,
+    resolution: [u32; 2],
 }
 
 impl CompositorHandler for Wgpu {
@@ -89,7 +94,6 @@ impl CompositorHandler for Wgpu {
         _surface: &wl_surface::WlSurface,
         _new_factor: i32,
     ) {
-        // Not needed for this example.
     }
 
     fn transform_changed(
@@ -99,7 +103,6 @@ impl CompositorHandler for Wgpu {
         _surface: &wl_surface::WlSurface,
         _new_transform: wl_output::Transform,
     ) {
-        // Not needed for this example.
     }
 
     fn frame(
@@ -118,7 +121,6 @@ impl CompositorHandler for Wgpu {
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
-        // Not needed for this example.
     }
 
     fn surface_leave(
@@ -128,7 +130,6 @@ impl CompositorHandler for Wgpu {
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
-        // Not needed for this example.
     }
 }
 
@@ -174,12 +175,13 @@ impl LayerShellHandler for Wgpu {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _layer: &smithay_client_toolkit::shell::wlr_layer::LayerSurface,
+        layer: &smithay_client_toolkit::shell::wlr_layer::LayerSurface,
         configure: smithay_client_toolkit::shell::wlr_layer::LayerSurfaceConfigure,
         _serial: u32,
     ) {
         let (new_width, new_height) = configure.new_size;
-        self.app.resize([new_width, new_height]);
+        layer.set_size(new_width, new_height);
+        self.app.resize(self.resolution);
         self.app.render().unwrap();
     }
 }

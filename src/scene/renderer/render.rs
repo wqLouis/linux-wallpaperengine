@@ -158,8 +158,12 @@ impl WgpuApp {
         }
     }
 
-    pub fn load(&mut self) {
+    pub fn load(&mut self) -> [u32; 2] {
         let mut scene = Scene::new(self.scene_path.clone());
+        let size = [
+            scene.root.general.orthogonalprojection.width as u32,
+            scene.root.general.orthogonalprojection.height as u32,
+        ];
 
         let mut draw_queue = DrawQueue::new();
         let object_map = ObjectMap::new(&scene.root.objects);
@@ -216,6 +220,8 @@ impl WgpuApp {
         });
 
         draw_queue.submit_draw_queue(&mut self.buffers, &self.queue);
+
+        size
     }
 
     pub fn render(&mut self) -> Result<(), SurfaceError> {
