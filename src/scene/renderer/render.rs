@@ -17,6 +17,7 @@ use crate::{
 };
 
 use super::*;
+use glam::Vec3;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use rodio::Source;
 use wgpu::*;
@@ -29,6 +30,7 @@ pub struct WgpuApp {
     bindgroups: bindgroup::BindGroups,
 
     scene_path: String,
+    clear_color: Vec3,
 
     device: Device,
     queue: Queue,
@@ -150,6 +152,11 @@ impl WgpuApp {
             buffers,
             bindgroups,
             scene_path,
+            clear_color: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             device,
             queue,
             pipeline,
@@ -164,6 +171,8 @@ impl WgpuApp {
             scene.root.general.orthogonalprojection.width as u32,
             scene.root.general.orthogonalprojection.height as u32,
         ];
+
+        self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 
         let mut draw_queue = DrawQueue::new();
         let object_map = ObjectMap::new(&scene.root.objects);
@@ -245,9 +254,9 @@ impl WgpuApp {
                     resolve_target: None,
                     ops: Operations {
                         load: LoadOp::Clear(Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
+                            r: (self.clear_color.x / 255.0) as f64,
+                            g: (self.clear_color.y / 255.0) as f64,
+                            b: (self.clear_color.z / 255.0) as f64,
                             a: 1.0,
                         }),
                         store: StoreOp::Store,

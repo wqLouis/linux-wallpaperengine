@@ -40,10 +40,10 @@ pub fn start(pkg_path: String, resolution: Option<[u32; 2]>) {
         None,
     );
 
+    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer.set_exclusive_zone(-1);
     layer.set_anchor(Anchor::all());
     layer.set_size(0, 0);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
 
     layer.commit();
 
