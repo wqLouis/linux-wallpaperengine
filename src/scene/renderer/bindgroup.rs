@@ -10,9 +10,13 @@ use crate::{
 
 pub struct BindGroups {
     pub texture_layout: BindGroupLayout,
-    pub projection_layout: BindGroupLayout,
-
     pub texture: Option<BindGroup>,
+
+    pub projection: ProjectionBindGroups,
+}
+
+pub struct ProjectionBindGroups {
+    pub projection_layout: BindGroupLayout,
     pub projection: Option<BindGroup>,
 }
 
@@ -40,25 +44,12 @@ impl BindGroups {
             ],
         });
 
-        let projection_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("projection bindgroup layout"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let projection = ProjectionBindGroups::new(&device);
 
         Self {
             texture_layout,
-            projection_layout,
             texture: None,
-            projection: None,
+            projection: projection,
         }
     }
 
@@ -191,6 +182,29 @@ impl BindGroups {
                 ],
             }),
         );
+    }
+}
+
+impl ProjectionBindGroups {
+    pub fn new(device: &Device) -> Self {
+        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("projection bindgroup layout"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        Self {
+            projection_layout: layout,
+            projection: None,
+        }
     }
 
     pub fn create_projection_bindgroup(

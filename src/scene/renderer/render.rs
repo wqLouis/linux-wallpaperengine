@@ -28,6 +28,7 @@ pub struct WgpuApp {
     buffers: buffer::Buffers,
 
     bindgroups: bindgroup::BindGroups,
+    _video_bindgroups: Option<video_renderer::bindgroup::VideoBindGroups>,
 
     scene_path: String,
     clear_color: Vec3,
@@ -97,7 +98,10 @@ impl WgpuApp {
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&bindgroups.texture_layout, &bindgroups.projection_layout],
+            bind_group_layouts: &[
+                &bindgroups.texture_layout,
+                &bindgroups.projection.projection_layout,
+            ],
             immediate_size: 0,
         });
 
@@ -152,6 +156,7 @@ impl WgpuApp {
             surface,
             buffers,
             bindgroups,
+            _video_bindgroups: None,
             scene_path,
             clear_color: Vec3 {
                 x: 0.0,
@@ -185,7 +190,7 @@ impl WgpuApp {
 
         self.bindgroups
             .create_texture_bindgroup(&mut draw_queue, &self.device, &self.queue);
-        self.bindgroups.create_projection_bindgroup(
+        self.bindgroups.projection.create_projection_bindgroup(
             &self.buffers,
             &self.device,
             &self.queue,
@@ -272,7 +277,7 @@ impl WgpuApp {
                 render_pass.set_vertex_buffer(0, self.buffers.vertex.slice(..));
                 render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint16);
                 render_pass.set_bind_group(0, &self.bindgroups.texture, &[]);
-                render_pass.set_bind_group(1, &self.bindgroups.projection, &[]);
+                render_pass.set_bind_group(1, &self.bindgroups.projection.projection, &[]);
                 render_pass.draw_indexed(0..MAX_INDEX, 0, 0..1);
             }
         }
