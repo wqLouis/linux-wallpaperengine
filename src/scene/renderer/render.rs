@@ -37,6 +37,7 @@ pub struct WgpuApp {
     pipeline: RenderPipeline,
 
     _custom_pipelines: Vec<RenderPipeline>,
+    _custom_bindgroups: Vec<BindGroups>,
 
     audio_stream: rodio::OutputStream,
 }
@@ -161,6 +162,7 @@ impl WgpuApp {
             queue,
             pipeline,
             _custom_pipelines: Vec::new(),
+            _custom_bindgroups: Vec::new(),
             audio_stream: audio_stream,
         }
     }
