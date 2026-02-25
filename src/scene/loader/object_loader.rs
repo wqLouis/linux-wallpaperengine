@@ -24,14 +24,22 @@ pub struct ObjectMap {
     pub audio: Vec<AudioObject>,
 }
 
+struct Node {
+    origin: Vec3,
+    angles: Vec3,
+    scale: Vec3,
+    parent: Option<i64>,
+}
+
 pub enum PlaybackMode {
     Loop,
     Others,
 }
 
-pub enum ObjectType {
+enum ObjectType {
     Texture(TextureObject),
     Audio(AudioObject),
+    Node(Node),
 }
 
 impl ObjectMap {
@@ -40,6 +48,7 @@ impl ObjectMap {
 
         let mut texture_map: BTreeMap<i64, Rc<RefCell<TextureObject>>> = BTreeMap::new();
         let mut audio_vec: Vec<AudioObject> = Vec::new();
+        let mut node_map: BTreeMap<i64, Node> = BTreeMap::new();
 
         for object in objects {
             let Some(loaded_object) = load_object(object) else {
@@ -52,6 +61,9 @@ impl ObjectMap {
                 ObjectType::Texture(texture_object) => {
                     render_sequence.push(object.id);
                     texture_map.insert(object.id, Rc::new(RefCell::new(texture_object)));
+                }
+                ObjectType::Node(node) => {
+                    node_map.insert(object.id, node);
                 }
             }
         }
@@ -68,17 +80,35 @@ impl ObjectMap {
             };
 
             loop {
-                let Some(parent) = texture_map.get(&parent_id) else {
-                    break;
-                };
-                let parent = parent.borrow();
-                texture.angles += parent.angles;
-                texture.scale *= parent.scale;
-                texture.origin += parent.origin;
+                let tex_parent = texture_map.get(&parent_id);
+                let node_parent = node_map.get(&parent_id);
 
-                match parent.parent {
-                    None => break,
-                    Some(id) => parent_id = id,
+                if tex_parent.is_none() && node_parent.is_none() {
+                    break;
+                }
+
+                if tex_parent.is_some() {
+                    let parent = tex_parent.unwrap().borrow();
+                    texture.angles += parent.angles;
+                    texture.scale *= parent.scale;
+                    texture.origin += parent.origin;
+
+                    match parent.parent {
+                        None => break,
+                        Some(id) => parent_id = id,
+                    }
+                }
+
+                if node_parent.is_some() {
+                    let parent = node_parent.unwrap();
+                    texture.angles += parent.angles;
+                    texture.scale *= parent.scale;
+                    texture.origin += parent.origin;
+
+                    match parent.parent {
+                        None => break,
+                        Some(id) => parent_id = id,
+                    }
                 }
             }
         }
@@ -164,5 +194,29 @@ fn load_object(object: &Object) -> Option<ObjectType> {
         }));
     }
 
-    None
+    let origin = object
+        .origin
+        .as_ref()
+        .unwrap_or(&Vectors::default())
+        .parse()
+        .unwrap_or_default();
+    let scale = object
+        .scale
+        .as_ref()
+        .unwrap_or(&Vectors::Scaler(1.0))
+        .parse()
+        .unwrap_or_default();
+    let angles = object
+        .angles
+        .as_ref()
+        .unwrap_or(&Vectors::default())
+        .parse()
+        .unwrap_or_default();
+
+    Some(ObjectType::Node(Node {
+        origin,
+        angles,
+        scale,
+        parent: object.parent,
+    }))
 }
