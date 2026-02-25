@@ -10,7 +10,7 @@ use smithay_client_toolkit::{
     seat::{Capability, SeatHandler, SeatState},
     shell::{
         WaylandSurface,
-        wlr_layer::{Anchor, Layer, LayerShell, LayerShellHandler},
+        wlr_layer::{Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler},
     },
 };
 use std::ptr::NonNull;
@@ -43,6 +43,7 @@ pub fn start(pkg_path: String, resolution: Option<[u32; 2]>) {
     layer.set_exclusive_zone(-1);
     layer.set_anchor(Anchor::all());
     layer.set_size(0, 0);
+    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
 
     layer.commit();
 
@@ -179,8 +180,14 @@ impl LayerShellHandler for Wgpu {
         configure: smithay_client_toolkit::shell::wlr_layer::LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        let (new_width, new_height) = configure.new_size;
-        layer.set_size(new_width, new_height);
+        let (_new_width, new_height) = configure.new_size;
+        let aspect_ratio = self.resolution[0] as f32 / self.resolution[1] as f32;
+
+        layer.set_size(
+            (aspect_ratio * new_height as f32).round() as u32,
+            new_height,
+        );
+
         self.app.resize(self.resolution);
         self.app.render().unwrap();
     }
