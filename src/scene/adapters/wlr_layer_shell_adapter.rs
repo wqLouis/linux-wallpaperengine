@@ -180,13 +180,17 @@ impl LayerShellHandler for Wgpu {
         configure: smithay_client_toolkit::shell::wlr_layer::LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        let (_new_width, new_height) = configure.new_size;
+        let (new_width, new_height) = configure.new_size;
         let aspect_ratio = self.resolution[0] as f32 / self.resolution[1] as f32;
 
-        layer.set_size(
-            (aspect_ratio * new_height as f32).round() as u32,
-            new_height,
-        );
+        let caled_w = (aspect_ratio * new_height as f32).round() as u32;
+        let caled_h = (new_width as f32 / aspect_ratio).round() as u32;
+
+        if caled_w < new_width {
+            layer.set_size(new_width, caled_h);
+        } else {
+            layer.set_size(caled_w, new_height);
+        }
 
         self.app.resize(self.resolution);
         self.app.render().unwrap();
