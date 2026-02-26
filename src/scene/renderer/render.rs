@@ -8,7 +8,7 @@ use crate::{
             scene_loader::Scene,
         },
         renderer::{
-            bindgroup::BindGroups,
+            bindgroup::{BindGroups, ProjectionBindGroups},
             buffer::Buffers,
             draw::{DrawQueue, Vertex},
             projection::Projection,
@@ -29,6 +29,7 @@ pub struct WgpuApp {
 
     bindgroups: bindgroup::BindGroups,
     _video_bindgroups: Option<video_renderer::bindgroup::VideoBindGroups>,
+    projection_bindgroup: ProjectionBindGroups,
 
     scene_path: String,
     clear_color: Vec3,
@@ -90,6 +91,7 @@ impl WgpuApp {
         let surface = AppSurface::new(surface, &instance, &adapter, size);
         let buffers = Buffers::new(&device);
         let bindgroups = BindGroups::new(&device);
+        let projection_bindgroup = ProjectionBindGroups::new(&device);
 
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: None,
@@ -100,7 +102,7 @@ impl WgpuApp {
             label: None,
             bind_group_layouts: &[
                 &bindgroups.texture_layout,
-                &bindgroups.projection.projection_layout,
+                &projection_bindgroup.projection_layout,
             ],
             immediate_size: 0,
         });
@@ -157,6 +159,7 @@ impl WgpuApp {
             buffers,
             bindgroups,
             _video_bindgroups: None,
+            projection_bindgroup,
             scene_path,
             clear_color: Vec3 {
                 x: 0.0,
@@ -190,7 +193,7 @@ impl WgpuApp {
 
         self.bindgroups
             .create_texture_bindgroup(&mut draw_queue, &self.device, &self.queue);
-        self.bindgroups.projection.create_projection_bindgroup(
+        self.projection_bindgroup.create_projection_bindgroup(
             &self.buffers,
             &self.device,
             &self.queue,
@@ -277,7 +280,7 @@ impl WgpuApp {
                 render_pass.set_vertex_buffer(0, self.buffers.vertex.slice(..));
                 render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint16);
                 render_pass.set_bind_group(0, &self.bindgroups.texture, &[]);
-                render_pass.set_bind_group(1, &self.bindgroups.projection.projection, &[]);
+                render_pass.set_bind_group(1, &self.projection_bindgroup.projection, &[]);
                 render_pass.draw_indexed(0..MAX_INDEX, 0, 0..1);
             }
         }

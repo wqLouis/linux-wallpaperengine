@@ -5,12 +5,10 @@ use crate::scene::renderer::bindgroup::ProjectionBindGroups;
 pub struct VideoBindGroups {
     video_layout: BindGroupLayout,
     texture: Option<BindGroup>,
-
-    projection: ProjectionBindGroups,
 }
 
 impl VideoBindGroups {
-    fn new(device: &Device) -> VideoBindGroups {
+    pub fn new(device: &Device) -> VideoBindGroups {
         let video_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: None,
             entries: &[
@@ -32,12 +30,10 @@ impl VideoBindGroups {
                 },
             ],
         });
-        let projection = ProjectionBindGroups::new(&device);
 
         Self {
             video_layout: video_layout,
             texture: None,
-            projection: projection,
         }
     }
 }

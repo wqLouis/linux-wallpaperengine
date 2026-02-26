@@ -11,8 +11,6 @@ use crate::{
 pub struct BindGroups {
     pub texture_layout: BindGroupLayout,
     pub texture: Option<BindGroup>,
-
-    pub projection: ProjectionBindGroups,
 }
 
 pub struct ProjectionBindGroups {
@@ -44,12 +42,9 @@ impl BindGroups {
             ],
         });
 
-        let projection = ProjectionBindGroups::new(&device);
-
         Self {
             texture_layout,
             texture: None,
-            projection: projection,
         }
     }
 
