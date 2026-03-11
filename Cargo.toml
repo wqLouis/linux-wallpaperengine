@@ -23,5 +23,7 @@ winit = "0.30.12"
 
 [profile.release]
 debug = false
+strip = true
 lto = "thin"
+panic = "abort"
 codegen-units = 1
