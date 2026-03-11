@@ -26,5 +26,5 @@ build() {
 
 package() {
     cd "$srcdir/$pkgname"
-    install -Dm0755 "target/debug/${pkgname}" "${pkgdir}/usr/bin/${pkgname}"
+    install -Dm0755 "target/release/${pkgname}" "${pkgdir}/usr/bin/${pkgname}"
 }
