@@ -9,7 +9,7 @@ bytemuck = "1.25.0"
 calloop = "0.14.4"
 clap = { version = "4.5.58", features = ["derive"] }
 depkg = "1.1.1"
-ffmpeg-next = "8.0.0"
+ffmpeg-sys-next = "8.0.1"
 glam = "0.31.0"
 indicatif = "0.18.3"
 pollster = "0.4.0"
