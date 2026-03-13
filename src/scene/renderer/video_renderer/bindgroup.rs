@@ -1,6 +1,6 @@
-use wgpu::*;
+use std::rc::Rc;
 
-use crate::scene::renderer::bindgroup::ProjectionBindGroups;
+use wgpu::*;
 
 pub struct VideoBindGroups {
     video_layout: BindGroupLayout,
@@ -8,7 +8,7 @@ pub struct VideoBindGroups {
 }
 
 impl VideoBindGroups {
-    pub fn new(device: &Device) -> VideoBindGroups {
+    pub fn new(device: &Device) -> Self {
         let video_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: None,
             entries: &[
@@ -36,4 +36,6 @@ impl VideoBindGroups {
             texture: None,
         }
     }
+
+    pub async fn play_video(video: Rc<Vec<u8>>) {}
 }
