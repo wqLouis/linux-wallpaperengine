@@ -1,4 +1,4 @@
-use std::{fmt::Debug, io::Cursor, path::Path, sync::Arc};
+use std::{fmt::Debug, fs, io::Cursor, path::Path, sync::Arc};
 
 use crate::{
     MAX_INDEX, MAX_TEXTURE,

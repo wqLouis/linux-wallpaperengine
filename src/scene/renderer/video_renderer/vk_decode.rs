@@ -1,14 +1,13 @@
-use std::{mem, ops::Deref, rc::Rc};
 use vk_video::WgpuTexturesDecoder;
 use wgpu::*;
 
 pub struct VkVideoDecoder {
-    video: Rc<Vec<u8>>,
+    video: Vec<u8>,
     decoder: WgpuTexturesDecoder,
 }
 
 impl VkVideoDecoder {
-    pub fn new(video: Rc<Vec<u8>>, device: &Device, surface: &Surface) -> Self {
+    pub fn new(video: Vec<u8>, surface: &Surface) -> Self {
         let instance = vk_video::VulkanInstance::new().unwrap();
         let adapter = instance.create_adapter(Some(surface)).unwrap();
         let device = adapter

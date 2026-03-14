@@ -7,6 +7,14 @@ struct BufReaderffmpeg {
     pos: usize,
 }
 
+pub struct Video {
+    pub res: [i32; 2],
+    pub duration: i64,
+    pub fps: f32,
+
+    pub payload: Vec<u8>,
+}
+
 unsafe extern "C" fn read_callback(opague: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
     // copy the data to ffmpeg buffer with size
 
@@ -55,7 +63,7 @@ unsafe extern "C" fn seek_callback(opague: *mut c_void, offset: i64, whence: c_i
 }
 
 /// decode mp4 container to raw h264 byte stream
-pub fn decode_to_h264(container: Vec<u8>) -> Result<Vec<u8>, &'static str> {
+pub fn decode_to_h264(container: Vec<u8>) -> Result<Video, &'static str> {
     unsafe {
         let mut clean = Vec::<CleanUp>::with_capacity(4);
 
@@ -135,6 +143,13 @@ pub fn decode_to_h264(container: Vec<u8>) -> Result<Vec<u8>, &'static str> {
             return Err("No video found");
         }
 
+        let video_stream = *(*fmt_ctx).streams.add(video_stream_idx as usize);
+        let fps =
+            (*video_stream).avg_frame_rate.num as f32 / (*video_stream).avg_frame_rate.den as f32;
+        let duration = (*video_stream).duration;
+        let codecpar = *(*video_stream).codecpar;
+        let res = [codecpar.width, codecpar.height];
+
         let mut output: Vec<u8> = vec![];
         let pkt: *mut AVPacket = ptr::null_mut();
         av_init_packet(pkt);
@@ -161,7 +176,13 @@ pub fn decode_to_h264(container: Vec<u8>) -> Result<Vec<u8>, &'static str> {
         }
 
         clean_up(clean);
-        Ok(output)
+        drop(reader);
+        Ok(Video {
+            res,
+            duration,
+            fps,
+            payload: output,
+        })
     }
 }
 
