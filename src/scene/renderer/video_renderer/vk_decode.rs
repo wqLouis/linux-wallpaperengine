@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{mem, ops::Deref, rc::Rc};
 use vk_video::WgpuTexturesDecoder;
 use wgpu::*;
 

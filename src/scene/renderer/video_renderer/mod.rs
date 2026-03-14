@@ -1,3 +1,3 @@
 pub mod bindgroup;
-pub mod ffmpeg_decode;
-pub mod vk_decode;
+mod ffmpeg_decode;
+mod vk_decode;
