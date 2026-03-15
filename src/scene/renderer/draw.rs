@@ -44,7 +44,7 @@ impl DrawQueue {
         if draw_obj.texture.dimension[0] * draw_obj.texture.dimension[1] * 4
             != draw_obj.texture.payload.len() as u32
         {
-            return Some(());
+            return None;
         }
 
         self.queue.push(draw_obj);

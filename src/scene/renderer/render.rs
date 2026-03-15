@@ -28,7 +28,6 @@ pub struct WgpuApp {
     buffers: buffer::Buffers,
 
     bindgroups: bindgroup::BindGroups,
-    _video_bindgroups: Option<video_renderer::bindgroup::VideoBindGroups>,
     projection_bindgroup: ProjectionBindGroups,
 
     scene_path: String,
@@ -37,9 +36,6 @@ pub struct WgpuApp {
     device: Device,
     queue: Queue,
     pipeline: RenderPipeline,
-
-    _custom_pipelines: Vec<RenderPipeline>,
-    _custom_bindgroups: Vec<BindGroups>,
 
     audio_stream: rodio::OutputStream,
 }
@@ -158,7 +154,6 @@ impl WgpuApp {
             surface,
             buffers,
             bindgroups,
-            _video_bindgroups: None,
             projection_bindgroup,
             scene_path,
             clear_color: Vec3 {
@@ -169,8 +164,6 @@ impl WgpuApp {
             device,
             queue,
             pipeline,
-            _custom_pipelines: Vec::new(),
-            _custom_bindgroups: Vec::new(),
             audio_stream: audio_stream,
         }
     }

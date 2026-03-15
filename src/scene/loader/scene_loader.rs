@@ -11,7 +11,6 @@ use std::{
 pub struct Scene {
     pub root: crate::scene::loader::scene::Root,
     pub textures: BTreeMap<String, Rc<Tex>>,
-    pub videos_textures: BTreeMap<String, Rc<Tex>>,
     pub jsons: BTreeMap<String, String>,
     pub desc: BTreeMap<String, Vec<u8>>,
 }
@@ -22,7 +21,6 @@ impl Scene {
         let pkg = Pkg::new(path);
 
         let texs: Arc<Mutex<BTreeMap<String, Tex>>> = Arc::new(Mutex::new(BTreeMap::new()));
-        let videos: Arc<Mutex<BTreeMap<String, Tex>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let mut jsons: BTreeMap<String, String> = BTreeMap::new();
         let mut desc: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
@@ -35,15 +33,9 @@ impl Scene {
                 "tex" => {
                     let key = key.clone();
                     let texs = Arc::clone(&texs);
-                    let videos = Arc::clone(&videos);
 
                     let handle = thread::spawn(move || {
                         let mut tex = Tex::new(&val).unwrap();
-
-                        if tex.extension == "mp4" {
-                            videos.lock().unwrap().insert(key, tex);
-                            return;
-                        }
 
                         match tex.parse_to_rgba() {
                             Some(_) => {}
@@ -81,17 +73,11 @@ impl Scene {
             .into_iter()
             .map(|(k, v)| (k, Rc::new(v)))
             .collect::<BTreeMap<String, Rc<Tex>>>();
-        let mut videos_locked = videos.lock().unwrap();
-        let videos = std::mem::take(&mut *videos_locked)
-            .into_iter()
-            .map(|(k, v)| (k, Rc::new(v)))
-            .collect::<BTreeMap<String, Rc<Tex>>>();
 
         Self {
             root,
             jsons,
             textures: texs,
-            videos_textures: videos,
             desc,
         }
     }
