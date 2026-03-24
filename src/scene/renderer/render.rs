@@ -1,4 +1,4 @@
-use std::{fmt::Debug, fs, io::Cursor, path::Path, sync::Arc};
+use std::{fmt::Debug, io::Cursor, path::Path, sync::Arc};
 
 use crate::{
     MAX_INDEX, MAX_TEXTURE,
@@ -8,10 +8,10 @@ use crate::{
             scene_loader::Scene,
         },
         renderer::{
-            bindgroup::{BindGroups, ProjectionBindGroups},
+            bindgroup::BindGroups,
             buffer::Buffers,
-            draw::{DrawQueue, Vertex},
-            projection::Projection,
+            draw::{DrawObject, Vertex},
+            projection::{Projection, ProjectionBindGroups},
         },
     },
 };
@@ -177,15 +177,9 @@ impl WgpuApp {
 
         self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 
-        let mut draw_queue = DrawQueue::new();
-        let object_map = ObjectMap::new(&scene.root.objects);
+        let mut draw_queue = Vec::<DrawObject>::new();
+        let object_map = ObjectMap::new(&scene.root.objects.clone(), &scene);
 
-        for tex in object_map.texture {
-            draw_queue.push(tex, &scene.jsons, &scene.textures);
-        }
-
-        self.bindgroups
-            .create_texture_bindgroup(&mut draw_queue, &self.device, &self.queue);
         self.projection_bindgroup.create_projection_bindgroup(
             &self.buffers,
             &self.device,
@@ -230,8 +224,6 @@ impl WgpuApp {
             audio_sink.set_volume(1.0);
             audio_sink.sleep_until_end();
         });
-
-        draw_queue.submit_draw_queue(&mut self.buffers, &self.queue);
 
         size
     }

@@ -1,6 +1,7 @@
+use crate::scene::{loader::scene::Root, renderer::buffer::Buffers};
+use bytemuck::bytes_of;
 use glam::{Mat4, Vec3};
-
-use crate::scene::loader::scene::Root;
+use wgpu::*;
 
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
@@ -17,6 +18,53 @@ pub struct Projection {
     height: f32,
     width: f32,
     _fov: f32,
+}
+
+pub struct ProjectionBindGroups {
+    pub projection_layout: BindGroupLayout,
+    pub projection: Option<BindGroup>,
+}
+
+impl ProjectionBindGroups {
+    pub fn new(device: &Device) -> Self {
+        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("projection bindgroup layout"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        Self {
+            projection_layout: layout,
+            projection: None,
+        }
+    }
+
+    pub fn create_projection_bindgroup(
+        &mut self,
+        buffers: &Buffers,
+        device: &Device,
+        queue: &Queue,
+        camera_uniform: &CameraUniform,
+    ) {
+        self.projection = Some(device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &self.projection_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: buffers.projection.as_entire_binding(),
+            }],
+        }));
+
+        queue.write_buffer(&buffers.projection, 0, bytes_of(camera_uniform));
+    }
 }
 
 impl Projection {
