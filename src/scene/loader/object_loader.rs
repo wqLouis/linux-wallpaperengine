@@ -1,17 +1,21 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
+use depkg::pkg_parser::tex_parser::Tex;
 use glam::{Vec2, Vec3};
 
-use crate::scene::loader::scene::{Object, Vectors};
+use crate::scene::loader::{
+    scene::{Effect, Object, Vectors},
+    scene_loader::Scene,
+};
 
-#[derive(Default)]
 pub struct TextureObject {
+    pub texture: Rc<Tex>,
     pub origin: Vec3,
     pub angles: Vec3,
     pub size: Vec2,
     pub scale: Vec3,
     pub parent: Option<i64>,
-    pub model: String,
+    pub effects: Vec<Effect>,
 }
 
 pub struct AudioObject {
@@ -43,7 +47,7 @@ enum ObjectType {
 }
 
 impl ObjectMap {
-    pub fn new(objects: &Vec<Object>) -> Self {
+    pub fn new(objects: &Vec<Object>, scene: &Scene) -> Self {
         let mut render_sequence: Vec<i64> = vec![];
 
         let mut texture_map: BTreeMap<i64, Rc<RefCell<TextureObject>>> = BTreeMap::new();
@@ -51,7 +55,7 @@ impl ObjectMap {
         let mut node_map: BTreeMap<i64, Node> = BTreeMap::new();
 
         for object in objects {
-            let Some(loaded_object) = load_object(object) else {
+            let Some(loaded_object) = load_object(object, &scene) else {
                 continue;
             };
             match loaded_object {
@@ -130,7 +134,7 @@ impl ObjectMap {
     }
 }
 
-fn load_object(object: &Object) -> Option<ObjectType> {
+fn load_object(object: &Object, scene: &Scene) -> Option<ObjectType> {
     if object.image.is_some() {
         // Texture
 
@@ -178,7 +182,8 @@ fn load_object(object: &Object) -> Option<ObjectType> {
             size,
             scale,
             parent: object.parent,
-            model,
+            texture: Rc::clone(scene.textures.get(&model)?),
+            effects: object.effects.clone(),
         }));
     }
 
