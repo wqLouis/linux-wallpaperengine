@@ -1,4 +1,8 @@
+use std::rc::Rc;
+
 use wgpu::*;
+
+use crate::scene::loader::object_loader::TextureObject;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
@@ -7,7 +11,22 @@ pub struct Vertex {
     uv: [f32; 2],
 }
 
-pub struct DrawObject {}
+pub struct DrawObject {
+    pub texture_object: TextureObject,
+    pub index_len: u32,
+    pub bindgroup: BindGroup,
+    pub pipeline: Rc<RenderPipeline>,
+}
+
+impl DrawObject {
+    pub fn new(
+        device: &Device,
+        texture_object: TextureObject,
+        render_pipeline: Rc<RenderPipeline>,
+    ) {
+        let index_len: u32 = 6;
+    }
+}
 
 impl Vertex {
     pub fn create_buffer_layout<'a>() -> VertexBufferLayout<'a> {

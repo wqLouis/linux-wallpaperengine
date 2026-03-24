@@ -52,8 +52,8 @@ pub enum InitAppSurface {
 }
 
 impl WgpuApp {
+    /// init basic 2d scene rendering
     pub async fn new(scene_path: String, surface: InitAppSurface, size: [u32; 2]) -> Self {
-        // init basic 2d scene rendering
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::VULKAN | Backends::METAL,
             ..Default::default()
@@ -168,6 +168,7 @@ impl WgpuApp {
         }
     }
 
+    /// load assets
     pub fn load(&mut self) -> [u32; 2] {
         let mut scene = Scene::new(self.scene_path.clone());
         let size = [
