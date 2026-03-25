@@ -10,7 +10,7 @@ use crate::{
         renderer::{
             bindgroup::BindGroups,
             buffer::Buffers,
-            draw::{DrawObject, Vertex},
+            draw::{DrawQueue, Vertex},
             projection::{Projection, ProjectionBindGroups},
         },
     },
@@ -178,8 +178,8 @@ impl WgpuApp {
 
         self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 
-        let mut draw_queue = Vec::<DrawObject>::new();
         let object_map = ObjectMap::new(&scene.root.objects.clone(), &scene);
+        let draw_queue = DrawQueue::new(&self.device, &self.queue, object_map.texture);
 
         self.projection_bindgroup.create_projection_bindgroup(
             &self.buffers,
