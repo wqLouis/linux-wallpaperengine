@@ -20,7 +20,7 @@ use wayland_client::{
     protocol::{wl_output, wl_seat, wl_surface},
 };
 
-use crate::scene::renderer::render::{InitAppSurface, WgpuApp};
+use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
 
 pub fn start(pkg_path: String, resolution: Option<[u32; 2]>) {
     let conn = Connection::connect_to_env().unwrap();
@@ -60,9 +60,9 @@ pub fn start(pkg_path: String, resolution: Option<[u32; 2]>) {
         [256, 256],
     ));
 
-    let defualt_res = app.load();
+    app.load();
 
-    let res = resolution.unwrap_or(defualt_res);
+    let res = resolution.unwrap_or(app.resolution.expect("Unknown resolution"));
 
     let mut wgpu = Wgpu {
         registry_state: RegistryState::new(&globals),

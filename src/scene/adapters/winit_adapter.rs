@@ -8,7 +8,7 @@ use winit::{
     window::{Fullscreen, Window},
 };
 
-use crate::scene::renderer::render::WgpuApp;
+use crate::scene::renderer::app::WgpuApp;
 
 #[derive(Default)]
 struct WinitApp {
@@ -37,7 +37,7 @@ impl ApplicationHandler for WinitApp {
 
         let mut wgpu_app = block_on(WgpuApp::new(
             self.pkg_path.clone(),
-            crate::scene::renderer::render::InitAppSurface::Winit(Arc::clone(&window)),
+            crate::scene::renderer::app::InitAppSurface::Winit(Arc::clone(&window)),
             [size.width, size.height],
         ));
 

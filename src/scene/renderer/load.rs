@@ -6,10 +6,10 @@ use crate::scene::{
         scene_loader::Scene,
     },
     renderer::{
+        app::WgpuApp,
         bindgroups::TextureBindGroups,
         draw::{DrawQueue, Vertex},
         projection::Projection,
-        render::WgpuApp,
     },
 };
 
@@ -19,7 +19,7 @@ use rodio::{OutputStream, Source};
 
 impl WgpuApp {
     /// load assets
-    pub fn load(&mut self) -> [u32; 2] {
+    pub fn load(&mut self) {
         let mut scene = Scene::new(self.scene_path.clone());
         let size = [
             scene.root.general.orthogonalprojection.width as u32,
@@ -45,7 +45,7 @@ impl WgpuApp {
             &Projection::new(&scene.root).create_camera_uniform(),
         );
 
-        size
+        self.resolution = Some(size);
     }
 }
 

@@ -26,6 +26,7 @@ pub struct WgpuApp {
     pub audio_stream: rodio::OutputStream,
 
     pub draw_queue: Option<DrawQueue>,
+    pub resolution: Option<[u32; 2]>,
 }
 
 #[derive(Debug)]
@@ -92,6 +93,7 @@ impl WgpuApp {
             queue,
             audio_stream: audio_stream,
             draw_queue: None,
+            resolution: None,
         }
     }
 

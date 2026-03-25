@@ -9,6 +9,8 @@ pub struct Buffers {
 
     pub vertex_len: u32,
     pub index_len: u32,
+
+    pub index_ptr: u32,
 }
 
 impl Buffers {
@@ -38,6 +40,7 @@ impl Buffers {
             projection,
             vertex_len: 0,
             index_len: 0,
+            index_ptr: 0,
         }
     }
 }
