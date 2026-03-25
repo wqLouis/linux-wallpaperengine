@@ -1,49 +1,35 @@
-use std::{fmt::Debug, io::Cursor, path::Path, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 use crate::{
-    MAX_INDEX, MAX_TEXTURE,
-    scene::{
-        loader::{
-            object_loader::{ObjectMap, PlaybackMode},
-            scene_loader::Scene,
-        },
-        renderer::{
-            bindgroup::BindGroups,
-            buffer::Buffers,
-            draw::{DrawQueue, Vertex},
-            projection::{Projection, ProjectionBindGroups},
-        },
-    },
+    MAX_TEXTURE,
+    scene::renderer::{buffer::Buffers, projection::ProjectionBindGroups},
 };
 
 use super::*;
 use glam::Vec3;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-use rodio::Source;
 use wgpu::*;
 
 pub struct WgpuApp {
-    surface: AppSurface,
+    pub surface: AppSurface,
 
-    buffers: buffer::Buffers,
+    pub buffers: buffer::Buffers,
 
-    bindgroups: bindgroup::BindGroups,
-    projection_bindgroup: ProjectionBindGroups,
+    pub projection_bindgroup: ProjectionBindGroups,
 
-    scene_path: String,
-    clear_color: Vec3,
+    pub scene_path: String,
+    pub clear_color: Vec3,
 
-    device: Device,
-    queue: Queue,
-    pipeline: RenderPipeline,
+    pub device: Device,
+    pub queue: Queue,
 
-    audio_stream: rodio::OutputStream,
+    pub audio_stream: rodio::OutputStream,
 }
 
 #[derive(Debug)]
-struct AppSurface {
-    surface: Surface<'static>,
-    config: SurfaceConfiguration,
+pub struct AppSurface {
+    pub surface: Surface<'static>,
+    pub config: SurfaceConfiguration,
 }
 
 pub enum InitAppSurface {
@@ -86,74 +72,13 @@ impl WgpuApp {
 
         let surface = AppSurface::new(surface, &instance, &adapter, size);
         let buffers = Buffers::new(&device);
-        let bindgroups = BindGroups::new(&device);
         let projection_bindgroup = ProjectionBindGroups::new(&device);
-
-        let shader = device.create_shader_module(ShaderModuleDescriptor {
-            label: None,
-            source: ShaderSource::Wgsl(include_str!("./shader/image.wgsl").into()),
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[
-                &bindgroups.texture_layout,
-                &projection_bindgroup.projection_layout,
-            ],
-            immediate_size: 0,
-        });
-
-        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&pipeline_layout),
-            vertex: VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Vertex::create_buffer_layout()],
-            },
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: FrontFace::Ccw,
-                cull_mode: Some(Face::Back),
-                unclipped_depth: false,
-                polygon_mode: PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            fragment: Some(FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(ColorTargetState {
-                    format: surface.config.format,
-                    blend: Some(BlendState {
-                        color: BlendComponent {
-                            src_factor: BlendFactor::SrcAlpha,
-                            dst_factor: BlendFactor::OneMinusSrcAlpha,
-                            operation: BlendOperation::Add,
-                        },
-                        alpha: BlendComponent::OVER,
-                    }),
-                    write_mask: ColorWrites::all(),
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
 
         let audio_stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
 
         Self {
             surface,
             buffers,
-            bindgroups,
             projection_bindgroup,
             scene_path,
             clear_color: Vec3 {
@@ -163,70 +88,8 @@ impl WgpuApp {
             },
             device,
             queue,
-            pipeline,
             audio_stream: audio_stream,
         }
-    }
-
-    /// load assets
-    pub fn load(&mut self) -> [u32; 2] {
-        let mut scene = Scene::new(self.scene_path.clone());
-        let size = [
-            scene.root.general.orthogonalprojection.width as u32,
-            scene.root.general.orthogonalprojection.height as u32,
-        ];
-
-        self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
-
-        let object_map = ObjectMap::new(&scene.root.objects.clone(), &scene);
-        let draw_queue = DrawQueue::new(&self.device, &self.queue, object_map.texture);
-
-        self.projection_bindgroup.create_projection_bindgroup(
-            &self.buffers,
-            &self.device,
-            &self.queue,
-            &Projection::new(&scene.root).create_camera_uniform(),
-        );
-
-        let audio_stream = &self.audio_stream;
-        let audio_mixer = audio_stream.mixer();
-        let audio_sink = rodio::Sink::connect_new(audio_mixer);
-
-        for audio in object_map.audio {
-            for sound in audio.sounds {
-                let Some(raw) = scene.desc.remove(&sound) else {
-                    continue;
-                };
-
-                let cursor = Cursor::new(raw);
-                let sound_pathbuf = Path::new(&sound).to_path_buf();
-                let hint = sound_pathbuf.extension().unwrap().to_str().unwrap();
-                let Some(source) = rodio::decoder::Decoder::builder()
-                    .with_data(cursor)
-                    .with_hint(hint)
-                    .build()
-                    .ok()
-                else {
-                    println!("failed to build audio: {:?} with hint: {:?}", sound, hint);
-                    continue;
-                };
-
-                match audio.playback_mode {
-                    PlaybackMode::Loop => {
-                        audio_mixer.add(source.repeat_infinite());
-                    }
-                    PlaybackMode::Others => {}
-                }
-            }
-        }
-
-        std::thread::spawn(move || {
-            audio_sink.play();
-            audio_sink.set_volume(1.0);
-            audio_sink.sleep_until_end();
-        });
-
-        size
     }
 
     pub fn render(&mut self) -> Result<(), SurfaceError> {
@@ -260,15 +123,6 @@ impl WgpuApp {
                 })],
                 ..Default::default()
             });
-
-            render_pass.set_pipeline(&self.pipeline);
-            if self.buffers.index_len > 0 {
-                render_pass.set_vertex_buffer(0, self.buffers.vertex.slice(..));
-                render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint16);
-                render_pass.set_bind_group(0, &self.bindgroups.texture, &[]);
-                render_pass.set_bind_group(1, &self.projection_bindgroup.projection, &[]);
-                render_pass.draw_indexed(0..MAX_INDEX, 0, 0..1);
-            }
         }
 
         self.queue.submit(Some(encoder.finish()));

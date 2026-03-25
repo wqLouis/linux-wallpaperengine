@@ -9,7 +9,6 @@ bytemuck = "1.25.0"
 calloop = "0.14.4"
 clap = { version = "4.5.58", features = ["derive"] }
 depkg = "1.1.1"
-ffmpeg-sys-next = "8.0.1"
 glam = "0.31.0"
 indicatif = "0.18.3"
 pollster = "0.4.0"
@@ -18,7 +17,6 @@ rodio = { version = "0.21.1" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149" }
 smithay-client-toolkit = "0.20.0"
-vk-video = "0.2.1"
 wayland-client = "0.31.12"
 wgpu = "28.0.0"
 winit = "0.30.12"
