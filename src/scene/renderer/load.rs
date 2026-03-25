@@ -31,10 +31,12 @@ impl WgpuApp {
         self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 
         let pipeline = create_pipeline(&self, &bindgroups.layout);
-        let object_map = ObjectMap::new(&scene.root.objects.clone(), &scene);
-        let draw_queue = DrawQueue::new(&self.device, &self.queue, object_map.texture, pipeline);
+        let objects = ObjectMap::new(&scene.root.objects.clone(), &scene);
+        let draw_queue = DrawQueue::new(&self.device, &self.queue, objects.texture, pipeline);
 
-        load_audios(&self.audio_stream, object_map.audio, &mut scene);
+        load_audios(&self.audio_stream, objects.audio, &mut scene);
+
+        self.draw_queue = Some(draw_queue);
 
         self.projection_bindgroup.create_projection_bindgroup(
             &self.buffers,
@@ -86,6 +88,7 @@ fn load_audios(audio_stream: &OutputStream, audios: Vec<AudioObject>, scene: &mu
     });
 }
 
+/// Create default rendering pipeline
 fn create_pipeline(app: &WgpuApp, bindgroup_layout: &BindGroupLayout) -> RenderPipeline {
     let shader = app.device.create_shader_module(ShaderModuleDescriptor {
         label: None,

@@ -8,6 +8,7 @@ use crate::scene::loader::{
     scene_loader::Scene,
 };
 
+#[derive(Debug, Clone)]
 pub struct TextureObject {
     pub texture: Rc<Tex>,
     pub origin: Vec3,

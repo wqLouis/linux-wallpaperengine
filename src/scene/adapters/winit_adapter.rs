@@ -60,10 +60,7 @@ impl ApplicationHandler for WinitApp {
                 let app = app.as_mut().unwrap();
                 self.window.as_ref().unwrap().pre_present_notify();
 
-                match app.render() {
-                    Ok(_) => {}
-                    Err(e) => eprintln!("{:?}", e),
-                }
+                app.render();
             }
             WindowEvent::Resized(physical_size) => {
                 let app = app.as_mut().unwrap();

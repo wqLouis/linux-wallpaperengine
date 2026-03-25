@@ -11,16 +11,20 @@ pub struct Vertex {
     uv: [f32; 2],
 }
 
-struct DrawObject {
+#[derive(Debug, Clone)]
+pub struct DrawObject {
     pub texture_object: TextureObject,
     pub index_len: u32,
     pub bindgroup: BindGroup,
     pub pipelines: Vec<String>,
 }
 
+/// Contains the queue and the rendering pipelines
+/// queue: The draw queue
+/// render_pipelines: The pipelines for spiecial effects and with the effects file name as key
 pub struct DrawQueue {
-    queue: Vec<DrawObject>,
-    render_pipelines: BTreeMap<String, Rc<RenderPipeline>>,
+    pub queue: Rc<Vec<DrawObject>>,
+    pub render_pipelines: BTreeMap<String, Rc<RenderPipeline>>,
 }
 
 impl DrawQueue {
@@ -58,10 +62,10 @@ impl DrawQueue {
 
         let mut render_pipelines = BTreeMap::<String, Rc<RenderPipeline>>::new();
 
-        render_pipelines.insert("FALLBACK".to_string(), Rc::new(fallback_pipeline));
+        render_pipelines.insert("FALLBACK".to_string(), Rc::new(fallback_pipeline)); // FALLBACK is the render pipeline for materials that has no custom effects which renders as a simple image
 
         Self {
-            queue: draw_objects,
+            queue: Rc::new(draw_objects),
             render_pipelines,
         }
     }
@@ -77,11 +81,15 @@ impl DrawObject {
     ) -> Self {
         let index_len: u32 = 6;
 
-        let pipelines = texture_object
+        let mut pipelines = texture_object
             .effects
             .iter()
             .map(|effect| effect.file.clone())
             .collect::<Vec<String>>();
+
+        if pipelines.len() == 0 {
+            pipelines.push("FALLBACK".to_string());
+        }
 
         let bindgroup =
             texture_bindgroup.get_bindgroup(device, queue, &texture_object, texture_sampler);

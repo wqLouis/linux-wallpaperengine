@@ -1,8 +1,8 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, rc::Rc, sync::Arc};
 
 use crate::{
     MAX_TEXTURE,
-    scene::renderer::{buffer::Buffers, projection::ProjectionBindGroups},
+    scene::renderer::{buffer::Buffers, draw::DrawQueue, projection::ProjectionBindGroups},
 };
 
 use super::*;
@@ -24,6 +24,8 @@ pub struct WgpuApp {
     pub queue: Queue,
 
     pub audio_stream: rodio::OutputStream,
+
+    pub draw_queue: Option<DrawQueue>,
 }
 
 #[derive(Debug)]
@@ -89,11 +91,12 @@ impl WgpuApp {
             device,
             queue,
             audio_stream: audio_stream,
+            draw_queue: None,
         }
     }
 
-    pub fn render(&mut self) -> Result<(), SurfaceError> {
-        let output = self.surface.surface.get_current_texture()?;
+    pub fn render(&mut self) -> Option<()> {
+        let output = self.surface.surface.get_current_texture().ok()?;
         let view = output
             .texture
             .create_view(&TextureViewDescriptor::default());
@@ -123,12 +126,29 @@ impl WgpuApp {
                 })],
                 ..Default::default()
             });
+
+            let Some(draw_queue) = &self.draw_queue else {
+                return None;
+            };
+
+            let mut current_ptr: u32 = 0;
+
+            render_pass.set_vertex_buffer(0, self.buffers.vertex.slice(..));
+            render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint32);
+
+            for draw_object in draw_queue.queue.iter() {
+                let pipelines: Vec<&Rc<RenderPipeline>> = draw_object
+                    .pipelines
+                    .iter()
+                    .filter_map(|pipeline_name| draw_queue.render_pipelines.get(pipeline_name))
+                    .collect();
+            }
         }
 
         self.queue.submit(Some(encoder.finish()));
         output.present();
 
-        Ok(())
+        Some(())
     }
 
     pub fn resize(&mut self, size: [u32; 2]) {
