@@ -104,7 +104,6 @@ impl WgpuApp {
     }
 
     pub fn render(&mut self) -> Option<()> {
-        println!("Render");
         let output = self.surface.surface.get_current_texture().unwrap();
         let view = output
             .texture
@@ -116,8 +115,6 @@ impl WgpuApp {
             });
 
         {
-            println!("Create Render pass");
-
             // render pass
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None,
@@ -139,7 +136,6 @@ impl WgpuApp {
             });
 
             let Some(draw_queue) = &self.draw_queue else {
-                println!("No draw queue");
                 return None;
             };
 
@@ -148,16 +144,8 @@ impl WgpuApp {
             render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint32);
             render_pass.set_bind_group(1, &self.projection_bindgroup.projection, &[]);
 
-            println!("{}", draw_queue.queue.len());
-
             for draw_object in draw_queue.queue.iter() {
-                println!("pipeline len: {:?}", draw_object.pipelines.len());
                 if draw_object.pipelines.len() == 0 {
-                    println!(
-                        "draw from index: {:?} - {:?}",
-                        draw_object.index_range[0], draw_object.index_range[1]
-                    );
-
                     render_pass.set_bind_group(0, &draw_object.bindgroup, &[]);
                     render_pass.draw_indexed(
                         draw_object.index_range[0]..draw_object.index_range[1],

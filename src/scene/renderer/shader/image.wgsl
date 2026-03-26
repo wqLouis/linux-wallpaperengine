@@ -19,5 +19,5 @@ fn vs_main(@location(0) pos: vec3f, @location(1) uv: vec2f) -> VertexOutput {
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     var color = textureSample(tex, tex_sampler, input.uv);
 
-    return vec4f(0.5, 0.5, 0.5, 0.5);
+    return color;
 }

@@ -6,7 +6,7 @@ use wgpu::*;
 
 use crate::scene::{
     loader::object_loader::TextureObject,
-    renderer::{app::WgpuApp, bindgroups::get_bindgroup, buffer::Buffers},
+    renderer::{app::WgpuApp, buffer::Buffers},
 };
 
 #[repr(C)]
@@ -174,13 +174,57 @@ impl DrawObject {
             .map(|rc| Rc::clone(rc))
             .collect();
 
-        let bindgroup = get_bindgroup(
-            device,
-            queue,
-            &texture_object,
-            &post_process.sampler,
-            &post_process.layout,
+        let texture = device.create_texture(&TextureDescriptor {
+            label: None,
+            size: Extent3d {
+                width: texture_object.texture.dimension[0],
+                height: texture_object.texture.dimension[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            &texture_object.texture.payload,
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(texture_object.texture.dimension[0] * 4),
+                rows_per_image: None,
+            },
+            Extent3d {
+                width: texture_object.texture.dimension[0],
+                height: texture_object.texture.dimension[1],
+                depth_or_array_layers: 1,
+            },
         );
+
+        let bindgroup = device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &post_process.layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(
+                        &texture.create_view(&Default::default()),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&post_process.sampler),
+                },
+            ],
+        });
 
         draw_texture(&texture_object, buffers, queue);
 
