@@ -1,8 +1,12 @@
 use std::{fmt::Debug, rc::Rc, sync::Arc};
 
 use crate::{
-    MAX_TEXTURE,
-    scene::renderer::{buffer::Buffers, draw::DrawQueue, projection::ProjectionBindGroups},
+    MAX_INDEX, MAX_TEXTURE, MAX_VERTEX,
+    scene::renderer::{
+        buffer::Buffers,
+        draw::{DrawQueue, PostProcess},
+        projection::ProjectionBindGroups,
+    },
 };
 
 use super::*;
@@ -26,6 +30,7 @@ pub struct WgpuApp {
     pub audio_stream: rodio::OutputStream,
 
     pub draw_queue: Option<DrawQueue>,
+    pub post_process: Option<PostProcess>,
     pub resolution: Option<[u32; 2]>,
 }
 
@@ -74,7 +79,7 @@ impl WgpuApp {
             .unwrap();
 
         let surface = AppSurface::new(surface, &instance, &adapter, size);
-        let buffers = Buffers::new(&device);
+        let buffers = Buffers::new(&device, MAX_INDEX as u64, MAX_VERTEX as u64);
         let projection_bindgroup = ProjectionBindGroups::new(&device);
 
         let audio_stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
@@ -94,11 +99,13 @@ impl WgpuApp {
             audio_stream: audio_stream,
             draw_queue: None,
             resolution: None,
+            post_process: None,
         }
     }
 
     pub fn render(&mut self) -> Option<()> {
-        let output = self.surface.surface.get_current_texture().ok()?;
+        println!("Render");
+        let output = self.surface.surface.get_current_texture().unwrap();
         let view = output
             .texture
             .create_view(&TextureViewDescriptor::default());
@@ -109,6 +116,8 @@ impl WgpuApp {
             });
 
         {
+            println!("Create Render pass");
+
             // render pass
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None,
@@ -130,20 +139,32 @@ impl WgpuApp {
             });
 
             let Some(draw_queue) = &self.draw_queue else {
+                println!("No draw queue");
                 return None;
             };
 
-            let mut current_ptr: u32 = 0;
-
+            render_pass.set_pipeline(&draw_queue.image_pipeline);
             render_pass.set_vertex_buffer(0, self.buffers.vertex.slice(..));
             render_pass.set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint32);
+            render_pass.set_bind_group(1, &self.projection_bindgroup.projection, &[]);
+
+            println!("{}", draw_queue.queue.len());
 
             for draw_object in draw_queue.queue.iter() {
-                let pipelines: Vec<&Rc<RenderPipeline>> = draw_object
-                    .pipelines
-                    .iter()
-                    .filter_map(|pipeline_name| draw_queue.render_pipelines.get(pipeline_name))
-                    .collect();
+                println!("pipeline len: {:?}", draw_object.pipelines.len());
+                if draw_object.pipelines.len() == 0 {
+                    println!(
+                        "draw from index: {:?} - {:?}",
+                        draw_object.index_range[0], draw_object.index_range[1]
+                    );
+
+                    render_pass.set_bind_group(0, &draw_object.bindgroup, &[]);
+                    render_pass.draw_indexed(
+                        draw_object.index_range[0]..draw_object.index_range[1],
+                        0,
+                        0..1,
+                    );
+                }
             }
         }
 

@@ -2,96 +2,64 @@ use wgpu::*;
 
 use crate::scene::loader::object_loader::TextureObject;
 
-pub struct TextureBindGroups {
-    pub layout: BindGroupLayout,
-}
+pub fn get_bindgroup(
+    device: &Device,
+    queue: &Queue,
+    texture_object: &TextureObject,
+    sampler: &Sampler,
+    layout: &BindGroupLayout,
+) -> BindGroup {
+    let texture = device.create_texture(&TextureDescriptor {
+        label: None,
+        size: Extent3d {
+            width: texture_object.texture.dimension[0],
+            height: texture_object.texture.dimension[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::Rgba8UnormSrgb,
+        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
 
-impl TextureBindGroups {
-    pub fn new(device: &Device) -> Self {
-        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        sample_type: TextureSampleType::Float { filterable: true },
-                        view_dimension: TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+    queue.write_texture(
+        TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: Origin3d::ZERO,
+            aspect: TextureAspect::All,
+        },
+        &texture_object.texture.payload,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(texture_object.texture.dimension[0] * 4),
+            rows_per_image: None,
+        },
+        Extent3d {
+            width: texture_object.texture.dimension[0],
+            height: texture_object.texture.dimension[1],
+            depth_or_array_layers: 1,
+        },
+    );
 
-        Self { layout: layout }
-    }
-
-    pub fn get_bindgroup(
-        &self,
-        device: &Device,
-        queue: &Queue,
-        texture_object: &TextureObject,
-        sampler: &Sampler,
-    ) -> BindGroup {
-        let texture = device.create_texture(&TextureDescriptor {
-            label: None,
-            size: Extent3d {
-                width: texture_object.texture.dimension[0],
-                height: texture_object.texture.dimension[1],
-                depth_or_array_layers: 1,
+    let bindgroup = device.create_bind_group(&BindGroupDescriptor {
+        label: None,
+        layout: layout,
+        entries: &[
+            BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::TextureView(
+                    &texture.create_view(&TextureViewDescriptor::default()),
+                ),
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8UnormSrgb,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        queue.write_texture(
-            TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: Origin3d::ZERO,
-                aspect: TextureAspect::All,
+            BindGroupEntry {
+                binding: 1,
+                resource: BindingResource::Sampler(sampler),
             },
-            &texture_object.texture.payload,
-            TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(texture_object.texture.dimension[0] * 4),
-                rows_per_image: None,
-            },
-            Extent3d {
-                width: texture_object.texture.dimension[0],
-                height: texture_object.texture.dimension[1],
-                depth_or_array_layers: 1,
-            },
-        );
+        ],
+    });
 
-        let bindgroup = device.create_bind_group(&BindGroupDescriptor {
-            label: None,
-            layout: &self.layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(
-                        &texture.create_view(&TextureViewDescriptor::default()),
-                    ),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(sampler),
-                },
-            ],
-        });
-
-        bindgroup
-    }
+    bindgroup
 }

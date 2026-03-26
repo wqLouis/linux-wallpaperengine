@@ -1,10 +1,12 @@
 use std::{collections::BTreeMap, rc::Rc};
 
+use bytemuck::bytes_of;
+use glam::{Mat2, Vec2, Vec3};
 use wgpu::*;
 
 use crate::scene::{
     loader::object_loader::TextureObject,
-    renderer::{app::WgpuApp, bindgroups::TextureBindGroups},
+    renderer::{app::WgpuApp, bindgroups::get_bindgroup, buffer::Buffers},
 };
 
 #[repr(C)]
@@ -19,7 +21,7 @@ pub struct DrawObject {
     pub texture_object: TextureObject,
     pub index_range: [u32; 2],
     pub bindgroup: BindGroup,
-    pub pipelines: Vec<String>,
+    pub pipelines: Vec<Rc<RenderPipeline>>,
 }
 
 /// Contains the queue and the rendering pipelines
@@ -28,16 +30,20 @@ pub struct DrawObject {
 pub struct DrawQueue {
     pub queue: Rc<Vec<DrawObject>>,
     pub render_pipelines: BTreeMap<String, Rc<RenderPipeline>>,
+    pub image_pipeline: RenderPipeline,
 }
 
-impl DrawQueue {
-    pub fn new(
-        device: &Device,
-        queue: &Queue,
-        texture_objects: Vec<TextureObject>,
-        fallback_pipeline: RenderPipeline,
-    ) -> Self {
-        let texture_sampler = device.create_sampler(&SamplerDescriptor {
+pub struct PostProcess {
+    pub sampler: Sampler,
+    pub layout: BindGroupLayout,
+    pub blank_texture: Texture,
+    pub blank_buffers: Buffers,
+    pub blank_bindgroup: BindGroup,
+}
+
+impl PostProcess {
+    pub fn new(device: &Device, res: [u32; 2]) -> Self {
+        let sampler = device.create_sampler(&SamplerDescriptor {
             label: None,
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
@@ -48,9 +54,84 @@ impl DrawQueue {
             ..Default::default()
         });
 
-        let texture_bindgroups = TextureBindGroups::new(device);
+        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
 
-        let mut index_ptr: u32 = 0;
+        let blank_desc = TextureDescriptor {
+            label: None,
+            size: Extent3d {
+                width: res[0],
+                height: res[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        };
+
+        let blank_texture = device.create_texture(&blank_desc);
+        let blank_buffers = Buffers::new(device, 6, 4);
+
+        let blank_bindgroup = device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(
+                        &blank_texture.create_view(&Default::default()),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        Self {
+            sampler,
+            layout,
+            blank_texture,
+            blank_buffers,
+            blank_bindgroup,
+        }
+    }
+}
+
+impl DrawQueue {
+    pub fn new(
+        device: &Device,
+        queue: &Queue,
+        buffers: &mut Buffers,
+        texture_objects: Vec<TextureObject>,
+        image_pipeline: RenderPipeline,
+        post_process: &PostProcess,
+    ) -> Self {
+        let render_pipelines = BTreeMap::<String, Rc<RenderPipeline>>::new();
+
         let draw_objects = texture_objects
             .into_iter()
             .map(|texture_object| {
@@ -58,20 +139,17 @@ impl DrawQueue {
                     device,
                     queue,
                     texture_object,
-                    &texture_sampler,
-                    &texture_bindgroups,
-                    &mut index_ptr,
+                    post_process,
+                    &render_pipelines,
+                    buffers,
                 )
             })
             .collect::<Vec<DrawObject>>();
 
-        let mut render_pipelines = BTreeMap::<String, Rc<RenderPipeline>>::new();
-
-        render_pipelines.insert("FALLBACK".to_string(), Rc::new(fallback_pipeline)); // FALLBACK is the render pipeline for materials that has no custom effects which renders as a simple image
-
         Self {
             queue: Rc::new(draw_objects),
             render_pipelines,
+            image_pipeline,
         }
     }
 }
@@ -81,31 +159,34 @@ impl DrawObject {
         device: &Device,
         queue: &Queue,
         texture_object: TextureObject,
-        texture_sampler: &Sampler,
-        texture_bindgroup: &TextureBindGroups,
-        index_ptr: &mut u32,
+        post_process: &PostProcess,
+        pipelines: &BTreeMap<String, Rc<RenderPipeline>>,
+        buffers: &mut Buffers,
     ) -> Self {
-        let index_len: u32 = 6;
-        let index_start = index_ptr.clone();
+        let index_start = buffers.index_len.clone();
 
-        let mut pipelines = texture_object
+        let pipelines = texture_object
             .effects
             .iter()
-            .map(|effect| effect.file.clone())
-            .collect::<Vec<String>>();
+            .filter_map(|effect| pipelines.get(&effect.file))
+            .collect::<Vec<&Rc<RenderPipeline>>>()
+            .into_iter()
+            .map(|rc| Rc::clone(rc))
+            .collect();
 
-        if pipelines.len() == 0 {
-            pipelines.push("FALLBACK".to_string());
-        }
+        let bindgroup = get_bindgroup(
+            device,
+            queue,
+            &texture_object,
+            &post_process.sampler,
+            &post_process.layout,
+        );
 
-        let bindgroup =
-            texture_bindgroup.get_bindgroup(device, queue, &texture_object, texture_sampler);
-
-        *index_ptr += index_len;
+        draw_texture(&texture_object, buffers, queue);
 
         Self {
             texture_object,
-            index_range: [index_start, index_len],
+            index_range: [index_start, buffers.index_len],
             bindgroup,
             pipelines,
         }
@@ -137,69 +218,20 @@ impl WgpuApp {
     /// This function process textures with multiple render pipelines
     /// WIP
     pub(super) fn pipelines_process_texture(
-        &self,
+        &mut self,
         pipelines: &Vec<&Rc<RenderPipeline>>,
         draw_object: &DrawObject,
     ) {
         let resolution = self.resolution.unwrap();
+        let mut post_process = self.post_process.as_mut().unwrap();
 
-        let canvas_desc = TextureDescriptor {
-            label: None,
-            size: Extent3d {
-                width: resolution[0],
-                height: resolution[1],
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8UnormSrgb,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        };
-
-        let canvas = self.device.create_texture(&canvas_desc);
-        let mut canvas_view = canvas.create_view(&Default::default());
-
-        let layout = self
-            .device
-            .create_bind_group_layout(&BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[
-                    BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: ShaderStages::FRAGMENT,
-                        ty: BindingType::Texture {
-                            sample_type: TextureSampleType::Float { filterable: true },
-                            view_dimension: TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: ShaderStages::FRAGMENT,
-                        ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-
-        let sampler = self.device.create_sampler(&SamplerDescriptor {
-            label: None,
-            address_mode_u: AddressMode::ClampToEdge,
-            address_mode_v: AddressMode::ClampToEdge,
-            address_mode_w: AddressMode::ClampToEdge,
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Nearest,
-            mipmap_filter: MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
+        let mut source: &Texture = &post_process.blank_texture;
+        let source_view = source.create_view(&Default::default());
 
         let render_pass_desc = RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: &canvas_view,
+                view: &post_process.blank_texture.create_view(&Default::default()),
                 resolve_target: None,
                 ops: Operations {
                     load: LoadOp::Clear(Color {
@@ -215,7 +247,18 @@ impl WgpuApp {
             ..Default::default()
         };
 
-        let mut bindgroup = &draw_object.bindgroup;
+        draw_rect(
+            &mut post_process.blank_buffers,
+            &self.queue,
+            [
+                Vec3::new(0.0, 0.0, -1.0),
+                Vec3::new(resolution[0] as f32, 0.0, -1.0),
+                Vec3::new(resolution[0] as f32, resolution[1] as f32, -1.0),
+                Vec3::new(0.0, resolution[1] as f32, -1.0),
+            ],
+        );
+
+        let mut is_first_draw: bool = true;
 
         for pipeline in pipelines {
             let mut encoder = self
@@ -223,19 +266,118 @@ impl WgpuApp {
                 .create_command_encoder(&CommandEncoderDescriptor::default());
 
             {
-                let mut render_pass = encoder.begin_render_pass(&render_pass_desc);
-                render_pass.set_pipeline(pipeline);
-                render_pass.set_bind_group(0, bindgroup, &[]); // The intermediate texture
-                render_pass.set_bind_group(1, &self.projection_bindgroup.projection, &[]);
+                {
+                    let mut render_pass = encoder.begin_render_pass(&render_pass_desc);
 
-                render_pass.draw_indexed(
-                    draw_object.index_range[0]..draw_object.index_range[1],
-                    0,
-                    0..1,
-                );
+                    if is_first_draw {
+                        render_pass.set_vertex_buffer(0, self.buffers.vertex.slice(..));
+                        render_pass
+                            .set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint32);
+                    } else {
+                        render_pass
+                            .set_vertex_buffer(0, post_process.blank_buffers.vertex.slice(..));
+                        render_pass.set_index_buffer(
+                            post_process.blank_buffers.index.slice(..),
+                            IndexFormat::Uint32,
+                        );
+                    }
+
+                    render_pass.set_pipeline(pipeline);
+                    render_pass.set_bind_group(1, &self.projection_bindgroup.projection, &[]);
+
+                    if is_first_draw {
+                        render_pass.set_bind_group(0, &draw_object.bindgroup, &[]); // The intermediate texture
+                    } else {
+                        render_pass.set_bind_group(0, &post_process.blank_bindgroup, &[]);
+                    }
+
+                    if is_first_draw {
+                        render_pass.draw_indexed(
+                            draw_object.index_range[0]..draw_object.index_range[1],
+                            0,
+                            0..1,
+                        );
+                    } else {
+                        render_pass.draw_indexed(0..6, 0, 0..1);
+                    }
+
+                    is_first_draw = false;
+                }
+
+                self.queue.submit(Some(encoder.finish()));
+
+                source = &post_process.blank_texture;
             }
-
-            self.queue.submit(Some(encoder.finish()));
         }
     }
+}
+
+fn draw_rect(buffers: &mut Buffers, queue: &Queue, pos: [Vec3; 4]) {
+    let rect = [
+        Vertex {
+            pos: pos[0].to_array(),
+            uv: [0.0, 0.0],
+        },
+        Vertex {
+            pos: pos[1].to_array(),
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            pos: pos[2].to_array(),
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            pos: pos[3].to_array(),
+            uv: [0.0, 1.0],
+        },
+    ];
+
+    let indices: [u32; 6] = [0, 2, 1, 0, 3, 2].map(|f| f + buffers.vertex_len);
+
+    queue.write_buffer(
+        &buffers.vertex,
+        std::mem::size_of::<Vertex>() as u64 * buffers.vertex_len as u64,
+        bytes_of(&rect),
+    );
+
+    queue.write_buffer(
+        &buffers.index,
+        std::mem::size_of::<[u32; 6]>() as u64 * buffers.index_len as u64,
+        bytes_of(&indices),
+    );
+
+    buffers.index_len += indices.len() as u32;
+    buffers.vertex_len += rect.len() as u32;
+}
+
+fn draw_texture(texture_object: &TextureObject, buffers: &mut Buffers, queue: &Queue) {
+    let scale = Vec2 {
+        x: texture_object.scale.x,
+        y: texture_object.scale.y,
+    };
+
+    let size = texture_object.size * scale;
+    let z = texture_object.origin.z - 1.0;
+
+    let rotation_mat = Mat2::from_angle(texture_object.angles.z.to_radians());
+    let rotated = vec![
+        Vec2::new(-size.x / 2.0, size.y / 2.0),
+        Vec2::new(size.x / 2.0, size.y / 2.0),
+        Vec2::new(size.x / 2.0, -size.y / 2.0),
+        Vec2::new(-size.x / 2.0, -size.y / 2.0),
+    ]
+    .iter()
+    .map(|vertex| {
+        (rotation_mat * vertex) + Vec2::new(texture_object.origin.x, texture_object.origin.y)
+    })
+    .collect::<Vec<Vec2>>();
+
+    let rect = [
+        Vec3::new(rotated[0].x, rotated[0].y, z),
+        Vec3::new(rotated[1].x, rotated[1].y, z),
+        Vec3::new(rotated[2].x, rotated[2].y, z),
+        Vec3::new(rotated[3].x, rotated[3].y, z),
+    ];
+
+    draw_rect(buffers, queue, rect);
 }

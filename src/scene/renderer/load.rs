@@ -7,8 +7,7 @@ use crate::scene::{
     },
     renderer::{
         app::WgpuApp,
-        bindgroups::TextureBindGroups,
-        draw::{DrawQueue, Vertex},
+        draw::{DrawQueue, PostProcess, Vertex},
         projection::Projection,
     },
 };
@@ -26,13 +25,20 @@ impl WgpuApp {
             scene.root.general.orthogonalprojection.height as u32,
         ];
 
-        let bindgroups = TextureBindGroups::new(&self.device);
+        let post_process = PostProcess::new(&self.device, size);
 
         self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 
-        let pipeline = create_pipeline(&self, &bindgroups.layout);
+        let pipeline = create_pipeline(&self, &post_process.layout);
         let objects = ObjectMap::new(&scene.root.objects.clone(), &scene);
-        let draw_queue = DrawQueue::new(&self.device, &self.queue, objects.texture, pipeline);
+        let draw_queue = DrawQueue::new(
+            &self.device,
+            &self.queue,
+            &mut self.buffers,
+            objects.texture,
+            pipeline,
+            &post_process,
+        );
 
         load_audios(&self.audio_stream, objects.audio, &mut scene);
 
@@ -46,6 +52,8 @@ impl WgpuApp {
         );
 
         self.resolution = Some(size);
+
+        self.post_process = Some(post_process);
     }
 }
 

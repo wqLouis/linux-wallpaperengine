@@ -1,9 +1,10 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap, path::Path, rc::Rc};
 
 use depkg::pkg_parser::tex_parser::Tex;
 use glam::{Vec2, Vec3};
 
 use crate::scene::loader::{
+    model::Model,
     scene::{Effect, Object, Vectors},
     scene_loader::Scene,
 };
@@ -175,7 +176,15 @@ fn load_object(object: &Object, scene: &Scene) -> Option<ObjectType> {
             y: size.y,
         };
 
-        let model = object.image.clone().unwrap_or_default();
+        let model_path = object.image.clone().unwrap_or_default();
+        let model = serde_json::from_str::<Model>(scene.jsons.get(&model_path)?).ok()?;
+        let mut material = Path::new(&model.material).to_path_buf();
+        material.set_extension("tex");
+
+        let Some(texture) = scene.textures.get(material.as_os_str().to_str().unwrap()) else {
+            println!("cannot get texture: {:?}", material);
+            return None;
+        };
 
         return Some(ObjectType::Texture(TextureObject {
             origin,
@@ -183,7 +192,7 @@ fn load_object(object: &Object, scene: &Scene) -> Option<ObjectType> {
             size,
             scale,
             parent: object.parent,
-            texture: Rc::clone(scene.textures.get(&model)?),
+            texture: Rc::clone(texture),
             effects: object.effects.clone(),
         }));
     }

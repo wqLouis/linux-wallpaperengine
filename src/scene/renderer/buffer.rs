@@ -1,7 +1,5 @@
 use wgpu::*;
 
-use crate::{MAX_INDEX, MAX_VERTEX};
-
 pub struct Buffers {
     pub vertex: Buffer,
     pub index: Buffer,
@@ -9,23 +7,21 @@ pub struct Buffers {
 
     pub vertex_len: u32,
     pub index_len: u32,
-
-    pub index_ptr: u32,
 }
 
 impl Buffers {
-    pub fn new(device: &Device) -> Self {
+    pub fn new(device: &Device, index_len: u64, vertex_len: u64) -> Self {
         let vertex = device.create_buffer(&BufferDescriptor {
             label: Some("vertex buffer"),
             usage: BufferUsages::COPY_DST | BufferUsages::VERTEX,
             mapped_at_creation: false,
-            size: (std::mem::size_of::<super::draw::Vertex>() as u64 * MAX_VERTEX as u64),
+            size: (std::mem::size_of::<super::draw::Vertex>() as u64 * vertex_len),
         });
         let index = device.create_buffer(&BufferDescriptor {
             label: Some("index buffer"),
             usage: BufferUsages::COPY_DST | BufferUsages::INDEX,
             mapped_at_creation: false,
-            size: (std::mem::size_of::<u32>() as u64 * MAX_INDEX as u64),
+            size: (std::mem::size_of::<u32>() as u64 * index_len),
         });
         let projection = device.create_buffer(&BufferDescriptor {
             label: Some("projection buffer"),
@@ -40,7 +36,6 @@ impl Buffers {
             projection,
             vertex_len: 0,
             index_len: 0,
-            index_ptr: 0,
         }
     }
 }
