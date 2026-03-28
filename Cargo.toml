@@ -13,7 +13,11 @@ glam = "0.31.0"
 indicatif = "0.18.3"
 pollster = "0.4.0"
 raw-window-handle = "0.6.2"
-rodio = { version = "0.21.1" }
+rodio = { version = "0.21.1", default-features = false, features = [
+  "lewton",
+  "playback",
+  "symphonia-all"
+] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149" }
 smithay-client-toolkit = "0.20.0"
