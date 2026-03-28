@@ -380,13 +380,13 @@ fn draw_rect(buffers: &mut Buffers, queue: &Queue, pos: [Vec3; 4]) {
 
     queue.write_buffer(
         &buffers.vertex,
-        std::mem::size_of::<Vertex>() as u64 * buffers.vertex_len as u64,
+        std::mem::size_of::<Vertex>() as BufferAddress * buffers.vertex_len as BufferAddress,
         bytes_of(&rect),
     );
 
     queue.write_buffer(
         &buffers.index,
-        std::mem::size_of::<[u32; 6]>() as u64 * buffers.index_len as u64,
+        std::mem::size_of::<u32>() as BufferAddress * buffers.index_len as BufferAddress,
         bytes_of(&indices),
     );
 
