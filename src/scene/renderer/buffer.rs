@@ -10,7 +10,7 @@ pub struct Buffers {
 }
 
 impl Buffers {
-    pub fn new(device: &Device, index_len: u64, vertex_len: u64) -> Self {
+    pub(super) fn new(device: &Device, index_len: u64, vertex_len: u64) -> Self {
         let vertex = device.create_buffer(&BufferDescriptor {
             label: Some("vertex buffer"),
             usage: BufferUsages::COPY_DST | BufferUsages::VERTEX,

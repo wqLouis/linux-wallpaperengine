@@ -6,7 +6,7 @@ use wgpu::*;
 
 use crate::scene::{
     loader::object_loader::TextureObject,
-    renderer::{app::WgpuApp, buffer::Buffers},
+    renderer::{app::WgpuApp, buffer::Buffers, post_process::PostProcess},
 };
 
 #[repr(C)]
@@ -31,94 +31,6 @@ pub struct DrawQueue {
     pub queue: Rc<Vec<DrawObject>>,
     pub render_pipelines: BTreeMap<String, Rc<RenderPipeline>>,
     pub image_pipeline: RenderPipeline,
-}
-
-pub struct PostProcess {
-    pub sampler: Sampler,
-    pub layout: BindGroupLayout,
-    pub blank_texture: Texture,
-    pub blank_buffers: Buffers,
-    pub blank_bindgroup: BindGroup,
-}
-
-impl PostProcess {
-    pub fn new(device: &Device, res: [u32; 2]) -> Self {
-        let sampler = device.create_sampler(&SamplerDescriptor {
-            label: None,
-            address_mode_u: AddressMode::ClampToEdge,
-            address_mode_v: AddressMode::ClampToEdge,
-            address_mode_w: AddressMode::ClampToEdge,
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Nearest,
-            mipmap_filter: MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-
-        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        sample_type: TextureSampleType::Float { filterable: true },
-                        view_dimension: TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-
-        let blank_desc = TextureDescriptor {
-            label: None,
-            size: Extent3d {
-                width: res[0],
-                height: res[1],
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8UnormSrgb,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        };
-
-        let blank_texture = device.create_texture(&blank_desc);
-        let blank_buffers = Buffers::new(device, 6, 4);
-
-        let blank_bindgroup = device.create_bind_group(&BindGroupDescriptor {
-            label: None,
-            layout: &layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(
-                        &blank_texture.create_view(&Default::default()),
-                    ),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-
-        Self {
-            sampler,
-            layout,
-            blank_texture,
-            blank_buffers,
-            blank_bindgroup,
-        }
-    }
 }
 
 impl DrawQueue {
@@ -254,104 +166,6 @@ impl Vertex {
                     format: VertexFormat::Float32x2,
                 },
             ],
-        }
-    }
-}
-
-impl WgpuApp {
-    /// This function process textures with multiple render pipelines
-    /// WIP
-    pub(super) fn pipelines_process_texture(
-        &mut self,
-        pipelines: &Vec<&Rc<RenderPipeline>>,
-        draw_object: &DrawObject,
-    ) {
-        let resolution = self.resolution.unwrap();
-        let mut post_process = self.post_process.as_mut().unwrap();
-
-        let mut source: &Texture = &post_process.blank_texture;
-        let source_view = source.create_view(&Default::default());
-
-        let render_pass_desc = RenderPassDescriptor {
-            label: None,
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: &post_process.blank_texture.create_view(&Default::default()),
-                resolve_target: None,
-                ops: Operations {
-                    load: LoadOp::Clear(Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 0.0,
-                    }),
-                    store: StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            ..Default::default()
-        };
-
-        draw_rect(
-            &mut post_process.blank_buffers,
-            &self.queue,
-            [
-                Vec3::new(0.0, 0.0, -1.0),
-                Vec3::new(resolution[0] as f32, 0.0, -1.0),
-                Vec3::new(resolution[0] as f32, resolution[1] as f32, -1.0),
-                Vec3::new(0.0, resolution[1] as f32, -1.0),
-            ],
-        );
-
-        let mut is_first_draw: bool = true;
-
-        for pipeline in pipelines {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&CommandEncoderDescriptor::default());
-
-            {
-                {
-                    let mut render_pass = encoder.begin_render_pass(&render_pass_desc);
-
-                    if is_first_draw {
-                        render_pass.set_vertex_buffer(0, self.buffers.vertex.slice(..));
-                        render_pass
-                            .set_index_buffer(self.buffers.index.slice(..), IndexFormat::Uint32);
-                    } else {
-                        render_pass
-                            .set_vertex_buffer(0, post_process.blank_buffers.vertex.slice(..));
-                        render_pass.set_index_buffer(
-                            post_process.blank_buffers.index.slice(..),
-                            IndexFormat::Uint32,
-                        );
-                    }
-
-                    render_pass.set_pipeline(pipeline);
-                    render_pass.set_bind_group(1, &self.projection_bindgroup.projection, &[]);
-
-                    if is_first_draw {
-                        render_pass.set_bind_group(0, &draw_object.bindgroup, &[]); // The intermediate texture
-                    } else {
-                        render_pass.set_bind_group(0, &post_process.blank_bindgroup, &[]);
-                    }
-
-                    if is_first_draw {
-                        render_pass.draw_indexed(
-                            draw_object.index_range[0]..draw_object.index_range[1],
-                            0,
-                            0..1,
-                        );
-                    } else {
-                        render_pass.draw_indexed(0..6, 0, 0..1);
-                    }
-
-                    is_first_draw = false;
-                }
-
-                self.queue.submit(Some(encoder.finish()));
-
-                source = &post_process.blank_texture;
-            }
         }
     }
 }

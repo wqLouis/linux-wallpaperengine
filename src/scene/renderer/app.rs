@@ -3,8 +3,7 @@ use std::{fmt::Debug, sync::Arc};
 use crate::{
     MAX_INDEX, MAX_TEXTURE, MAX_VERTEX,
     scene::renderer::{
-        buffer::Buffers,
-        draw::{DrawQueue, PostProcess},
+        buffer::Buffers, draw::DrawQueue, post_process::PostProcess,
         projection::ProjectionBindGroups,
     },
 };
