@@ -4,69 +4,160 @@ use serde_json::Value;
 use wgpu::{naga::ShaderStage, *};
 
 pub struct ShaderEffect {
-    vars: Vec<ShaderVariable>,
-    combos: Option<Vec<BTreeMap<String, Value>>>,
+    pub vars: Vec<ShaderVariable>,
+    pub combos: Option<Vec<BTreeMap<String, Value>>>,
+    pub source: String,
 }
 
 pub struct ShaderVariable {
-    data_type: String,
-    config: Option<BTreeMap<String, Value>>,
-    name: String,
-    index: u32,
+    pub data_type: String,
+    pub config: Option<BTreeMap<String, Value>>,
+    pub name: String,
+    pub line_number: u32,
 }
 
-pub fn load(device: &Device, shader: String, stage: ShaderStage) {
-    let shader = device.create_shader_module(ShaderModuleDescriptor {
+pub fn load(
+    device: &Device,
+    shader: String,
+    stage: ShaderStage,
+    defines: &[(&str, &str)],
+) -> ShaderModule {
+    device.create_shader_module(ShaderModuleDescriptor {
         label: None,
         source: ShaderSource::Glsl {
             shader: Cow::Owned(shader),
-            stage: stage,
-            defines: &[],
+            stage,
+            defines,
         },
-    });
+    })
 }
 
 impl ShaderEffect {
-    pub fn new(shader: String) {
+    pub fn new(shader: String) -> Self {
         let mut variables: Vec<ShaderVariable> = Vec::new();
         let mut combos: Vec<BTreeMap<String, Value>> = Vec::new();
 
-        for (index, line) in shader.lines().into_iter().enumerate() {
-            let mut comments: Option<BTreeMap<String, Value>> = None;
+        for (line_number, line) in shader.lines().enumerate() {
+            let trimmed = line.trim();
 
-            if line.find("//").is_some() {
-                let chunk: Vec<&str> = line.split("//").into_iter().collect();
-
-                let comments_str = chunk.get(1).unwrap();
-
-                if comments_str.find("[COMBO]").is_some() {
-                    let Some(combo): Option<BTreeMap<String, Value>> =
-                        serde_json::from_str(&*comments_str.replace("[COMBO]", "")).ok()
-                    else {
-                        continue;
-                    };
-
-                    combos.push(combo);
-                } else {
-                    comments = serde_json::from_str::<BTreeMap<String, Value>>(comments_str).ok();
-                }
+            // Skip empty lines and preprocessor directives
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
             }
 
-            let words: Vec<&str> = line.split_whitespace().into_iter().collect();
-
-            let Some(data_type) = words.get(1) else {
+            // Check for combo comments
+            if let Some(combo) = Self::parse_combo_comment(trimmed) {
+                combos.push(combo);
                 continue;
-            };
-            let Some(name) = words.get(2) else {
-                continue;
-            };
+            }
 
-            variables.push(ShaderVariable {
-                data_type: data_type.to_string(),
-                config: comments,
-                name: name.to_string(),
-                index: index as u32,
-            });
+            // Try to parse variable declaration
+            if let Some(var) = Self::parse_variable(trimmed, line_number as u32) {
+                variables.push(var);
+            }
         }
+
+        ShaderEffect {
+            vars: variables,
+            combos: if combos.is_empty() {
+                None
+            } else {
+                Some(combos)
+            },
+            source: shader,
+        }
+    }
+
+    fn parse_combo_comment(line: &str) -> Option<BTreeMap<String, Value>> {
+        if let Some(comment_start) = line.find("//") {
+            let comment = line[comment_start + 2..].trim();
+            if let Some(combo_start) = comment.find("[COMBO]") {
+                let json_str = comment[combo_start + 7..].trim();
+                return serde_json::from_str(json_str).ok();
+            }
+        }
+        None
+    }
+
+    fn parse_variable(line: &str, line_number: u32) -> Option<ShaderVariable> {
+        // Check if line has a variable declaration
+        if !line.contains(';') {
+            return None;
+        }
+
+        // Split line and comment
+        let (decl_part, comment_part) = if let Some(comment_idx) = line.find("//") {
+            (&line[..comment_idx], Some(&line[comment_idx + 2..].trim()))
+        } else {
+            (line, None)
+        };
+
+        // Parse config from comment
+        let config = comment_part
+            .and_then(|comment| serde_json::from_str::<BTreeMap<String, Value>>(comment).ok());
+
+        // Simple parsing: look for uniform keyword then type then name
+        let words: Vec<&str> = decl_part.split_whitespace().collect();
+
+        // Find "uniform" keyword position
+        let uniform_pos = words.iter().position(|&w| w == "uniform")?;
+
+        // Type should be after uniform
+        if uniform_pos + 1 >= words.len() {
+            return None;
+        }
+
+        let data_type = words[uniform_pos + 1];
+
+        // Name should be after type (could have assignment or array)
+        if uniform_pos + 2 >= words.len() {
+            return None;
+        }
+
+        let name_part = words[uniform_pos + 2];
+        // Extract name (remove trailing semicolon, array brackets, or assignment)
+        let name = name_part
+            .trim_end_matches(';')
+            .split('=')
+            .next()
+            .unwrap()
+            .split('[')
+            .next()
+            .unwrap()
+            .to_string();
+
+        Some(ShaderVariable {
+            data_type: data_type.to_string(),
+            config,
+            name,
+            line_number,
+        })
+    }
+
+    pub fn compile(&self, device: &Device, stage: ShaderStage) -> ShaderModule {
+        // Generate defines from combos
+        let mut defines_vec = Vec::new();
+        let mut define_strings = Vec::new();
+
+        if let Some(combos) = &self.combos {
+            for combo in combos {
+                for (key, value) in combo {
+                    let value_str = match value {
+                        Value::Number(n) => n.to_string(),
+                        Value::String(s) => s.clone(),
+                        Value::Bool(b) => b.to_string(),
+                        _ => continue,
+                    };
+                    define_strings.push((key.clone(), value_str));
+                }
+            }
+        }
+
+        // Convert to slices with proper lifetimes
+        for (key, value) in &define_strings {
+            defines_vec.push((key.as_str(), value.as_str()));
+        }
+
+        load(device, self.source.clone(), stage, &defines_vec)
     }
 }
