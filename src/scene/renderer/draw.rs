@@ -5,8 +5,11 @@ use glam::{Mat2, Vec2, Vec3};
 use wgpu::*;
 
 use crate::scene::{
-    loader::object_loader::TextureObject,
-    renderer::{app::WgpuApp, buffer::Buffers, post_process::PostProcess},
+    loader::{object_loader::TextureObject, scene_loader::Scene},
+    renderer::{
+        app::WgpuApp, buffer::Buffers, post_process::PostProcess,
+        post_processor::pipeline_handler::get_or_create_pipeline,
+    },
 };
 
 #[repr(C)]
@@ -38,11 +41,12 @@ impl DrawQueue {
         device: &Device,
         queue: &Queue,
         buffers: &mut Buffers,
+        scene: &Scene,
         texture_objects: Vec<TextureObject>,
         image_pipeline: RenderPipeline,
         post_process: &PostProcess,
     ) -> Self {
-        let render_pipelines = BTreeMap::<String, Rc<RenderPipeline>>::new();
+        let mut render_pipelines = BTreeMap::<String, Rc<RenderPipeline>>::new();
 
         let draw_objects = texture_objects
             .into_iter()
@@ -50,9 +54,10 @@ impl DrawQueue {
                 DrawObject::new(
                     device,
                     queue,
+                    scene,
                     texture_object,
                     post_process,
-                    &render_pipelines,
+                    &mut render_pipelines,
                     buffers,
                 )
             })
@@ -70,9 +75,10 @@ impl DrawObject {
     pub fn new(
         device: &Device,
         queue: &Queue,
+        scene: &Scene,
         texture_object: TextureObject,
         post_process: &PostProcess,
-        pipelines: &BTreeMap<String, Rc<RenderPipeline>>,
+        pipelines: &mut BTreeMap<String, Rc<RenderPipeline>>,
         buffers: &mut Buffers,
     ) -> Self {
         let index_start = buffers.index_len.clone();
@@ -80,11 +86,8 @@ impl DrawObject {
         let pipelines = texture_object
             .effects
             .iter()
-            .filter_map(|effect| pipelines.get(&effect.file))
-            .collect::<Vec<&Rc<RenderPipeline>>>()
-            .into_iter()
-            .map(|rc| Rc::clone(rc))
-            .collect();
+            .filter_map(|effect| get_or_create_pipeline(effect.file.clone(), pipelines, scene))
+            .collect::<Vec<Rc<RenderPipeline>>>();
 
         let texture = device.create_texture(&TextureDescriptor {
             label: None,

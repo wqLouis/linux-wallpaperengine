@@ -12,7 +12,7 @@ pub struct Scene {
     pub root: crate::scene::loader::scene::Root,
     pub textures: BTreeMap<String, Rc<Tex>>,
     pub jsons: BTreeMap<String, String>,
-    pub desc: BTreeMap<String, Vec<u8>>,
+    pub misc: BTreeMap<String, Vec<u8>>,
 }
 
 impl Scene {
@@ -22,7 +22,7 @@ impl Scene {
 
         let texs: Arc<Mutex<BTreeMap<String, Tex>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let mut jsons: BTreeMap<String, String> = BTreeMap::new();
-        let mut desc: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut misc: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
         let pb = ProgressBar::new(pkg.files.len() as u64);
@@ -53,7 +53,7 @@ impl Scene {
                 }
                 _ => {
                     pb.inc(1);
-                    desc.insert(key, val);
+                    misc.insert(key, val);
                 }
             }
         }
@@ -78,7 +78,7 @@ impl Scene {
             root,
             jsons,
             textures: texs,
-            desc,
+            misc,
         }
     }
 }

@@ -3,17 +3,18 @@ use std::{borrow::Cow, collections::BTreeMap};
 use serde_json::Value;
 use wgpu::{naga::ShaderStage, *};
 
+#[derive(Debug)]
 pub struct ShaderEffect {
     pub vars: Vec<ShaderVariable>,
     pub combos: Option<Vec<BTreeMap<String, Value>>>,
     pub source: String,
 }
 
+#[derive(Debug)]
 pub struct ShaderVariable {
     pub data_type: String,
     pub config: Option<BTreeMap<String, Value>>,
     pub name: String,
-    pub line_number: u32,
 }
 
 pub fn load(
@@ -37,7 +38,7 @@ impl ShaderEffect {
         let mut variables: Vec<ShaderVariable> = Vec::new();
         let mut combos: Vec<BTreeMap<String, Value>> = Vec::new();
 
-        for (line_number, line) in shader.lines().enumerate() {
+        for line in shader.lines() {
             let trimmed = line.trim();
 
             // Skip empty lines and preprocessor directives
@@ -52,7 +53,7 @@ impl ShaderEffect {
             }
 
             // Try to parse variable declaration
-            if let Some(var) = Self::parse_variable(trimmed, line_number as u32) {
+            if let Some(var) = Self::parse_variable(trimmed) {
                 variables.push(var);
             }
         }
@@ -79,7 +80,7 @@ impl ShaderEffect {
         None
     }
 
-    fn parse_variable(line: &str, line_number: u32) -> Option<ShaderVariable> {
+    fn parse_variable(line: &str) -> Option<ShaderVariable> {
         // Check if line has a variable declaration
         if !line.contains(';') {
             return None;
@@ -130,7 +131,6 @@ impl ShaderEffect {
             data_type: data_type.to_string(),
             config,
             name,
-            line_number,
         })
     }
 

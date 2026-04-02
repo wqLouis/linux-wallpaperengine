@@ -36,6 +36,7 @@ impl WgpuApp {
             &self.device,
             &self.queue,
             &mut self.buffers,
+            &scene,
             objects.texture,
             pipeline,
             &post_process,
@@ -64,7 +65,7 @@ fn load_audios(audio_stream: &OutputStream, audios: Vec<AudioObject>, scene: &mu
 
     for audio in audios {
         for sound in audio.sounds {
-            let Some(raw) = scene.desc.remove(&sound) else {
+            let Some(raw) = scene.misc.remove(&sound) else {
                 continue;
             };
 
