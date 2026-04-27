@@ -4,7 +4,7 @@ use pollster::block_on;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
-    event_loop::{self, EventLoop},
+    event_loop::EventLoop,
     window::{Fullscreen, Window},
 };
 
@@ -61,6 +61,7 @@ impl ApplicationHandler for WinitApp {
                 self.window.as_ref().unwrap().pre_present_notify();
 
                 app.render();
+                self.window.as_ref().unwrap().request_redraw();
             }
             WindowEvent::Resized(physical_size) => {
                 let app = app.as_mut().unwrap();
@@ -74,7 +75,6 @@ impl ApplicationHandler for WinitApp {
 
 pub fn start(pkg_path: String) {
     let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(event_loop::ControlFlow::Wait);
     let mut app = WinitApp {
         pkg_path,
         ..Default::default()

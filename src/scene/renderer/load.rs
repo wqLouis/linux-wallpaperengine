@@ -40,18 +40,21 @@ impl WgpuApp {
             objects.texture,
             pipeline,
             &post_process,
+            &self.projection_bindgroup.projection_layout,
         );
 
         load_audios(&self.audio_stream, objects.audio, &mut scene);
 
         self.draw_queue = Some(draw_queue);
 
+        let camera_uniform = Projection::new(&scene.root).create_camera_uniform();
         self.projection_bindgroup.create_projection_bindgroup(
             &self.buffers,
             &self.device,
             &self.queue,
-            &Projection::new(&scene.root).create_camera_uniform(),
+            &camera_uniform,
         );
+        self.projection_matrix = camera_uniform.projection;
 
         self.resolution = Some(size);
 

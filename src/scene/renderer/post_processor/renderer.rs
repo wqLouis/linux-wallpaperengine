@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 use std::rc::Rc;
 
 use wgpu::*;

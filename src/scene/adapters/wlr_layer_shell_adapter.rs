@@ -13,7 +13,10 @@ use smithay_client_toolkit::{
         wlr_layer::{Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler},
     },
 };
-use std::ptr::NonNull;
+use std::{
+    ptr::NonNull,
+    time::Duration,
+};
 use wayland_client::{
     Connection, Proxy, QueueHandle,
     globals::registry_queue_init,
@@ -73,8 +76,11 @@ pub fn start(pkg_path: String, resolution: Option<[u32; 2]>) {
         resolution: res,
     };
 
+    let frame_duration = Duration::from_millis(16);
     loop {
-        event_queue.blocking_dispatch(&mut wgpu).unwrap();
+        event_queue.dispatch_pending(&mut wgpu).unwrap();
+        wgpu.app.render();
+        std::thread::sleep(frame_duration);
     }
 }
 

@@ -1,7 +1,10 @@
+#![allow(dead_code)]
 use std::{borrow::Cow, collections::BTreeMap};
 
 use serde_json::Value;
 use wgpu::{naga::ShaderStage, *};
+
+use super::shader_preprocessor::preprocess;
 
 #[derive(Debug)]
 pub struct ShaderEffect {
@@ -23,10 +26,11 @@ pub fn load(
     stage: ShaderStage,
     defines: &[(&str, &str)],
 ) -> ShaderModule {
+    let processed = preprocess(&shader, stage);
     device.create_shader_module(ShaderModuleDescriptor {
         label: None,
         source: ShaderSource::Glsl {
-            shader: Cow::Owned(shader),
+            shader: Cow::Owned(processed),
             stage,
             defines,
         },

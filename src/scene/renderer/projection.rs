@@ -6,7 +6,7 @@ use wgpu::*;
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 pub struct CameraUniform {
-    projection: [[f32; 4]; 4],
+    pub projection: [[f32; 4]; 4],
 }
 
 pub struct Projection {
