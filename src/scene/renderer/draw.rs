@@ -1,44 +1,17 @@
-use std::{
-    collections::BTreeMap,
-    rc::Rc,
-};
+use std::{collections::BTreeMap, rc::Rc};
 
-use serde_json::Value;
-
-use bytemuck::bytes_of;
-use glam::{Mat2, Vec2, Vec3};
 use wgpu::*;
 
 use crate::scene::{
     loader::{object_loader::TextureObject, scene_loader::Scene},
     renderer::{
-        buffer::Buffers, post_process::PostProcess,
-        post_processor::{
-            effect_param::{self},
-            pipeline_handler::{self, get_or_create_pipeline, load_mask_texture, EffectPipelineData},
-        },
+        buffer::Buffers,
+        effect_bindgroup::EffectBindGroup,
+        ping_pong::PingPongTextures,
+        post_process::PostProcess,
+        post_processor::pipeline_handler::{self, get_or_create_pipeline, load_mask_texture},
     },
 };
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
-pub struct Vertex {
-    pos: [f32; 3],
-    uv: [f32; 2],
-}
-
-pub struct EffectBindGroup {
-    pub pipeline: Rc<RenderPipeline>,
-    pub bindgroup: BindGroup,
-    pub uniform_buffer: Option<Buffer>,
-    pub uniform_layout: effect_param::UniformLayout,
-    pub material_keys: BTreeMap<String, String>,
-    pub constants: BTreeMap<String, Value>,
-    pub tex_resolutions: BTreeMap<String, [f32; 4]>,
-    pub _blank_view: TextureView,
-    pub _mask_tex: Option<Texture>,
-    pub _noise_tex: Option<Texture>,
-}
 
 pub struct DrawObject {
     pub texture_object: TextureObject,
@@ -49,53 +22,6 @@ pub struct DrawObject {
     pub intermediates: Option<PingPongTextures>,
 }
 
-pub struct PingPongTextures {
-    pub tex_a: Texture,
-    pub tex_b: Texture,
-    pub view_a: TextureView,
-    pub view_b: TextureView,
-    pub bindgroup: BindGroup,
-    pub _blank_view: TextureView,
-    pub ndc_vbuf: Buffer,
-    pub ndc_ibuf: Buffer,
-}
-
-impl PingPongTextures {
-    pub fn make_bindgroup(&self, device: &Device, layout: &BindGroupLayout, sampler: &Sampler) -> BindGroup {
-        Self::make_source_bindgroup(device, layout, &self.view_a, sampler)
-    }
-
-    pub fn make_bindgroup_for(&self, device: &Device, layout: &BindGroupLayout, sampler: &Sampler, view: &TextureView) -> BindGroup {
-        Self::make_source_bindgroup(device, layout, view, sampler)
-    }
-
-    pub fn make_source_bindgroup(
-        device: &Device,
-        layout: &BindGroupLayout,
-        view: &TextureView,
-        sampler: &Sampler,
-    ) -> BindGroup {
-        device.create_bind_group(&BindGroupDescriptor {
-            label: None,
-            layout,
-            entries: &[
-                BindGroupEntry { binding: 0, resource: BindingResource::TextureView(view) },
-                BindGroupEntry { binding: 1, resource: BindingResource::Sampler(sampler) },
-            ],
-        })
-    }
-}
-
-const NDC_VERTICES: [Vertex; 4] = [
-    Vertex { pos: [-1.0,  1.0, 0.0], uv: [0.0, 0.0] },
-    Vertex { pos: [ 1.0,  1.0, 0.0], uv: [1.0, 0.0] },
-    Vertex { pos: [ 1.0, -1.0, 0.0], uv: [1.0, 1.0] },
-    Vertex { pos: [-1.0, -1.0, 0.0], uv: [0.0, 1.0] },
-];
-
-/// Contains the queue and the rendering pipelines
-/// queue: The draw queue
-/// render_pipelines: The pipelines for special effects with the effects file name as key
 pub struct DrawQueue {
     pub queue: Rc<Vec<DrawObject>>,
     pub render_pipelines: BTreeMap<String, pipeline_handler::EffectPipelineData>,
@@ -113,24 +39,14 @@ impl DrawQueue {
         post_process: &PostProcess,
         projection_bgl: &BindGroupLayout,
     ) -> Self {
-        let mut render_pipelines =
-            BTreeMap::<String, pipeline_handler::EffectPipelineData>::new();
+        let mut render_pipelines = BTreeMap::new();
 
-        let draw_objects = texture_objects
+        let draw_objects: Vec<DrawObject> = texture_objects
             .into_iter()
-            .map(|texture_object| {
-                DrawObject::new(
-                    device,
-                    queue,
-                    scene,
-                    texture_object,
-                    post_process,
-                    &mut render_pipelines,
-                    buffers,
-                    projection_bgl,
-                )
+            .map(|tex_obj| {
+                DrawObject::build(device, queue, scene, tex_obj, post_process, &mut render_pipelines, buffers, projection_bgl)
             })
-            .collect::<Vec<DrawObject>>();
+            .collect();
 
         Self {
             queue: Rc::new(draw_objects),
@@ -141,7 +57,7 @@ impl DrawQueue {
 }
 
 impl DrawObject {
-    pub fn new(
+    fn build(
         device: &Device,
         queue: &Queue,
         scene: &Scene,
@@ -158,22 +74,61 @@ impl DrawObject {
             .iter()
             .filter_map(|effect| {
                 let pass = effect.passes.first()?;
-                get_or_create_pipeline(
-                    device,
-                    effect.file.clone(),
-                    &pass.textures,
-                    pipelines,
-                    scene,
-                    projection_bgl,
-                )
+                get_or_create_pipeline(device, effect.file.clone(), &pass.textures, pipelines, scene, projection_bgl)
             })
             .collect();
 
+        let texture = Self::upload_texture(device, queue, &texture_object);
+        let source_view = texture.create_view(&Default::default());
+
+        let bindgroup = device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &post_process.layout,
+            entries: &[
+                BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&source_view) },
+                BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&post_process.sampler) },
+            ],
+        });
+
+        let effect_bindgroups = Self::build_effect_bindgroups(
+            device, queue, scene, post_process, pipelines,
+            &texture_object, &pipeline_rcs, &source_view,
+        );
+
+        let intermediates = if !effect_bindgroups.is_empty() {
+            Some(PingPongTextures::new(
+                device, queue, post_process,
+                texture_object.texture.dimension[0],
+                texture_object.texture.dimension[1],
+            ))
+        } else {
+            None
+        };
+
+        buffers.draw_texture(
+            queue,
+            texture_object.origin,
+            texture_object.angles,
+            texture_object.scale,
+            texture_object.size,
+        );
+
+        Self {
+            texture_object,
+            index_range: [index_start, buffers.index_len],
+            bindgroup,
+            pipelines: pipeline_rcs,
+            effect_bindgroups,
+            intermediates,
+        }
+    }
+
+    fn upload_texture(device: &Device, queue: &Queue, tex_obj: &TextureObject) -> Texture {
         let texture = device.create_texture(&TextureDescriptor {
             label: None,
             size: Extent3d {
-                width: texture_object.texture.dimension[0],
-                height: texture_object.texture.dimension[1],
+                width: tex_obj.texture.dimension[0],
+                height: tex_obj.texture.dimension[1],
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -191,45 +146,38 @@ impl DrawObject {
                 origin: Origin3d::ZERO,
                 aspect: TextureAspect::All,
             },
-            &texture_object.texture.payload,
+            &tex_obj.texture.payload,
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(texture_object.texture.dimension[0] * 4),
+                bytes_per_row: Some(tex_obj.texture.dimension[0] * 4),
                 rows_per_image: None,
             },
             Extent3d {
-                width: texture_object.texture.dimension[0],
-                height: texture_object.texture.dimension[1],
+                width: tex_obj.texture.dimension[0],
+                height: tex_obj.texture.dimension[1],
                 depth_or_array_layers: 1,
             },
         );
 
-        let source_texture_view = texture.create_view(&Default::default());
+        texture
+    }
 
-        let bindgroup = device.create_bind_group(&BindGroupDescriptor {
-            label: None,
-            layout: &post_process.layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(&source_texture_view),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(&post_process.sampler),
-                },
-            ],
-        });
-
-        let effect_bindgroups: Vec<EffectBindGroup> = texture_object
+    fn build_effect_bindgroups(
+        device: &Device,
+        queue: &Queue,
+        scene: &Scene,
+        post_process: &PostProcess,
+        pipelines: &BTreeMap<String, pipeline_handler::EffectPipelineData>,
+        texture_object: &TextureObject,
+        pipeline_rcs: &[Rc<RenderPipeline>],
+        source_view: &TextureView,
+    ) -> Vec<EffectBindGroup> {
+        texture_object
             .effects
             .iter()
             .zip(pipeline_rcs.iter())
             .filter_map(|(effect, pipeline)| {
-                let pipedata = pipelines.values().find(|d| {
-                    Rc::ptr_eq(&d.pipeline, pipeline)
-                })?;
-
+                let pipedata = pipelines.values().find(|d| Rc::ptr_eq(&d.pipeline, pipeline))?;
                 let pass = effect.passes.first()?;
 
                 let mask_path = pass.textures.first().and_then(|t| t.as_deref());
@@ -245,20 +193,10 @@ impl DrawObject {
                     .map(|(t, v)| (Some(t), Some(v)))
                     .unwrap_or((None, None));
 
-                let (bindgroup, blank_view, uniform_buffer) =
-                    create_effect_bindgroup(
-                        device,
-                        post_process,
-                        pipedata,
-                        &source_texture_view,
-                        mask_view.as_ref(),
-                        noise_view.as_ref(),
-                    )?;
-
                 let constants = pass.constantshadervalues.clone().unwrap_or_default();
                 let material_keys = pipedata.layout.uniform_material_keys.clone();
 
-                let mut tex_resolutions: BTreeMap<String, [f32; 4]> = BTreeMap::new();
+                let mut tex_resolutions = BTreeMap::new();
                 let sw = texture_object.texture.dimension[0] as f32;
                 let sh = texture_object.texture.dimension[1] as f32;
                 tex_resolutions.insert("g_Texture0Resolution".into(), [sw, sh, sw, sh]);
@@ -272,248 +210,13 @@ impl DrawObject {
                         [tex.width() as f32, tex.height() as f32, tex.width() as f32, tex.height() as f32]);
                 }
 
-                Some(EffectBindGroup {
-                    pipeline: Rc::clone(pipeline),
-                    bindgroup,
-                    uniform_buffer,
-                    uniform_layout: pipedata.uniform_layout.clone(),
-                    material_keys,
-                    constants,
-                    tex_resolutions,
-                    _blank_view: blank_view,
-                    _mask_tex: mask_tex,
-                    _noise_tex: noise_tex,
-                })
+                EffectBindGroup::new(
+                    device, post_process, pipedata, source_view,
+                    mask_view.as_ref(), noise_view.as_ref(),
+                    Rc::clone(pipeline), material_keys, constants,
+                    tex_resolutions, mask_tex, noise_tex,
+                )
             })
-            .collect();
-
-        let intermediates = if !effect_bindgroups.is_empty() {
-            let tw = texture_object.texture.dimension[0];
-            let th = texture_object.texture.dimension[1];
-            let tex_a = device.create_texture(&TextureDescriptor {
-                label: None,
-                size: Extent3d { width: tw, height: th, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: TextureDimension::D2,
-                format: TextureFormat::Rgba8UnormSrgb,
-                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let tex_b = device.create_texture(&TextureDescriptor {
-                label: None,
-                size: Extent3d { width: tw, height: th, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: TextureDimension::D2,
-                format: TextureFormat::Rgba8UnormSrgb,
-                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let view_a = tex_a.create_view(&Default::default());
-            let view_b = tex_b.create_view(&Default::default());
-            let blank_view = post_process.blank_texture.create_view(&Default::default());
-            let bg = device.create_bind_group(&BindGroupDescriptor {
-                label: None,
-                layout: &post_process.layout,
-                entries: &[
-                    BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&view_a) },
-                    BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&post_process.sampler) },
-                ],
-            });
-
-            let ndc_vbuf = device.create_buffer(&BufferDescriptor {
-                label: None,
-                size: std::mem::size_of::<Vertex>() as u64 * 4,
-                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&ndc_vbuf, 0, bytes_of(&NDC_VERTICES));
-
-            let ndc_ibuf = device.create_buffer(&BufferDescriptor {
-                label: None,
-                size: std::mem::size_of::<u32>() as u64 * 6,
-                usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(
-                &ndc_ibuf,
-                0,
-                bytes_of(&[0u32, 2, 1, 0, 3, 2]),
-            );
-
-            Some(PingPongTextures { tex_a, tex_b, view_a, view_b, bindgroup: bg, _blank_view: blank_view, ndc_vbuf, ndc_ibuf })
-        } else {
-            None
-        };
-
-        draw_texture(&texture_object, buffers, queue);
-
-        Self {
-            texture_object,
-            index_range: [index_start, buffers.index_len],
-            bindgroup,
-            pipelines: pipeline_rcs,
-            effect_bindgroups,
-            intermediates,
-        }
+            .collect()
     }
-}
-
-fn create_effect_bindgroup(
-    device: &Device,
-    post_process: &PostProcess,
-    pipedata: &EffectPipelineData,
-    source_view: &TextureView,
-    mask_view: Option<&TextureView>,
-    noise_view: Option<&TextureView>,
-) -> Option<(BindGroup, TextureView, Option<Buffer>)> {
-    let sampler_count = pipedata.layout.sampler_count();
-    let has_uniforms = !pipedata.layout.uniform_decls.is_empty();
-
-    let blank_view = post_process.blank_texture.create_view(&Default::default());
-
-    let uniform_size = if has_uniforms {
-        pipedata.uniform_layout.total_size()
-    } else {
-        0
-    };
-
-    let uniform_buffer: Option<Buffer> = if has_uniforms {
-        Some(device.create_buffer(&BufferDescriptor {
-            label: None,
-            size: uniform_size,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }))
-    } else {
-        None
-    };
-
-    let mut entries = Vec::new();
-
-    for i in 0..sampler_count {
-        let view: &TextureView = match i {
-            0 => source_view,
-            1 => mask_view.unwrap_or(&blank_view),
-            2 => noise_view.unwrap_or(&blank_view),
-            _ => &blank_view,
-        };
-        entries.push(BindGroupEntry {
-            binding: i as u32 * 2,
-            resource: BindingResource::TextureView(view),
-        });
-    }
-
-    entries.push(BindGroupEntry {
-        binding: crate::scene::renderer::post_processor::shader_preprocessor::WM_SAMPLER_BINDING,
-        resource: BindingResource::Sampler(&post_process.sampler),
-    });
-
-    if let Some(ref buf) = uniform_buffer {
-        entries.push(BindGroupEntry {
-            binding: pipedata.layout.uniform_binding,
-            resource: buf.as_entire_binding(),
-        });
-    }
-
-    let bindgroup = device.create_bind_group(&BindGroupDescriptor {
-        label: None,
-        layout: &pipedata.bindgroup_layout,
-        entries: &entries,
-    });
-
-    Some((bindgroup, blank_view, uniform_buffer))
-}
-
-
-impl Vertex {
-    pub fn create_buffer_layout<'a>() -> VertexBufferLayout<'a> {
-        VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as BufferAddress,
-            step_mode: VertexStepMode::Vertex,
-            attributes: &[
-                VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: VertexFormat::Float32x3,
-                },
-                VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 3]>() as BufferAddress,
-                    shader_location: 1,
-                    format: VertexFormat::Float32x2,
-                },
-            ],
-        }
-    }
-}
-
-fn draw_rect(buffers: &mut Buffers, queue: &Queue, pos: [Vec3; 4]) {
-    let rect = [
-        Vertex {
-            pos: pos[0].to_array(),
-            uv: [0.0, 0.0],
-        },
-        Vertex {
-            pos: pos[1].to_array(),
-            uv: [1.0, 0.0],
-        },
-        Vertex {
-            pos: pos[2].to_array(),
-            uv: [1.0, 1.0],
-        },
-        Vertex {
-            pos: pos[3].to_array(),
-            uv: [0.0, 1.0],
-        },
-    ];
-
-    let indices: [u32; 6] = [0, 2, 1, 0, 3, 2].map(|f| f + buffers.vertex_len);
-
-    queue.write_buffer(
-        &buffers.vertex,
-        std::mem::size_of::<Vertex>() as BufferAddress * buffers.vertex_len as BufferAddress,
-        bytes_of(&rect),
-    );
-
-    queue.write_buffer(
-        &buffers.index,
-        std::mem::size_of::<u32>() as BufferAddress * buffers.index_len as BufferAddress,
-        bytes_of(&indices),
-    );
-
-    buffers.index_len += indices.len() as u32;
-    buffers.vertex_len += rect.len() as u32;
-}
-
-fn draw_texture(texture_object: &TextureObject, buffers: &mut Buffers, queue: &Queue) {
-    let scale = Vec2 {
-        x: texture_object.scale.x,
-        y: texture_object.scale.y,
-    };
-
-    let size = texture_object.size * scale;
-    let z = texture_object.origin.z - 1.0;
-
-    let rotation_mat = Mat2::from_angle(texture_object.angles.z.to_radians());
-    let rotated = vec![
-        Vec2::new(-size.x / 2.0, size.y / 2.0),
-        Vec2::new(size.x / 2.0, size.y / 2.0),
-        Vec2::new(size.x / 2.0, -size.y / 2.0),
-        Vec2::new(-size.x / 2.0, -size.y / 2.0),
-    ]
-    .iter()
-    .map(|vertex| {
-        (rotation_mat * vertex) + Vec2::new(texture_object.origin.x, texture_object.origin.y)
-    })
-    .collect::<Vec<Vec2>>();
-
-    let rect = [
-        Vec3::new(rotated[0].x, rotated[0].y, z),
-        Vec3::new(rotated[1].x, rotated[1].y, z),
-        Vec3::new(rotated[2].x, rotated[2].y, z),
-        Vec3::new(rotated[3].x, rotated[3].y, z),
-    ];
-
-    draw_rect(buffers, queue, rect);
 }

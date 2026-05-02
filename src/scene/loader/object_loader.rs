@@ -57,7 +57,7 @@ impl ObjectMap {
         let mut node_map: BTreeMap<i64, Node> = BTreeMap::new();
 
         for object in objects {
-            let Some(loaded_object) = load_object(object, &scene) else {
+            let Some(loaded_object) = Self::load_object(object, &scene) else {
                 continue;
             };
             match loaded_object {
@@ -136,25 +136,83 @@ impl ObjectMap {
     }
 }
 
-fn load_object(object: &Object, scene: &Scene) -> Option<ObjectType> {
-    if object.image.is_some() {
-        // Texture
+impl ObjectMap {
+    fn load_object(object: &Object, scene: &Scene) -> Option<ObjectType> {
+        if object.image.is_some() {
+            // Texture
 
-        if object.visible.is_some() {
-            let visible = object.visible.clone().unwrap().value().unwrap_or(true);
-            if !visible {
-                return None;
+            if object.visible.is_some() {
+                let visible = object.visible.clone().unwrap().value().unwrap_or(true);
+                if !visible {
+                    return None;
+                }
             }
+
+            let origin = object
+                .origin
+                .as_ref()
+                .unwrap_or(&Vectors::default())
+                .parse()
+                .unwrap_or_default();
+            let angles = object
+                .angles
+                .as_ref()
+                .unwrap_or(&Vectors::default())
+                .parse()
+                .unwrap_or_default();
+            let scale = object
+                .scale
+                .as_ref()
+                .unwrap_or(&Vectors::Scaler(1.0))
+                .parse()
+                .unwrap_or_default();
+            let size = object
+                .size
+                .as_ref()
+                .unwrap_or(&Vectors::default())
+                .parse()
+                .unwrap_or_default();
+            let size = Vec2 {
+                x: size.x,
+                y: size.y,
+            };
+
+            let model_path = object.image.clone().unwrap_or_default();
+            let model = serde_json::from_str::<Model>(scene.jsons.get(&model_path)?).ok()?;
+            let mut material = Path::new(&model.material).to_path_buf();
+            material.set_extension("tex");
+
+            let Some(texture) = scene.textures.get(material.as_os_str().to_str().unwrap()) else {
+                println!("cannot get texture: {:?}", material);
+                return None;
+            };
+
+            return Some(ObjectType::Texture(TextureObject {
+                origin,
+                angles,
+                size,
+                scale,
+                parent: object.parent,
+                texture: Rc::clone(texture),
+                effects: object.effects.clone(),
+            }));
+        }
+
+        if object.sound.len() > 0 {
+            // Audio
+            let playback_mode = match object.playbackmode.clone().unwrap_or_default().as_str() {
+                "loop" => PlaybackMode::Loop,
+                _ => PlaybackMode::Others,
+            };
+
+            return Some(ObjectType::Audio(AudioObject {
+                sounds: object.sound.to_owned(),
+                playback_mode: playback_mode,
+            }));
         }
 
         let origin = object
             .origin
-            .as_ref()
-            .unwrap_or(&Vectors::default())
-            .parse()
-            .unwrap_or_default();
-        let angles = object
-            .angles
             .as_ref()
             .unwrap_or(&Vectors::default())
             .parse()
@@ -165,74 +223,18 @@ fn load_object(object: &Object, scene: &Scene) -> Option<ObjectType> {
             .unwrap_or(&Vectors::Scaler(1.0))
             .parse()
             .unwrap_or_default();
-        let size = object
-            .size
+        let angles = object
+            .angles
             .as_ref()
             .unwrap_or(&Vectors::default())
             .parse()
             .unwrap_or_default();
-        let size = Vec2 {
-            x: size.x,
-            y: size.y,
-        };
 
-        let model_path = object.image.clone().unwrap_or_default();
-        let model = serde_json::from_str::<Model>(scene.jsons.get(&model_path)?).ok()?;
-        let mut material = Path::new(&model.material).to_path_buf();
-        material.set_extension("tex");
-
-        let Some(texture) = scene.textures.get(material.as_os_str().to_str().unwrap()) else {
-            println!("cannot get texture: {:?}", material);
-            return None;
-        };
-
-        return Some(ObjectType::Texture(TextureObject {
+        Some(ObjectType::Node(Node {
             origin,
             angles,
-            size,
             scale,
             parent: object.parent,
-            texture: Rc::clone(texture),
-            effects: object.effects.clone(),
-        }));
+        }))
     }
-
-    if object.sound.len() > 0 {
-        // Audio
-        let playback_mode = match object.playbackmode.clone().unwrap_or_default().as_str() {
-            "loop" => PlaybackMode::Loop,
-            _ => PlaybackMode::Others,
-        };
-
-        return Some(ObjectType::Audio(AudioObject {
-            sounds: object.sound.to_owned(),
-            playback_mode: playback_mode,
-        }));
-    }
-
-    let origin = object
-        .origin
-        .as_ref()
-        .unwrap_or(&Vectors::default())
-        .parse()
-        .unwrap_or_default();
-    let scale = object
-        .scale
-        .as_ref()
-        .unwrap_or(&Vectors::Scaler(1.0))
-        .parse()
-        .unwrap_or_default();
-    let angles = object
-        .angles
-        .as_ref()
-        .unwrap_or(&Vectors::default())
-        .parse()
-        .unwrap_or_default();
-
-    Some(ObjectType::Node(Node {
-        origin,
-        angles,
-        scale,
-        parent: object.parent,
-    }))
 }

@@ -1,7 +1,12 @@
 pub mod app;
 mod buffer;
-mod draw;
+pub mod draw;
+mod effect_bindgroup;
+mod intermediate_pass;
 pub mod load;
+mod ping_pong;
 mod post_process;
 mod post_processor;
 mod projection;
+mod surface;
+pub mod vertex;

@@ -7,7 +7,8 @@ use crate::scene::{
     },
     renderer::{
         app::WgpuApp,
-        draw::{DrawQueue, Vertex},
+        draw::DrawQueue,
+        vertex::Vertex,
         post_process::PostProcess,
         projection::Projection,
     },

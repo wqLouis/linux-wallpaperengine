@@ -1,5 +1,10 @@
 pub mod effect_param;
 pub mod pipeline_handler;
+mod pipeline_helpers;
 pub mod renderer;
 pub(crate) mod shader_compiler;
+mod shader_header;
+mod shader_layout;
 pub(crate) mod shader_preprocessor;
+mod shader_replace;
+mod shader_transform;
