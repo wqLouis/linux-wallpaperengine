@@ -54,6 +54,9 @@ pub fn make_effect_intermediate_bindgroup(
 
 pub struct EffectBindGroup {
     pub pipeline: Rc<RenderPipeline>,
+    // Bind group recreated per-frame via make_effect_intermediate_bindgroup;
+    // kept here for potential single-pass rendering path
+    #[allow(dead_code)]
     pub bindgroup: BindGroup,
     pub uniform_buffer: Option<Buffer>,
     pub uniform_layout: effect_param::UniformLayout,

@@ -82,7 +82,7 @@ impl WgpuApp {
 
         let draw_queue = self.draw_queue.as_ref()?;
         let post_process = self.post_process.as_ref()?;
-        let screen_res = self.resolution.unwrap_or([1920, 1080]);
+        let screen_res = [self.surface.config.width, self.surface.config.height];
 
         write_effect_uniforms(&self.queue, draw_queue.queue.as_ref(), elapsed, &self.projection_matrix, screen_res);
 

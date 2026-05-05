@@ -78,18 +78,15 @@ impl LayerShellHandler for Wgpu {
         _: u32,
     ) {
         let (new_width, new_height) = configure.new_size;
-        let aspect_ratio = self.resolution[0] as f32 / self.resolution[1] as f32;
+        let (wp_w, wp_h) = (self.resolution[0] as f32, self.resolution[1] as f32);
 
-        let caled_w = (aspect_ratio * new_height as f32).round() as u32;
-        let caled_h = (new_width as f32 / aspect_ratio).round() as u32;
+        // Fit wallpaper within output bounds, maintaining aspect ratio ("contain")
+        let scale = f32::min(new_width as f32 / wp_w, new_height as f32 / wp_h);
+        let layer_w = (wp_w * scale).round() as u32;
+        let layer_h = (wp_h * scale).round() as u32;
 
-        if caled_w < new_width {
-            layer.set_size(new_width, caled_h);
-        } else {
-            layer.set_size(caled_w, new_height);
-        }
-
-        self.app.resize(self.resolution);
+        layer.set_size(layer_w, layer_h);
+        self.app.resize([layer_w, layer_h]);
         self.app.render().unwrap();
     }
 }

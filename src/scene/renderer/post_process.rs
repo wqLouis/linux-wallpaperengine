@@ -1,16 +1,9 @@
 use wgpu::*;
 
-use crate::scene::renderer::buffer::Buffers;
-
 pub struct PostProcess {
     pub sampler: Sampler,
     pub layout: BindGroupLayout,
     pub blank_texture: Texture,
-    pub blank_texture_b: Texture,
-    pub blank_view_b: TextureView,
-    pub blank_buffers: Buffers,
-    pub blank_bindgroup: BindGroup,
-    pub resolution: [u32; 2],
 }
 
 impl PostProcess {
@@ -48,7 +41,7 @@ impl PostProcess {
             ],
         });
 
-        let blank_desc = TextureDescriptor {
+        let blank_texture = device.create_texture(&TextureDescriptor {
             label: None,
             size: Extent3d {
                 width: res[0],
@@ -61,39 +54,12 @@ impl PostProcess {
             format: TextureFormat::Rgba8UnormSrgb,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
-        };
-
-        let blank_texture = device.create_texture(&blank_desc);
-        let blank_texture_b = device.create_texture(&blank_desc);
-        let blank_view_b = blank_texture_b.create_view(&Default::default());
-        let blank_buffers = Buffers::new(device, 6, 4);
-
-        let blank_bindgroup = device.create_bind_group(&BindGroupDescriptor {
-            label: None,
-            layout: &layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(
-                        &blank_texture.create_view(&Default::default()),
-                    ),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(&sampler),
-                },
-            ],
         });
 
         Self {
             sampler,
             layout,
             blank_texture,
-            blank_texture_b,
-            blank_view_b,
-            blank_buffers,
-            blank_bindgroup,
-            resolution: res,
         }
     }
 }

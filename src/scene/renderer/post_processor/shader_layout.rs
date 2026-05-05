@@ -5,24 +5,20 @@ use super::shader_header::get_headers;
 #[derive(Debug, Clone)]
 pub struct EffectLayout {
     pub sampler_names: Vec<String>,
+    // Pre-computed bindings (binding = index * 2); used by tests and for documentation
+    #[allow(dead_code)]
     pub sampler_bindings: Vec<u32>,
     pub uniform_decls: Vec<(String, String)>,
     pub uniform_material_keys: BTreeMap<String, String>,
     pub uniform_binding: u32,
-    pub varying_names: Vec<String>,
     pub varying_locations: BTreeMap<String, u32>,
     pub varying_types: BTreeMap<String, String>,
-    pub attribute_names: Vec<String>,
     pub attribute_locations: BTreeMap<String, u32>,
 }
 
 impl EffectLayout {
     pub fn sampler_count(&self) -> usize {
         self.sampler_names.len()
-    }
-
-    pub fn uniform_count(&self) -> usize {
-        self.uniform_decls.len()
     }
 }
 
@@ -79,10 +75,8 @@ pub fn collect_layout(source1: &str, source2: &str) -> EffectLayout {
         uniform_decls,
         uniform_material_keys: material_keys,
         uniform_binding,
-        varying_names,
         varying_locations,
         varying_types,
-        attribute_names,
         attribute_locations,
     }
 }

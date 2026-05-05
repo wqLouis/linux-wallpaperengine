@@ -184,6 +184,7 @@ pub struct SystemUniforms {
 }
 
 impl SystemUniforms {
+    #[cfg(test)]
     pub fn with_resolution(res: [u32; 2]) -> Self {
         SystemUniforms {
             screen_resolution: res,

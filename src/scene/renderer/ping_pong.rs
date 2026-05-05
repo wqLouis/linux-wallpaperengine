@@ -4,11 +4,16 @@ use super::vertex::{Vertex, NDC_VERTICES};
 use super::post_process::PostProcess;
 
 pub struct PingPongTextures {
-    pub tex_a: Texture,
-    pub tex_b: Texture,
+    // Own the textures; only views are read directly (ownership keeps views alive)
+    #[allow(dead_code)]
+    tex_a: Texture,
+    #[allow(dead_code)]
+    tex_b: Texture,
     pub view_a: TextureView,
     pub view_b: TextureView,
-    pub bindgroup: BindGroup,
+    // Cached bind group; make_bindgroup() recreates per-frame, kept for potential reuse
+    #[allow(dead_code)]
+    bindgroup: BindGroup,
     pub _blank_view: TextureView,
     pub ndc_vbuf: Buffer,
     pub ndc_ibuf: Buffer,
