@@ -14,12 +14,23 @@ use wayland_client::{
 
 use crate::scene::renderer::app::WgpuApp;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FitMode {
+    /// Scale wallpaper to fill entire output, cropping if aspect ratios differ
+    Cover,
+    /// Scale wallpaper to fit within output, letterboxing if aspect ratios differ
+    Contain,
+    /// Stretch wallpaper to exactly match output (ignores aspect ratio)
+    Stretch,
+}
+
 pub struct Wgpu {
     pub registry_state: RegistryState,
     pub seat_state: SeatState,
     pub output_state: OutputState,
     pub app: WgpuApp,
-    pub resolution: [u32; 2],
+    pub fit_mode: FitMode,
+    pub wp_resolution: [u32; 2],
 }
 
 impl CompositorHandler for Wgpu {
@@ -78,12 +89,24 @@ impl LayerShellHandler for Wgpu {
         _: u32,
     ) {
         let (new_width, new_height) = configure.new_size;
-        let (wp_w, wp_h) = (self.resolution[0] as f32, self.resolution[1] as f32);
 
-        // Fit wallpaper within output bounds, maintaining aspect ratio ("contain")
-        let scale = f32::min(new_width as f32 / wp_w, new_height as f32 / wp_h);
-        let layer_w = (wp_w * scale).round() as u32;
-        let layer_h = (wp_h * scale).round() as u32;
+        // Ignore initial (0, 0) configure from some compositors
+        if new_width == 0 && new_height == 0 {
+            return;
+        }
+
+        let (layer_w, layer_h) = match self.fit_mode {
+            FitMode::Stretch => (new_width, new_height),
+            _ => {
+                let (wp_w, wp_h) = (self.wp_resolution[0] as f32, self.wp_resolution[1] as f32);
+                let scale = match self.fit_mode {
+                    FitMode::Cover => f32::max(new_width as f32 / wp_w, new_height as f32 / wp_h),
+                    FitMode::Contain => f32::min(new_width as f32 / wp_w, new_height as f32 / wp_h),
+                    _ => unreachable!(),
+                };
+                ((wp_w * scale).round() as u32, (wp_h * scale).round() as u32)
+            }
+        };
 
         layer.set_size(layer_w, layer_h);
         self.app.resize([layer_w, layer_h]);

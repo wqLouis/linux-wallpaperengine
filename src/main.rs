@@ -5,6 +5,7 @@ use std::path::Path;
 use clap::Parser;
 
 use crate::scene::adapters::{winit_adapter, wlr_layer_shell_adapter};
+use crate::scene::adapters::wlr_app::FitMode;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -17,8 +18,13 @@ struct Args {
     #[arg(short, default_value = "wlr")]
     modes: String,
 
+    // Override wallpaper resolution (e.g. 1920x1080)
     #[arg(short, default_value = None)]
     dimensions: Option<String>,
+
+    // How to fit wallpaper to output: cover, contain, or stretch
+    #[arg(long, default_value = "cover")]
+    fit_mode: String,
 }
 
 pub const MAX_TEXTURE: u32 = 512;
@@ -51,12 +57,22 @@ fn main() {
         resolution = None;
     }
 
+    let fit_mode = match args.fit_mode.as_str() {
+        "cover" => FitMode::Cover,
+        "contain" | "fit" => FitMode::Contain,
+        "stretch" => FitMode::Stretch,
+        _ => {
+            eprintln!("Unknown fit-mode '{}'. Valid: cover, contain, stretch", args.fit_mode);
+            return;
+        }
+    };
+
     match args.modes.as_str() {
         "winit" => {
             winit_adapter::start(args.path);
         }
         "wlr" => {
-            wlr_layer_shell_adapter::start(args.path, resolution);
+            wlr_layer_shell_adapter::start(args.path, resolution, fit_mode);
         }
         _ => {}
     }

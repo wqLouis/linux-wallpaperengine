@@ -14,10 +14,10 @@ use smithay_client_toolkit::{
 use std::{ptr::NonNull, time::Duration};
 use wayland_client::{Connection, Proxy, globals::registry_queue_init};
 
-use super::wlr_app::Wgpu;
+use super::wlr_app::{FitMode, Wgpu};
 use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
 
-pub fn start(pkg_path: String, resolution: Option<[u32; 2]>) {
+pub fn start(pkg_path: String, resolution: Option<[u32; 2]>, fit_mode: FitMode) {
     let conn = Connection::connect_to_env().unwrap();
     let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
     let qh = event_queue.handle();
@@ -55,14 +55,15 @@ pub fn start(pkg_path: String, resolution: Option<[u32; 2]>) {
 
     app.load();
 
-    let res = resolution.unwrap_or(app.resolution.expect("Unknown resolution"));
+    let wp_res = resolution.unwrap_or(app.resolution.expect("Unknown resolution"));
 
     let mut wgpu = Wgpu {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
         app,
-        resolution: res,
+        fit_mode,
+        wp_resolution: wp_res,
     };
 
     let frame_duration = Duration::from_millis(16);
