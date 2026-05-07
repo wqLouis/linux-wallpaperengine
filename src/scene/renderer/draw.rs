@@ -184,8 +184,9 @@ impl DrawObject {
                 let pipedata = pipelines.values().find(|d| Rc::ptr_eq(&d.pipeline, pipeline))?;
                 let pass = effect.passes.first()?;
 
-                let mask_path = pass.textures.first().and_then(|t| t.as_deref());
-                let noise_path = pass.textures.get(1).and_then(|t| t.as_deref());
+                // textures array index = GL texture unit: [0]=source, [1]=g_Texture1, [2]=g_Texture2
+                let mask_path = pass.textures.get(1).and_then(|t| t.as_deref());
+                let noise_path = pass.textures.get(2).and_then(|t| t.as_deref());
 
                 let (mask_tex, mask_view) = mask_path
                     .and_then(|p| load_mask_texture(device, queue, scene, p))

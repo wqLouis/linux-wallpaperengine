@@ -7,14 +7,14 @@ pub struct PostProcess {
 }
 
 impl PostProcess {
-    pub fn new(device: &Device, res: [u32; 2]) -> Self {
+    pub fn new(device: &Device, queue: &Queue, res: [u32; 2]) -> Self {
         let sampler = device.create_sampler(&SamplerDescriptor {
             label: None,
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
             address_mode_w: AddressMode::ClampToEdge,
             mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Nearest,
+            min_filter: FilterMode::Linear,
             mipmap_filter: MipmapFilterMode::Nearest,
             ..Default::default()
         });
@@ -52,9 +52,31 @@ impl PostProcess {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: TextureFormat::Rgba8UnormSrgb,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         });
+
+        // Initialize blank texture to white (mask=1.0 when no mask texture is bound)
+        let blank_data = vec![255u8; (res[0] * res[1] * 4) as usize];
+        queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &blank_texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            &blank_data,
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(res[0] * 4),
+                rows_per_image: None,
+            },
+            Extent3d {
+                width: res[0],
+                height: res[1],
+                depth_or_array_layers: 1,
+            },
+        );
 
         Self {
             sampler,

@@ -9,12 +9,16 @@ pub fn apply_texture_combos(
     defines: &mut BTreeMap<String, String>,
     pass_textures: &[Option<String>],
 ) {
-    if pass_textures.first().and_then(|t| t.as_deref()).is_some() {
+    // The textures array index is the GL texture unit number.
+    // textures[0] = source (g_Texture0, handled separately),
+    // textures[1] = first user texture (g_Texture1, MASK combo),
+    // textures[2] = second user texture (g_Texture2, TIMEOFFSET combo).
+    if pass_textures.get(1).and_then(|t| t.as_deref()).is_some() {
         defines
             .entry("MASK".to_string())
             .or_insert_with(|| "1".to_string());
     }
-    if pass_textures.get(1).and_then(|t| t.as_deref()).is_some() {
+    if pass_textures.get(2).and_then(|t| t.as_deref()).is_some() {
         defines
             .entry("TIMEOFFSET".to_string())
             .or_insert_with(|| "1".to_string());

@@ -22,10 +22,11 @@ pub fn make_effect_intermediate_bindgroup(
     let mut entries = Vec::new();
 
     for i in 0..pipedata.layout.sampler_count() {
-        let view: &TextureView = if i == 0 {
-            source_view
-        } else {
-            &effect_bg._blank_view
+        let view: &TextureView = match i {
+            0 => source_view,
+            1 => effect_bg.mask_view.as_ref().unwrap_or(&effect_bg.blank_view),
+            2 => effect_bg.noise_view.as_ref().unwrap_or(&effect_bg.blank_view),
+            _ => &effect_bg.blank_view,
         };
         entries.push(BindGroupEntry {
             binding: i as u32 * 2,
@@ -63,7 +64,9 @@ pub struct EffectBindGroup {
     pub material_keys: BTreeMap<String, String>,
     pub constants: BTreeMap<String, Value>,
     pub tex_resolutions: BTreeMap<String, [f32; 4]>,
-    pub _blank_view: TextureView,
+    pub blank_view: TextureView,
+    pub mask_view: Option<TextureView>,
+    pub noise_view: Option<TextureView>,
     pub _mask_tex: Option<Texture>,
     pub _noise_tex: Option<Texture>,
 }
@@ -131,6 +134,10 @@ impl EffectBindGroup {
             entries: &entries,
         });
 
+        // Clone views for storage (TextureView is just a handle, cheap to clone)
+        let stored_mask_view = mask_view.map(|v| v.clone());
+        let stored_noise_view = noise_view.map(|v| v.clone());
+
         Some(Self {
             pipeline,
             bindgroup,
@@ -139,7 +146,9 @@ impl EffectBindGroup {
             material_keys,
             constants,
             tex_resolutions,
-            _blank_view: blank_view,
+            blank_view,
+            mask_view: stored_mask_view,
+            noise_view: stored_noise_view,
             _mask_tex: mask_tex,
             _noise_tex: noise_tex,
         })

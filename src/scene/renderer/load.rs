@@ -27,7 +27,7 @@ impl WgpuApp {
             scene.root.general.orthogonalprojection.height as u32,
         ];
 
-        let post_process = PostProcess::new(&self.device, size);
+        let post_process = PostProcess::new(&self.device, &self.queue, size);
 
         self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 

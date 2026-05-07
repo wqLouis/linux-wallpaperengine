@@ -45,10 +45,11 @@ pub fn get_or_create_pipeline(
 
 fn compute_cache_key(effect_path: &str, pass_textures: &[Option<String>]) -> String {
     let mut key = effect_path.to_string();
-    if pass_textures.first().and_then(|t| t.as_deref()).is_some() {
+    // textures[1] = g_Texture1 (MASK combo), textures[2] = g_Texture2 (TIMEOFFSET)
+    if pass_textures.get(1).and_then(|t| t.as_deref()).is_some() {
         key.push_str("|M1");
     }
-    if pass_textures.get(1).and_then(|t| t.as_deref()).is_some() {
+    if pass_textures.get(2).and_then(|t| t.as_deref()).is_some() {
         key.push_str("|T1");
     }
     key
@@ -177,8 +178,23 @@ pub fn load_mask_texture(
     scene: &Scene,
     path: &str,
 ) -> Option<(Texture, TextureView)> {
-    let tex_path = format!("{}.tex", path);
-    let tex = scene.textures.get(&tex_path)?;
+    // Try multiple path resolutions: the .pkg stores files under "materials/"
+    // but JSON references may use relative paths like "masks/..."
+    let candidates = [
+        format!("{}.tex", path),
+        format!("materials/{}.tex", path),
+    ];
+    let tex = candidates.iter().find_map(|key| scene.textures.get(key));
+    let tex = tex?;
+
+    // Select GPU format based on the texture's native encoding.
+    // R8/RG88 stay single/two-channel (not expanded to RGBA),
+    // PNG/JPG/DXT are already RGBA from parse_to_rgba.
+    let (format, bpp) = match tex.extension.as_str() {
+        "r8" => (TextureFormat::R8Unorm, 1u32),
+        "rg88" => (TextureFormat::Rg8Unorm, 2u32),
+        _ => (TextureFormat::Rgba8Unorm, 4u32),
+    };
 
     let texture = device.create_texture(&TextureDescriptor {
         label: None,
@@ -190,7 +206,7 @@ pub fn load_mask_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: TextureDimension::D2,
-        format: TextureFormat::Rgba8UnormSrgb,
+        format,
         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -205,7 +221,7 @@ pub fn load_mask_texture(
         &tex.payload,
         TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(tex.dimension[0] * 4),
+            bytes_per_row: Some(tex.dimension[0] * bpp),
             rows_per_image: None,
         },
         Extent3d {
