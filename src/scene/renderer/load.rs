@@ -42,6 +42,7 @@ impl WgpuApp {
             pipeline,
             &post_process,
             &self.projection_bindgroup.projection_layout,
+            self.no_effects,
         );
 
         load_audios(&self.audio_stream, objects.audio, &mut scene);

@@ -30,10 +30,11 @@ pub struct WgpuApp {
     pub resolution: Option<[u32; 2]>,
     pub start_time: Instant,
     pub projection_matrix: [[f32; 4]; 4],
+    pub no_effects: bool,
 }
 
 impl WgpuApp {
-    pub async fn new(scene_path: String, surface: InitAppSurface, size: [u32; 2]) -> Self {
+    pub async fn new(scene_path: String, surface: InitAppSurface, size: [u32; 2], no_effects: bool) -> Self {
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::VULKAN | Backends::METAL,
             ..Default::default()
@@ -74,6 +75,7 @@ impl WgpuApp {
             clear_color: Vec3::ZERO, device, queue, audio_stream,
             draw_queue: None, resolution: None, post_process: None,
             start_time: Instant::now(), projection_matrix: [[1.0; 4]; 4],
+            no_effects,
         }
     }
 

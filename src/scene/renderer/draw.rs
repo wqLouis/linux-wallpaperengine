@@ -42,13 +42,14 @@ impl DrawQueue {
         image_pipeline: RenderPipeline,
         post_process: &PostProcess,
         projection_bgl: &BindGroupLayout,
+        no_effects: bool,
     ) -> Self {
         let mut render_pipelines = BTreeMap::new();
 
         let draw_objects: Vec<DrawObject> = texture_objects
             .into_iter()
             .map(|tex_obj| {
-                DrawObject::build(device, queue, scene, tex_obj, post_process, &mut render_pipelines, buffers, projection_bgl)
+                DrawObject::build(device, queue, scene, tex_obj, post_process, &mut render_pipelines, buffers, projection_bgl, no_effects)
             })
             .collect();
 
@@ -70,17 +71,22 @@ impl DrawObject {
         pipelines: &mut BTreeMap<String, pipeline_handler::EffectPipelineData>,
         buffers: &mut Buffers,
         projection_bgl: &BindGroupLayout,
+        no_effects: bool,
     ) -> Self {
         let index_start = buffers.index_len;
 
-        let pipeline_rcs: Vec<Rc<RenderPipeline>> = texture_object
-            .effects
-            .iter()
-            .filter_map(|effect| {
-                let pass = effect.passes.first()?;
-                get_or_create_pipeline(device, effect.file.clone(), &pass.textures, pipelines, scene, projection_bgl)
-            })
-            .collect();
+        let pipeline_rcs: Vec<Rc<RenderPipeline>> = if no_effects {
+            Vec::new()
+        } else {
+            texture_object
+                .effects
+                .iter()
+                .filter_map(|effect| {
+                    let pass = effect.passes.first()?;
+                    get_or_create_pipeline(device, effect.file.clone(), &pass.textures, pipelines, scene, projection_bgl)
+                })
+                .collect()
+        };
 
         let texture = Self::upload_texture(device, queue, &texture_object);
         let source_view = texture.create_view(&Default::default());

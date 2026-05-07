@@ -25,6 +25,10 @@ struct Args {
     // How to fit wallpaper to output: cover, contain, or stretch
     #[arg(long, default_value = "cover")]
     fit_mode: String,
+
+    // Bypass all post-process effects, render as static image
+    #[arg(long, default_value_t = false)]
+    no_effects: bool,
 }
 
 pub const MAX_TEXTURE: u32 = 512;
@@ -69,10 +73,10 @@ fn main() {
 
     match args.modes.as_str() {
         "winit" => {
-            winit_adapter::start(args.path);
+            winit_adapter::start(args.path, args.no_effects);
         }
         "wlr" => {
-            wlr_layer_shell_adapter::start(args.path, resolution, fit_mode);
+            wlr_layer_shell_adapter::start(args.path, resolution, fit_mode, args.no_effects);
         }
         _ => {}
     }

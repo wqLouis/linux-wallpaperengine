@@ -16,6 +16,7 @@ struct WinitApp {
     window: Option<Arc<Window>>,
 
     pkg_path: String,
+    no_effects: bool,
 }
 
 impl ApplicationHandler for WinitApp {
@@ -39,6 +40,7 @@ impl ApplicationHandler for WinitApp {
             self.pkg_path.clone(),
             crate::scene::renderer::app::InitAppSurface::Winit(Arc::clone(&window)),
             [size.width, size.height],
+            self.no_effects,
         ));
 
         wgpu_app.load();
@@ -73,10 +75,11 @@ impl ApplicationHandler for WinitApp {
     }
 }
 
-pub fn start(pkg_path: String) {
+pub fn start(pkg_path: String, no_effects: bool) {
     let event_loop = EventLoop::new().unwrap();
     let mut app = WinitApp {
         pkg_path,
+        no_effects,
         ..Default::default()
     };
 

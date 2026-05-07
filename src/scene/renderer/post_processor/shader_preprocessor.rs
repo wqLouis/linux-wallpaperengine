@@ -181,8 +181,8 @@ uniform float g_Speed;
 
     #[test]
     fn test_preprocess_waterwaves() {
-        let vert = include_str!("../../../../test/yurucamp/shaders/effects/waterwaves.vert");
-        let frag = include_str!("../../../../test/yurucamp/shaders/effects/waterwaves.frag");
+        let vert = include_str!("../../../../../test/yurucamp/shaders/effects/waterwaves.vert");
+        let frag = include_str!("../../../../../test/yurucamp/shaders/effects/waterwaves.frag");
         let (vert_out, frag_out, layout) = preprocess_pair(vert, frag);
 
         assert_eq!(layout.sampler_names.len(), 3);
@@ -208,8 +208,8 @@ uniform float g_Speed;
 
     #[test]
     fn test_preprocess_cloudmotion() {
-        let vert = include_str!("../../../../test/yurucamp/shaders/effects/cloudmotion.vert");
-        let frag = include_str!("../../../../test/yurucamp/shaders/effects/cloudmotion.frag");
+        let vert = include_str!("../../../../../test/yurucamp/shaders/effects/cloudmotion.vert");
+        let frag = include_str!("../../../../../test/yurucamp/shaders/effects/cloudmotion.frag");
         let (vert_out, _frag_out, layout) = preprocess_pair(vert, frag);
 
         assert!(layout.varying_types.contains_key("v_NoiseCoord"));

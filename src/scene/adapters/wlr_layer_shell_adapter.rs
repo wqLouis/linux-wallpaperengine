@@ -17,7 +17,7 @@ use wayland_client::{Connection, Proxy, globals::registry_queue_init};
 use super::wlr_app::{FitMode, Wgpu};
 use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
 
-pub fn start(pkg_path: String, resolution: Option<[u32; 2]>, fit_mode: FitMode) {
+pub fn start(pkg_path: String, resolution: Option<[u32; 2]>, fit_mode: FitMode, no_effects: bool) {
     let conn = Connection::connect_to_env().unwrap();
     let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
     let qh = event_queue.handle();
@@ -51,6 +51,7 @@ pub fn start(pkg_path: String, resolution: Option<[u32; 2]>, fit_mode: FitMode) 
         pkg_path,
         InitAppSurface::Raw((raw_display_handle, raw_window_handle)),
         [256, 256],
+        no_effects,
     ));
 
     app.load();
