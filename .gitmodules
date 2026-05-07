@@ -1,3 +1,4 @@
 [submodule "src/pkg_parser"]
 	path = src/pkg_parser
 	url = https://github.com/wqlouis/pkg_parser.git
+	branch = crate
