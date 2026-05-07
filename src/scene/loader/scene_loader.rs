@@ -1,4 +1,4 @@
-use depkg::pkg_parser::{parser::Pkg, tex_parser::Tex};
+use pkg_parser::pkg_parser::{parser::Pkg, tex_parser::Tex};
 use indicatif::ProgressBar;
 use std::{
     collections::BTreeMap,

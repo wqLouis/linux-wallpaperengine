@@ -1,3 +1,3 @@
-[submodule "src/depkg"]
-	path = src/depkg
-	url = https://github.com/wqlouis/depkg.git
+[submodule "src/pkg_parser"]
+	path = src/pkg_parser
+	url = https://github.com/wqlouis/pkg_parser.git

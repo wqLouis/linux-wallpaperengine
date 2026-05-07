@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::BTreeMap, path::Path, rc::Rc};
 
-use depkg::pkg_parser::tex_parser::Tex;
+use pkg_parser::pkg_parser::tex_parser::Tex;
 use glam::{Vec2, Vec3};
 
 use crate::scene::loader::{

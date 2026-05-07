@@ -1,0 +1,18 @@
+[package]
+name = "pkg_parser"
+version = "1.2.0"
+edition = "2024"
+description = "A tool to decompile wallpaper engine pkg and tex files"
+license = "GPL-3.0"
+
+[dependencies]
+bcndecode = "0.2.0"
+image = "0.25.9"
+lz4_flex = "0.12.0"
+
+[profile.release]
+debug = false
+strip = true
+lto = "thin"
+panic = "abort"
+codegen-units = 1
