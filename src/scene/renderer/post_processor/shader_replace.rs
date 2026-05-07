@@ -202,6 +202,56 @@ pub fn replace_atan2(line: &str) -> String {
     }
 }
 
+/// Replace GLSL reserved keywords used as identifiers.
+/// `sample` and `packed` are reserved GLSL keywords that may appear
+/// as variable names in Wallpaper Engine shaders.
+pub fn replace_reserved_identifiers(line: &str) -> String {
+    let mut result = replace_keyword_identifier(&line, "sample", "sampleColor");
+    result = replace_keyword_identifier(&result, "packed", "packedValue");
+    result
+}
+
+/// Replace a single reserved keyword identifier with a safe alternative.
+fn replace_keyword_identifier(line: &str, keyword: &str, replacement: &str) -> String {
+    if !line.contains(keyword) {
+        return line.to_string();
+    }
+    let mut result = line.to_string();
+    let mut search_start = 0;
+    let kw_len = keyword.len();
+    while let Some(pos) = result[search_start..].find(keyword) {
+        let abs_start = search_start + pos;
+        let abs_end = abs_start + kw_len;
+
+        // Check preceding character: must be non-alphanumeric/non-underscore
+        let preceded_by_word = abs_start > 0
+            && result[..abs_start]
+                .chars()
+                .last()
+                .map_or(false, |c| c.is_alphanumeric() || c == '_');
+
+        // Check following character: must be non-alphanumeric/non-underscore
+        let followed_by_word = result[abs_end..]
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_alphanumeric() || c == '_');
+
+        if !preceded_by_word && !followed_by_word {
+            // Skip if this is a function call like keyword()
+            let next_non_space = result[abs_end..].chars().next();
+            if next_non_space == Some('(') {
+                search_start = abs_start + 1;
+                continue;
+            }
+            result.replace_range(abs_start..abs_end, replacement);
+            search_start = abs_start + replacement.len();
+        } else {
+            search_start = abs_start + 1;
+        }
+    }
+    result
+}
+
 fn find_top_level_comma(s: &str) -> Option<usize> {
     let mut depth = 0;
     for (i, ch) in s.char_indices() {

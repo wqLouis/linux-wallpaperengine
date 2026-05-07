@@ -13,6 +13,9 @@ pub struct EffectLayout {
     pub uniform_binding: u32,
     pub varying_locations: BTreeMap<String, u32>,
     pub varying_types: BTreeMap<String, String>,
+    /// Varyings that exist in the vertex shader source (includes conditional ones).
+    /// Fragment shader `in` declarations are only emitted for varyings in this set.
+    pub vertex_varyings: Vec<String>,
     pub attribute_locations: BTreeMap<String, u32>,
 }
 
@@ -30,17 +33,35 @@ pub fn collect_layout(source1: &str, source2: &str) -> EffectLayout {
     let mut attribute_set: BTreeMap<String, u32> = BTreeMap::new();
     let mut material_keys: BTreeMap<String, String> = BTreeMap::new();
 
-    for source in [source1, source2] {
-        collect_from_source(
-            source,
-            &mut sampler_names,
-            &mut uniform_map,
-            &mut varying_set,
-            &mut varying_types,
-            &mut attribute_set,
-            &mut material_keys,
-        );
+    // Track vertex varyings for fragment input validation.
+    // wgpu requires all fragment inputs to have corresponding vertex outputs.
+    let mut vert_varyings: Vec<String> = Vec::new();
+
+    // Process vertex shader (source1) first, tracking all its varyings
+    collect_from_source(
+        source1,
+        &mut sampler_names,
+        &mut uniform_map,
+        &mut varying_set,
+        &mut varying_types,
+        &mut attribute_set,
+        &mut material_keys,
+    );
+    // Snapshot all varyings found from vertex shader
+    for (name, _) in varying_set.clone() {
+        vert_varyings.push(name);
     }
+
+    // Then process fragment shader (source2) for full layout
+    collect_from_source(
+        source2,
+        &mut sampler_names,
+        &mut uniform_map,
+        &mut varying_set,
+        &mut varying_types,
+        &mut attribute_set,
+        &mut material_keys,
+    );
 
     sampler_names.sort();
     sampler_names.dedup();
@@ -69,6 +90,9 @@ pub fn collect_layout(source1: &str, source2: &str) -> EffectLayout {
         .map(|(i, name)| (name.clone(), i as u32))
         .collect();
 
+    vert_varyings.sort();
+    vert_varyings.dedup();
+
     EffectLayout {
         sampler_names,
         sampler_bindings,
@@ -77,6 +101,7 @@ pub fn collect_layout(source1: &str, source2: &str) -> EffectLayout {
         uniform_binding,
         varying_locations,
         varying_types,
+        vertex_varyings: vert_varyings,
         attribute_locations,
     }
 }

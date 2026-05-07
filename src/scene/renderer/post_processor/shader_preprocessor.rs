@@ -5,12 +5,148 @@ pub use super::shader_layout::EffectLayout;
 pub use super::shader_transform::preprocess_with_layout;
 
 use super::shader_layout::collect_layout;
+use super::shader_transform::preprocess_with_layout_tracked;
 
 pub fn preprocess_pair(vert: &str, frag: &str) -> (String, String, EffectLayout) {
     let layout = collect_layout(vert, frag);
-    let vert_out = preprocess_with_layout(vert, ShaderStage::Vertex, &layout);
+    let (mut vert_out, vert_emitted) =
+        preprocess_with_layout_tracked(vert, ShaderStage::Vertex, &layout);
     let frag_out = preprocess_with_layout(frag, ShaderStage::Fragment, &layout);
+
+    // Ensure vertex always outputs all varyings unconditionally.
+    // Some varyings are only declared inside #if blocks in the vertex source,
+    // but the fragment may reference them unconditionally. wgpu requires all
+    // fragment inputs to have corresponding vertex outputs.
+    //
+    // Strategy: find varying declarations inside #if blocks and hoist them
+    // outside, while keeping the assignment code inside the #if block.
+    let missing: Vec<&String> = layout
+        .vertex_varyings
+        .iter()
+        .filter(|v| !vert_emitted.iter().any(|e| e == *v))
+        .collect();
+
+    if !missing.is_empty() {
+        vert_out = hoist_conditional_varyings(&vert_out, &layout, &missing);
+    }
+
     (vert_out, frag_out, layout)
+}
+
+/// Hoist varying declarations out of #if blocks so they are always available
+/// as vertex outputs, while keeping the assignment code inside #if blocks.
+fn hoist_conditional_varyings(
+    output: &str,
+    layout: &EffectLayout,
+    missing: &[&String],
+) -> String {
+    let mut result = String::with_capacity(output.len() + 512);
+    let mut if_depth: u32 = 0;
+    let mut hoisted_decls: Vec<String> = Vec::new();
+    let mut hoisted_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+
+        // Track #if depth
+        if trimmed.starts_with("#if") {
+            if_depth += 1;
+        } else if trimmed.starts_with("#endif") {
+            if_depth = if_depth.saturating_sub(1);
+        }
+
+        // Check if this is a conditional varying declaration (vertex stage: "out")
+        if if_depth > 0
+            && trimmed.starts_with("layout(")
+            && trimmed.contains(") out ")
+        {
+            let name = extract_pp_varying_name(trimmed);
+            if let Some(ref n) = name {
+                if missing.iter().any(|v| v == &n) && !hoisted_names.contains(n) {
+                    // Collect this declaration to hoist outside #if blocks
+                    hoisted_names.insert(n.clone());
+                    hoisted_decls.push(line.to_string());
+                    continue; // Skip the inside-#if copy
+                }
+            }
+        }
+
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    // Prepend hoisted declarations at the appropriate position
+    // (after #version and #define headers, before main code)
+    if !hoisted_decls.is_empty() {
+        let insertion = find_decl_insertion_point(&result);
+        let decl_block: String = hoisted_decls
+            .iter()
+            .map(|d| format!("{}\n", d))
+            .collect();
+        result.insert_str(insertion, &decl_block);
+    }
+
+    // Add zero-initialization in main() for hoisted varyings
+    for var_name in &hoisted_names {
+        let ty = layout
+            .varying_types
+            .get(var_name.as_str())
+            .map(|s| s.as_str())
+            .unwrap_or("vec4");
+        result = add_varying_init(&result, var_name, ty);
+    }
+
+    result
+}
+
+/// Extract the variable name from a preprocessed varying line like
+/// "layout(location=1) out vec2 v_TexCoordMask;"
+fn extract_pp_varying_name(line: &str) -> Option<String> {
+    // Split on ") out " or ") in " to get "TYPE NAME;"
+    let after_qualifier = line.split(") out ").nth(1)?;
+    // Split on whitespace: "vec2 v_TexCoordMask;" -> ["vec2", "v_TexCoordMask;"]
+    let parts: Vec<&str> = after_qualifier.split_whitespace().collect();
+    if parts.len() >= 2 {
+        Some(parts[1].trim_end_matches(';').to_string())
+    } else {
+        None
+    }
+}
+
+/// Find the insertion point for hoisted declarations: after #version and #define headers.
+fn find_decl_insertion_point(output: &str) -> usize {
+    let mut pos = 0usize;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#version") || trimmed.starts_with("#define") {
+            pos += line.len() + 1;
+        } else {
+            break;
+        }
+    }
+    pos
+}
+
+/// Insert a zero-initialization for a varying at the beginning of main().
+fn add_varying_init(output: &str, var_name: &str, ty: &str) -> String {
+    if let Some(main_pos) = output.find("void main()") {
+        // Find the opening brace of main
+        if let Some(brace_pos) = output[main_pos..].find('{') {
+            let insert_pos = main_pos + brace_pos + 1;
+            let init_line = match ty {
+                "vec2" => format!("\n    {} = vec2(0.0);", var_name),
+                "vec3" => format!("\n    {} = vec3(0.0);", var_name),
+                "vec4" => format!("\n    {} = vec4(0.0);", var_name),
+                "float" => format!("\n    {} = 0.0;", var_name),
+                "int" => format!("\n    {} = 0;", var_name),
+                _ => format!("\n    {} = {}(0.0);", var_name, ty),
+            };
+            let mut result = output.to_string();
+            result.insert_str(insert_pos, &init_line);
+            return result;
+        }
+    }
+    output.to_string()
 }
 
 pub fn preprocess(source: &str, stage: ShaderStage) -> String {

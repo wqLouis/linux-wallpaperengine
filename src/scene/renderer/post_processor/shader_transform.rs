@@ -9,7 +9,19 @@ use super::{
 };
 
 pub fn preprocess_with_layout(source: &str, stage: ShaderStage, layout: &EffectLayout) -> String {
+    let (result, _) = preprocess_with_layout_tracked(source, stage, layout);
+    result
+}
+
+/// Preprocess a shader and also track which varyings were emitted in the output.
+pub(crate) fn preprocess_with_layout_tracked(
+    source: &str,
+    stage: ShaderStage,
+    layout: &EffectLayout,
+) -> (String, Vec<String>) {
     let mut result = String::with_capacity(source.len() + 4096);
+    let mut emitted_varyings: Vec<String> = Vec::new();
+    let mut if_depth: u32 = 0;
     result.push_str("#version 450\n");
 
     emit_declarations(&mut result, stage, layout);
@@ -57,6 +69,12 @@ pub fn preprocess_with_layout(source: &str, stage: ShaderStage, layout: &EffectL
             {
                 continue;
             }
+            // Track #if/#endif depth to identify unconditional varying declarations
+            if trimmed.starts_with("#if") {
+                if_depth += 1;
+            } else if trimmed.starts_with("#endif") {
+                if_depth = if_depth.saturating_sub(1);
+            }
             result.push_str(line);
             result.push('\n');
             continue;
@@ -95,6 +113,19 @@ pub fn preprocess_with_layout(source: &str, stage: ShaderStage, layout: &EffectL
                 _ => "in",
             };
             let name = shader_layout::extract_variable_name(rest);
+
+            // For fragment shaders, skip varyings not present in the vertex shader
+            // source at all (these are dead code / unused declarations).
+            // Conditional vertex varyings (inside #if blocks) are handled by
+            // the hoisting logic in preprocess_pair.
+            if stage == ShaderStage::Fragment {
+                if let Some(ref n) = name {
+                    if !layout.vertex_varyings.iter().any(|v| v == n) {
+                        continue;
+                    }
+                }
+            }
+
             let location = name
                 .as_ref()
                 .and_then(|n| layout.varying_locations.get(n))
@@ -104,6 +135,13 @@ pub fn preprocess_with_layout(source: &str, stage: ShaderStage, layout: &EffectL
                 "layout(location={}) {} {}\n",
                 location, keyword, rest
             ));
+            // Track varyings emitted unconditionally (outside #if blocks)
+            // for vertex→fragment varying matching
+            if stage == ShaderStage::Vertex && if_depth == 0 {
+                if let Some(n) = name {
+                    emitted_varyings.push(n);
+                }
+            }
             continue;
         }
 
@@ -123,12 +161,13 @@ pub fn preprocess_with_layout(source: &str, stage: ShaderStage, layout: &EffectL
         transformed = transformed.replace("ddx(", "dFdx(");
         transformed = transformed.replace("ddy(", "dFdy(");
         transformed = shader_replace::replace_atan2(&transformed);
+        transformed = shader_replace::replace_reserved_identifiers(&transformed);
 
         result.push_str(&transformed);
         result.push('\n');
     }
 
-    result
+    (result, emitted_varyings)
 }
 
 fn emit_declarations(result: &mut String, stage: ShaderStage, layout: &EffectLayout) {
