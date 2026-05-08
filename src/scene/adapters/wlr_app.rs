@@ -104,8 +104,13 @@ impl LayerShellHandler for Wgpu {
             return;
         }
 
-        // Size the layer surface to fit the output (aspect-ratio-preserving)
-        let (layer_w, layer_h) = match self.fit_mode {
+        // Scale wallpaper to fill the output (fit mode), keeping both
+        // the layer surface and WGPU surface at the same size so the
+        // compositor doesn't get a buffer larger than the surface.
+        // The WGPU rendering happens in wallpaper coordinates via the
+        // projection matrix, so the swapchain size just needs to match
+        // the layer surface size.
+        let (use_w, use_h) = match self.fit_mode {
             super::FitMode::Stretch => (new_width, new_height),
             _ => {
                 let (wp_w, wp_h) = (self.wp_resolution[0] as f32, self.wp_resolution[1] as f32);
@@ -117,10 +122,8 @@ impl LayerShellHandler for Wgpu {
                 ((wp_w * scale).round() as u32, (wp_h * scale).round() as u32)
             }
         };
-        layer.set_size(layer_w, layer_h);
-
-        // Render at wallpaper's native resolution; compositor scales to output.
-        self.app.resize(self.wp_resolution);
+        layer.set_size(use_w, use_h);
+        self.app.resize([use_w, use_h]);
         self.app.render().unwrap();
     }
 }
@@ -148,7 +151,7 @@ impl ProvidesRegistryState for Wgpu {
     registry_handlers![OutputState];
 }
 
-pub fn start(pkg_path: String, resolution: Option<[u32; 2]>, fit_mode: super::FitMode, no_effects: bool) {
+pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
     let conn = Connection::connect_to_env().unwrap();
     let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
     let qh = event_queue.handle();
@@ -180,7 +183,7 @@ pub fn start(pkg_path: String, resolution: Option<[u32; 2]>, fit_mode: super::Fi
         no_effects,
     ));
     app.load();
-    let wp_res = resolution.unwrap_or(app.resolution.expect("Unknown resolution"));
+    let wp_res = app.resolution.expect("Unknown resolution");
 
     let mut wgpu = Wgpu {
         registry_state: RegistryState::new(&globals),
