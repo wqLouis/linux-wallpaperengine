@@ -1,12 +1,16 @@
+mod layout;
+mod replace;
+
 use std::collections::HashSet;
 
 use wgpu::naga::ShaderStage;
 
-use super::{
-    shader_header::{WM_SAMPLER_BINDING, get_headers},
-    shader_layout::{self, EffectLayout},
-    shader_replace,
-};
+use super::shader_header::get_headers;
+pub use layout::EffectLayout;
+pub use layout::collect_layout;
+
+// Re-export WM_SAMPLER_BINDING from shader_header for convenience
+pub use super::shader_header::WM_SAMPLER_BINDING;
 
 pub fn preprocess_with_layout(source: &str, stage: ShaderStage, layout: &EffectLayout) -> String {
     let (result, _) = preprocess_with_layout_tracked(source, stage, layout);
@@ -14,7 +18,7 @@ pub fn preprocess_with_layout(source: &str, stage: ShaderStage, layout: &EffectL
 }
 
 /// Preprocess a shader and also track which varyings were emitted in the output.
-pub(crate) fn preprocess_with_layout_tracked(
+pub fn preprocess_with_layout_tracked(
     source: &str,
     stage: ShaderStage,
     layout: &EffectLayout,
@@ -95,7 +99,7 @@ pub(crate) fn preprocess_with_layout_tracked(
 
         if cleaned.contains("attribute ") {
             let rest = cleaned.split("attribute ").nth(1).unwrap_or("").trim();
-            let name = shader_layout::extract_variable_name(rest);
+            let name = layout::extract_variable_name(rest);
             let location = name
                 .as_ref()
                 .and_then(|n| layout.attribute_locations.get(n))
@@ -112,7 +116,7 @@ pub(crate) fn preprocess_with_layout_tracked(
                 ShaderStage::Fragment => "in",
                 _ => "in",
             };
-            let name = shader_layout::extract_variable_name(rest);
+            let name = layout::extract_variable_name(rest);
 
             // For fragment shaders, skip varyings not present in the vertex shader
             // source at all (these are dead code / unused declarations).
@@ -149,19 +153,19 @@ pub(crate) fn preprocess_with_layout_tracked(
         transformed = transformed.replace("texSample2D(", "texture(");
         transformed = transformed.replace("texSample2DLod(", "textureLod(");
         transformed = transformed.replace("gl_FragColor", "_fragColor");
-        transformed = shader_replace::fix_implicit_truncation(&transformed, &layout.varying_types);
-        transformed = shader_replace::replace_mul(&transformed);
-        transformed = shader_replace::replace_texture_calls(&transformed, &sampler_set);
+        transformed = replace::fix_implicit_truncation(&transformed, &layout.varying_types);
+        transformed = replace::replace_mul(&transformed);
+        transformed = replace::replace_texture_calls(&transformed, &sampler_set);
         transformed = transformed.replace("CAST2(", "vec2(");
         transformed = transformed.replace("CAST3(", "vec3(");
         transformed = transformed.replace("CAST4(", "vec4(");
         transformed = transformed.replace("CAST3X3(", "mat3(");
-        transformed = shader_replace::replace_saturate(&transformed);
-        transformed = shader_replace::replace_frac(&transformed);
+        transformed = replace::replace_saturate(&transformed);
+        transformed = replace::replace_frac(&transformed);
         transformed = transformed.replace("ddx(", "dFdx(");
         transformed = transformed.replace("ddy(", "dFdy(");
-        transformed = shader_replace::replace_atan2(&transformed);
-        transformed = shader_replace::replace_reserved_identifiers(&transformed);
+        transformed = replace::replace_atan2(&transformed);
+        transformed = replace::replace_reserved_identifiers(&transformed);
 
         result.push_str(&transformed);
         result.push('\n');

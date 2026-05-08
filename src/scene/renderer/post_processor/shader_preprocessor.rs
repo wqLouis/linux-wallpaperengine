@@ -1,16 +1,22 @@
+//! Shader preprocessing for converting GLSL to WGSL.
+//! 
+//! This module transforms Wallpaper Engine GLSL shaders into WGSL format
+//! compatible with WebGPU, handling layout collection, variable replacement,
+//! and conditional varying hoisting.
+
 use wgpu::naga::ShaderStage;
 
 pub use super::shader_header::WM_SAMPLER_BINDING;
-pub use super::shader_layout::EffectLayout;
-pub use super::shader_transform::preprocess_with_layout;
+pub use super::transform::EffectLayout;
+pub use super::transform::collect_layout;
+pub use super::transform::preprocess_with_layout;
 
-use super::shader_layout::collect_layout;
-use super::shader_transform::preprocess_with_layout_tracked;
-
+/// Preprocess a vertex and fragment shader pair, returning the transformed
+/// source code and collected layout information.
 pub fn preprocess_pair(vert: &str, frag: &str) -> (String, String, EffectLayout) {
     let layout = collect_layout(vert, frag);
     let (mut vert_out, vert_emitted) =
-        preprocess_with_layout_tracked(vert, ShaderStage::Vertex, &layout);
+        super::transform::preprocess_with_layout_tracked(vert, ShaderStage::Vertex, &layout);
     let frag_out = preprocess_with_layout(frag, ShaderStage::Fragment, &layout);
 
     // Ensure vertex always outputs all varyings unconditionally.
@@ -91,7 +97,7 @@ fn hoist_conditional_varyings(
         let ty = layout
             .varying_types
             .get(var_name.as_str())
-            .map(|s| s.as_str())
+        .map(|s: &String| s.as_str())
             .unwrap_or("vec4");
         result = add_varying_init(&result, var_name, ty);
     }

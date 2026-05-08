@@ -9,7 +9,7 @@ use crate::scene::{
         post_processor::{
             effect_param::UniformLayout,
             pipeline_helpers,
-            shader_preprocessor::{self, EffectLayout},
+            shader_preprocessor::{preprocess_pair, EffectLayout},
         },
         vertex::Vertex,
     },
@@ -89,7 +89,7 @@ fn create_effect_pipeline(
         .collect();
 
     let (vert_processed, frag_processed, layout) =
-        shader_preprocessor::preprocess_pair(vert_source, frag_source);
+        preprocess_pair(vert_source, frag_source);
 
     let vert_module = device.create_shader_module(ShaderModuleDescriptor {
         label: None,
