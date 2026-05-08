@@ -65,6 +65,8 @@ pub fn start(pkg_path: String, resolution: Option<[u32; 2]>, fit_mode: FitMode, 
         app,
         fit_mode,
         wp_resolution: wp_res,
+        pointer: None,
+        surface: layer.wl_surface().clone(),
     };
 
     let frame_duration = Duration::from_millis(16);

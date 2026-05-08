@@ -135,7 +135,7 @@ impl UniformLayout {
             ],
         );
 
-        self.write_vec2(buf, "g_ParallaxPosition", [0.0, 0.0]);
+        self.write_vec2(buf, "g_ParallaxPosition", sys.cursor_position);
 
         for (name, res) in &sys.tex_resolutions {
             self.write_vec4(buf, name, *res);
@@ -181,6 +181,8 @@ impl UniformLayout {
 pub struct SystemUniforms {
     pub screen_resolution: [u32; 2],
     pub tex_resolutions: BTreeMap<String, [f32; 4]>,
+    /// Normalized cursor position in [0, 1] range, (0,0) = top-left (UV space)
+    pub cursor_position: [f32; 2],
 }
 
 impl SystemUniforms {
@@ -189,6 +191,7 @@ impl SystemUniforms {
         SystemUniforms {
             screen_resolution: res,
             tex_resolutions: BTreeMap::new(),
+            cursor_position: [0.0, 0.0],
         }
     }
 }

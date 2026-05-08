@@ -4,6 +4,7 @@ use bytemuck::bytes_of;
 use wgpu::*;
 
 use super::{
+    app::UserParams,
     draw::{DrawObject, DrawQueue},
     effect_bindgroup,
     ping_pong::PingPongTextures,
@@ -21,6 +22,7 @@ pub fn render_intermediate_passes(
     post_process: &PostProcess,
     elapsed: f32,
     screen_res: [u32; 2],
+    user_params: &UserParams,
 ) {
     queue.write_buffer(&buffers.projection, 0, bytes_of(&identity_matrix()));
     super::app::write_effect_uniforms(
@@ -29,6 +31,7 @@ pub fn render_intermediate_passes(
         elapsed,
         &identity_matrix(),
         screen_res,
+        user_params,
     );
 
     let mut inter_encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
@@ -138,6 +141,7 @@ pub fn render_intermediate_passes(
         elapsed,
         projection_matrix,
         screen_res,
+        user_params,
     );
 }
 

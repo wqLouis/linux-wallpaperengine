@@ -16,6 +16,25 @@ use super::{
 
 pub use super::surface::InitAppSurface;
 
+/// User interaction parameters that adapters can update (cursor position, etc.)
+#[derive(Debug, Clone)]
+pub struct UserParams {
+    /// Normalized cursor position in [0, 1] range (0,0) = top-left, (1,1) = bottom-right
+    pub cursor_position: [f32; 2],
+    /// Raw pixel cursor position
+    #[allow(dead_code)]
+    pub cursor_pixel: [u32; 2],
+}
+
+impl Default for UserParams {
+    fn default() -> Self {
+        Self {
+            cursor_position: [0.0, 0.0],
+            cursor_pixel: [0, 0],
+        }
+    }
+}
+
 pub struct WgpuApp {
     pub surface: AppSurface,
     pub buffers: Buffers,
@@ -32,6 +51,7 @@ pub struct WgpuApp {
     pub elapsed_ms: u64,
     pub projection_matrix: [[f32; 4]; 4],
     pub no_effects: bool,
+    pub user_params: UserParams,
 }
 
 impl WgpuApp {
@@ -92,6 +112,7 @@ impl WgpuApp {
             elapsed_ms: 0,
             projection_matrix: [[1.0; 4]; 4],
             no_effects: no_effects,
+            user_params: UserParams::default(),
         }
     }
 
@@ -113,21 +134,24 @@ impl WgpuApp {
             elapsed,
             &self.projection_matrix,
             screen_res,
+            &self.user_params,
         );
 
         let has_multi = draw_queue.queue.iter().any(|o| o.intermediates.is_some());
         if has_multi {
-            intermediate_pass::render_intermediate_passes(
-                &self.device,
-                &self.queue,
-                &self.buffers,
-                &self.projection_bindgroup,
-                &self.projection_matrix,
-                draw_queue,
-                post_process,
-                elapsed,
-                screen_res,
-            );
+            let user_params = self.user_params.clone();
+        intermediate_pass::render_intermediate_passes(
+            &self.device,
+            &self.queue,
+            &self.buffers,
+            &self.projection_bindgroup,
+            &self.projection_matrix,
+            draw_queue,
+            post_process,
+            elapsed,
+            screen_res,
+            &user_params,
+        );
         }
 
         render_final_pass(
@@ -232,6 +256,7 @@ pub fn write_effect_uniforms(
     elapsed: f32,
     projection: &[[f32; 4]; 4],
     screen_res: [u32; 2],
+    user_params: &UserParams,
 ) {
     use crate::scene::renderer::post_processor::effect_param::SystemUniforms;
 
@@ -243,6 +268,7 @@ pub fn write_effect_uniforms(
                 let sys = SystemUniforms {
                     screen_resolution: screen_res,
                     tex_resolutions: effect_bg.tex_resolutions.clone(),
+                    cursor_position: user_params.cursor_position,
                 };
                 effect_bg.uniform_layout.populate_effect_params(
                     &mut staging,

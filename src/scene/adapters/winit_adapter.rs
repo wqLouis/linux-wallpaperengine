@@ -70,6 +70,24 @@ impl ApplicationHandler for WinitApp {
                 app.resize([physical_size.width, physical_size.height]);
                 self.window.as_ref().unwrap().request_redraw();
             }
+            WindowEvent::CursorMoved {
+                device_id: _,
+                position,
+                ..
+            } => {
+                if let Some(app) = app.as_mut() {
+                    let size = self.window.as_ref().map(|w| w.inner_size());
+                    if let Some(size) = size {
+                        // Normalize cursor to [0, 1] range, (0,0) = top-left, as expected by g_ParallaxPosition
+                        let nx = position.x as f32 / size.width as f32;
+                        let ny = position.y as f32 / size.height as f32;
+                        app.user_params = crate::scene::renderer::app::UserParams {
+                            cursor_position: [nx, ny],
+                            cursor_pixel: [position.x as u32, position.y as u32],
+                        };
+                    }
+                }
+            }
             _ => {}
         }
     }

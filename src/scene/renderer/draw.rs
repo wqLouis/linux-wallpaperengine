@@ -240,32 +240,28 @@ impl DrawObject {
                 let constants = pass.constantshadervalues.clone().unwrap_or_default();
                 let material_keys = pipedata.layout.uniform_material_keys.clone();
 
-                let mut tex_resolutions = BTreeMap::new();
                 let sw = texture_object.texture.dimension[0] as f32;
                 let sh = texture_object.texture.dimension[1] as f32;
-                tex_resolutions.insert("g_Texture0Resolution".into(), [sw, sh, sw, sh]);
 
-                if let Some(ref tex) = mask_tex {
-                    tex_resolutions.insert(
-                        "g_Texture1Resolution".into(),
-                        [
-                            tex.width() as f32,
-                            tex.height() as f32,
-                            tex.width() as f32,
-                            tex.height() as f32,
-                        ],
-                    );
-                }
-                if let Some(ref tex) = noise_tex {
-                    tex_resolutions.insert(
-                        "g_Texture2Resolution".into(),
-                        [
-                            tex.width() as f32,
-                            tex.height() as f32,
-                            tex.width() as f32,
-                            tex.height() as f32,
-                        ],
-                    );
+                // Build tex_resolutions for all sampler slots declared in the shader.
+                // Shaders reference g_TextureNResolution for N in sampler_names, and
+                // division by zero (unset = 0) causes NaN displacements.
+                let mut tex_resolutions = BTreeMap::new();
+                for (i, sampler_name) in pipedata.layout.sampler_names.iter().enumerate() {
+                    let res_key = format!("{}Resolution", sampler_name);
+                    let (w, h) = match i {
+                        0 => (sw, sh),
+                        1 => mask_tex
+                            .as_ref()
+                            .map(|t| (t.width() as f32, t.height() as f32))
+                            .unwrap_or((sw, sh)),
+                        2 => noise_tex
+                            .as_ref()
+                            .map(|t| (t.width() as f32, t.height() as f32))
+                            .unwrap_or((sw, sh)),
+                        _ => (sw, sh),
+                    };
+                    tex_resolutions.insert(res_key, [w, h, w, h]);
                 }
 
                 EffectBindGroup::new(
