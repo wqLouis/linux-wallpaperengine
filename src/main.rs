@@ -4,8 +4,8 @@ use std::path::Path;
 
 use clap::Parser;
 
-use crate::scene::adapters::wlr_app::FitMode;
-use crate::scene::adapters::{winit_adapter, wlr_layer_shell_adapter};
+use crate::scene::adapters::FitMode;
+use crate::scene::adapters::{winit_adapter, wlr_app};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -79,7 +79,7 @@ fn main() {
             winit_adapter::start(args.path, args.no_effects);
         }
         "wlr" => {
-            wlr_layer_shell_adapter::start(args.path, resolution, fit_mode, args.no_effects);
+            wlr_app::start(args.path, resolution, fit_mode, args.no_effects);
         }
         _ => {}
     }

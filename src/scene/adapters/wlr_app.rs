@@ -1,43 +1,46 @@
-//! Wayland (wlr-layer-shell) adapter types and trait implementations.
+//! Wayland (wlr-layer-shell) adapter.
 //!
-//! The wallpaper is rendered at `Layer::Background`, behind all windows.
-//! Cursor-based parallax is NOT available here (wayland security model:
-//! background-layer surfaces never receive pointer focus). An animated
-//! parallax drift (from scene.json `cameraparallax*` settings) is used
-//! as a fallback — all adapters get this automatically via [`WgpuApp`].
+//! Renders the wallpaper on a `Layer::Background` surface behind all windows.
+//! The WGPU swapchain uses the wallpaper's native resolution; the compositor
+//! handles scaling the layer surface to fill the output. Cursor-based parallax
+//! is unavailable on wayland (background surfaces never receive pointer focus),
+//! so an animated drift from the scene's `cameraparallax*` settings is used.
 
+use std::{ptr::NonNull, time::Duration};
+
+use pollster::block_on;
+use raw_window_handle::{
+    RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
+};
 use smithay_client_toolkit::{
-    compositor::CompositorHandler,
+    compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{Capability, SeatHandler, SeatState},
-    shell::wlr_layer::{LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
+    shell::{
+        WaylandSurface,
+        wlr_layer::{
+            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+            LayerSurfaceConfigure,
+        },
+    },
 };
 use wayland_client::{
-    Connection, QueueHandle,
+    Connection, Proxy, QueueHandle,
+    globals::registry_queue_init,
     protocol::{wl_output, wl_seat, wl_surface},
 };
 
-use crate::scene::renderer::app::WgpuApp;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum FitMode {
-    /// Scale wallpaper to fill entire output, cropping if aspect ratios differ
-    Cover,
-    /// Scale wallpaper to fit within output, letterboxing if aspect ratios differ
-    Contain,
-    /// Stretch wallpaper to exactly match output (ignores aspect ratio)
-    Stretch,
-}
+use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
 
 pub struct Wgpu {
     pub registry_state: RegistryState,
     pub seat_state: SeatState,
     pub output_state: OutputState,
     pub app: WgpuApp,
-    pub fit_mode: FitMode,
+    pub fit_mode: super::FitMode,
     pub wp_resolution: [u32; 2],
 }
 
@@ -97,27 +100,27 @@ impl LayerShellHandler for Wgpu {
         _: u32,
     ) {
         let (new_width, new_height) = configure.new_size;
-
-        // Ignore initial (0, 0) configure from some compositors
         if new_width == 0 && new_height == 0 {
             return;
         }
 
+        // Size the layer surface to fit the output (aspect-ratio-preserving)
         let (layer_w, layer_h) = match self.fit_mode {
-            FitMode::Stretch => (new_width, new_height),
+            super::FitMode::Stretch => (new_width, new_height),
             _ => {
                 let (wp_w, wp_h) = (self.wp_resolution[0] as f32, self.wp_resolution[1] as f32);
                 let scale = match self.fit_mode {
-                    FitMode::Cover => f32::max(new_width as f32 / wp_w, new_height as f32 / wp_h),
-                    FitMode::Contain => f32::min(new_width as f32 / wp_w, new_height as f32 / wp_h),
+                    super::FitMode::Cover => f32::max(new_width as f32 / wp_w, new_height as f32 / wp_h),
+                    super::FitMode::Contain => f32::min(new_width as f32 / wp_w, new_height as f32 / wp_h),
                     _ => unreachable!(),
                 };
                 ((wp_w * scale).round() as u32, (wp_h * scale).round() as u32)
             }
         };
-
         layer.set_size(layer_w, layer_h);
-        self.app.resize([layer_w, layer_h]);
+
+        // Render at wallpaper's native resolution; compositor scales to output.
+        self.app.resize(self.wp_resolution);
         self.app.render().unwrap();
     }
 }
@@ -127,22 +130,8 @@ impl SeatHandler for Wgpu {
         &mut self.seat_state
     }
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
-    fn new_capability(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
-        _: Capability,
-    ) {
-    }
-    fn remove_capability(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
-        _: Capability,
-    ) {
-    }
+    fn new_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, _: Capability) {}
+    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, _: Capability) {}
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
 }
 
@@ -157,4 +146,56 @@ impl ProvidesRegistryState for Wgpu {
         &mut self.registry_state
     }
     registry_handlers![OutputState];
+}
+
+pub fn start(pkg_path: String, resolution: Option<[u32; 2]>, fit_mode: super::FitMode, no_effects: bool) {
+    let conn = Connection::connect_to_env().unwrap();
+    let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
+    let qh = event_queue.handle();
+
+    let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
+    let layer_shell = LayerShell::bind(&globals, &qh).unwrap();
+    let surface = compositor_state.create_surface(&qh);
+
+    let layer = layer_shell.create_layer_surface(
+        &qh, surface, Layer::Background, Some("linux wallpaper engine"), None,
+    );
+    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+    layer.set_exclusive_zone(-1);
+    layer.set_anchor(Anchor::all());
+    layer.set_size(0, 0);
+    layer.commit();
+
+    let raw_display_handle = RawDisplayHandle::Wayland(
+        WaylandDisplayHandle::new(NonNull::new(conn.backend().display_ptr() as *mut _).unwrap()),
+    );
+    let raw_window_handle = RawWindowHandle::Wayland(
+        WaylandWindowHandle::new(NonNull::new(layer.wl_surface().id().as_ptr() as *mut _).unwrap()),
+    );
+
+    let mut app = block_on(WgpuApp::new(
+        pkg_path,
+        InitAppSurface::Raw((raw_display_handle, raw_window_handle)),
+        [256, 256],
+        no_effects,
+    ));
+    app.load();
+    let wp_res = resolution.unwrap_or(app.resolution.expect("Unknown resolution"));
+
+    let mut wgpu = Wgpu {
+        registry_state: RegistryState::new(&globals),
+        seat_state: SeatState::new(&globals, &qh),
+        output_state: OutputState::new(&globals, &qh),
+        app,
+        fit_mode,
+        wp_resolution: wp_res,
+    };
+
+    // Event-driven render loop: dispatch wayland events, render each frame
+    let frame_duration = Duration::from_millis(16);
+    loop {
+        event_queue.dispatch_pending(&mut wgpu).unwrap();
+        wgpu.app.render();
+        std::thread::sleep(frame_duration);
+    }
 }

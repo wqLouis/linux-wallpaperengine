@@ -1,20 +1,21 @@
+//! Pair of render targets for ping-pong post-processing.
+//!
+//! Effects are applied by alternating between two textures: read from
+//! one, write to the other, then swap. Also provides NDC vertex/index
+//! buffers for rendering full-screen quads in effect passes.
+
 use wgpu::*;
 
 use super::post_process::PostProcess;
 use super::vertex::{NDC_VERTICES, Vertex};
 
 pub struct PingPongTextures {
-    // Own the textures; only views are read directly (ownership keeps views alive)
     #[allow(dead_code)]
     tex_a: Texture,
     #[allow(dead_code)]
     tex_b: Texture,
     pub view_a: TextureView,
     pub view_b: TextureView,
-    // Cached bind group; make_bindgroup() recreates per-frame, kept for potential reuse
-    #[allow(dead_code)]
-    bindgroup: BindGroup,
-    pub _blank_view: TextureView,
     pub ndc_vbuf: Buffer,
     pub ndc_ibuf: Buffer,
 }
@@ -23,11 +24,11 @@ impl PingPongTextures {
     pub fn new(
         device: &Device,
         queue: &Queue,
-        post_process: &PostProcess,
+        _post_process: &PostProcess,
         width: u32,
         height: u32,
     ) -> Self {
-        let create_tex = |device: &Device| {
+        let make_tex = |device: &Device| {
             device.create_texture(&TextureDescriptor {
                 label: None,
                 size: Extent3d {
@@ -44,26 +45,10 @@ impl PingPongTextures {
             })
         };
 
-        let tex_a = create_tex(device);
-        let tex_b = create_tex(device);
+        let tex_a = make_tex(device);
+        let tex_b = make_tex(device);
         let view_a = tex_a.create_view(&Default::default());
         let view_b = tex_b.create_view(&Default::default());
-        let blank_view = post_process.blank_texture.create_view(&Default::default());
-
-        let bg = device.create_bind_group(&BindGroupDescriptor {
-            label: None,
-            layout: &post_process.layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(&view_a),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(&post_process.sampler),
-                },
-            ],
-        });
 
         let ndc_vbuf = device.create_buffer(&BufferDescriptor {
             label: None,
@@ -86,22 +71,22 @@ impl PingPongTextures {
             tex_b,
             view_a,
             view_b,
-            bindgroup: bg,
-            _blank_view: blank_view,
             ndc_vbuf,
             ndc_ibuf,
         }
     }
 
+    /// Create a bind group from `view_a` (the final result after all effects).
     pub fn make_bindgroup(
         &self,
         device: &Device,
         layout: &BindGroupLayout,
         sampler: &Sampler,
     ) -> BindGroup {
-        Self::make_source_bindgroup(device, layout, &self.view_a, sampler)
+        Self::make_bg(device, layout, &self.view_a, sampler)
     }
 
+    /// Create a bind group from an arbitrary view (used during intermediate swaps).
     pub fn make_bindgroup_for(
         &self,
         device: &Device,
@@ -109,10 +94,10 @@ impl PingPongTextures {
         sampler: &Sampler,
         view: &TextureView,
     ) -> BindGroup {
-        Self::make_source_bindgroup(device, layout, view, sampler)
+        Self::make_bg(device, layout, view, sampler)
     }
 
-    fn make_source_bindgroup(
+    fn make_bg(
         device: &Device,
         layout: &BindGroupLayout,
         view: &TextureView,

@@ -35,70 +35,42 @@ impl UniformLayout {
         self.total_size
     }
 
-    pub fn write_f32(&self, buf: &mut [u8], name: &str, value: f32) -> bool {
-        if let Some(&(off, _)) = self.offsets.get(name) {
-            let end = off as usize + 4;
-            if end <= buf.len() {
-                buf[off as usize..end].copy_from_slice(&value.to_le_bytes());
+    /// Write a value into the uniform buffer at the offset for `name`.
+    /// Returns false if `name` is not in the layout (no-op for optional uniforms).
+    fn write(&self, buf: &mut [u8], name: &str, data: &[u8]) -> bool {
+        if let Some(&(off, size)) = self.offsets.get(name) {
+            let end = off as usize + size as usize;
+            if end <= buf.len() && data.len() == size as usize {
+                buf[off as usize..end].copy_from_slice(data);
                 return true;
             }
         }
         false
+    }
+
+    pub fn write_f32(&self, buf: &mut [u8], name: &str, value: f32) -> bool {
+        self.write(buf, name, &value.to_le_bytes())
     }
 
     pub fn write_vec2(&self, buf: &mut [u8], name: &str, value: [f32; 2]) -> bool {
-        if let Some(&(off, _)) = self.offsets.get(name) {
-            let end = off as usize + 8;
-            if end <= buf.len() {
-                buf[off as usize..off as usize + 4].copy_from_slice(&value[0].to_le_bytes());
-                buf[off as usize + 4..end].copy_from_slice(&value[1].to_le_bytes());
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn write_vec3(&self, buf: &mut [u8], name: &str, value: [f32; 3]) -> bool {
-        if let Some(&(off, _)) = self.offsets.get(name) {
-            let end = off as usize + 12;
-            if end <= buf.len() {
-                buf[off as usize..off as usize + 4].copy_from_slice(&value[0].to_le_bytes());
-                buf[off as usize + 4..off as usize + 8].copy_from_slice(&value[1].to_le_bytes());
-                buf[off as usize + 8..end].copy_from_slice(&value[2].to_le_bytes());
-                return true;
-            }
-        }
-        false
+        self.write(buf, name, bytemuck::bytes_of(&value))
     }
 
     pub fn write_vec4(&self, buf: &mut [u8], name: &str, value: [f32; 4]) -> bool {
-        if let Some(&(off, _)) = self.offsets.get(name) {
-            let end = off as usize + 16;
-            if end <= buf.len() {
-                for (i, v) in value.iter().enumerate() {
-                    buf[off as usize + i * 4..off as usize + i * 4 + 4]
-                        .copy_from_slice(&v.to_le_bytes());
-                }
-                return true;
-            }
-        }
-        false
+        self.write(buf, name, bytemuck::bytes_of(&value))
     }
 
+    /// Write a mat4 in column-major order (GLSL convention).
     pub fn write_mat4(&self, buf: &mut [u8], name: &str, value: &[[f32; 4]; 4]) -> bool {
-        if let Some(&(off, _)) = self.offsets.get(name) {
-            let end = off as usize + 64;
-            if end <= buf.len() {
-                for (col, row_data) in value.iter().enumerate() {
-                    for (row, &v) in row_data.iter().enumerate() {
-                        let idx = off as usize + col * 16 + row * 4;
-                        buf[idx..idx + 4].copy_from_slice(&v.to_le_bytes());
-                    }
-                }
-                return true;
+        // Flatten column-major: value[col][row]
+        let mut flat = [0u8; 64];
+        for (col, row_data) in value.iter().enumerate() {
+            for (row, &v) in row_data.iter().enumerate() {
+                let idx = col * 16 + row * 4;
+                flat[idx..idx + 4].copy_from_slice(&v.to_le_bytes());
             }
         }
-        false
+        self.write(buf, name, &flat)
     }
 
     fn write_all_defaults(&self, buf: &mut [u8]) {
@@ -119,14 +91,14 @@ impl UniformLayout {
         self.write_f32(buf, "g_Time", time);
         self.write_mat4(buf, "g_ModelViewProjectionMatrix", projection);
 
-        self.write_vec3(
+        self.write(
             buf,
             "g_Screen",
-            [
+            bytemuck::bytes_of(&[
                 sys.screen_resolution[0] as f32,
                 sys.screen_resolution[1] as f32,
                 sys.screen_resolution[0] as f32 / sys.screen_resolution[1] as f32,
-            ],
+            ]),
         );
 
         self.write_mat4(buf, "g_EffectTextureProjectionMatrix", projection);
