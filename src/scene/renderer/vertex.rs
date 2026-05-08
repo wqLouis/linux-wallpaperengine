@@ -1,10 +1,22 @@
 use wgpu::*;
 
 pub const NDC_VERTICES: [Vertex; 4] = [
-    Vertex { pos: [-1.0,  1.0, 0.0], uv: [0.0, 0.0] },
-    Vertex { pos: [ 1.0,  1.0, 0.0], uv: [1.0, 0.0] },
-    Vertex { pos: [ 1.0, -1.0, 0.0], uv: [1.0, 1.0] },
-    Vertex { pos: [-1.0, -1.0, 0.0], uv: [0.0, 1.0] },
+    Vertex {
+        pos: [-1.0, 1.0, 0.0],
+        uv: [0.0, 0.0],
+    },
+    Vertex {
+        pos: [1.0, 1.0, 0.0],
+        uv: [1.0, 0.0],
+    },
+    Vertex {
+        pos: [1.0, -1.0, 0.0],
+        uv: [1.0, 1.0],
+    },
+    Vertex {
+        pos: [-1.0, -1.0, 0.0],
+        uv: [0.0, 1.0],
+    },
 ];
 
 #[repr(C)]

@@ -49,7 +49,17 @@ impl DrawQueue {
         let draw_objects: Vec<DrawObject> = texture_objects
             .into_iter()
             .map(|tex_obj| {
-                DrawObject::build(device, queue, scene, tex_obj, post_process, &mut render_pipelines, buffers, projection_bgl, no_effects)
+                DrawObject::build(
+                    device,
+                    queue,
+                    scene,
+                    tex_obj,
+                    post_process,
+                    &mut render_pipelines,
+                    buffers,
+                    projection_bgl,
+                    no_effects,
+                )
             })
             .collect();
 
@@ -83,7 +93,14 @@ impl DrawObject {
                 .iter()
                 .filter_map(|effect| {
                     let pass = effect.passes.first()?;
-                    get_or_create_pipeline(device, effect.file.clone(), &pass.textures, pipelines, scene, projection_bgl)
+                    get_or_create_pipeline(
+                        device,
+                        effect.file.clone(),
+                        &pass.textures,
+                        pipelines,
+                        scene,
+                        projection_bgl,
+                    )
                 })
                 .collect()
         };
@@ -95,19 +112,33 @@ impl DrawObject {
             label: None,
             layout: &post_process.layout,
             entries: &[
-                BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&source_view) },
-                BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&post_process.sampler) },
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&source_view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&post_process.sampler),
+                },
             ],
         });
 
         let effect_bindgroups = Self::build_effect_bindgroups(
-            device, queue, scene, post_process, pipelines,
-            &texture_object, &pipeline_rcs, &source_view,
+            device,
+            queue,
+            scene,
+            post_process,
+            pipelines,
+            &texture_object,
+            &pipeline_rcs,
+            &source_view,
         );
 
         let intermediates = if !effect_bindgroups.is_empty() {
             Some(PingPongTextures::new(
-                device, queue, post_process,
+                device,
+                queue,
+                post_process,
                 texture_object.texture.dimension[0],
                 texture_object.texture.dimension[1],
             ))
@@ -187,7 +218,9 @@ impl DrawObject {
             .iter()
             .zip(pipeline_rcs.iter())
             .filter_map(|(effect, pipeline)| {
-                let pipedata = pipelines.values().find(|d| Rc::ptr_eq(&d.pipeline, pipeline))?;
+                let pipedata = pipelines
+                    .values()
+                    .find(|d| Rc::ptr_eq(&d.pipeline, pipeline))?;
                 let pass = effect.passes.first()?;
 
                 // textures array index = GL texture unit: [0]=source, [1]=g_Texture1, [2]=g_Texture2
@@ -213,19 +246,41 @@ impl DrawObject {
                 tex_resolutions.insert("g_Texture0Resolution".into(), [sw, sh, sw, sh]);
 
                 if let Some(ref tex) = mask_tex {
-                    tex_resolutions.insert("g_Texture1Resolution".into(),
-                        [tex.width() as f32, tex.height() as f32, tex.width() as f32, tex.height() as f32]);
+                    tex_resolutions.insert(
+                        "g_Texture1Resolution".into(),
+                        [
+                            tex.width() as f32,
+                            tex.height() as f32,
+                            tex.width() as f32,
+                            tex.height() as f32,
+                        ],
+                    );
                 }
                 if let Some(ref tex) = noise_tex {
-                    tex_resolutions.insert("g_Texture2Resolution".into(),
-                        [tex.width() as f32, tex.height() as f32, tex.width() as f32, tex.height() as f32]);
+                    tex_resolutions.insert(
+                        "g_Texture2Resolution".into(),
+                        [
+                            tex.width() as f32,
+                            tex.height() as f32,
+                            tex.width() as f32,
+                            tex.height() as f32,
+                        ],
+                    );
                 }
 
                 EffectBindGroup::new(
-                    device, post_process, pipedata, source_view,
-                    mask_view.as_ref(), noise_view.as_ref(),
-                    Rc::clone(pipeline), material_keys, constants,
-                    tex_resolutions, mask_tex, noise_tex,
+                    device,
+                    post_process,
+                    pipedata,
+                    source_view,
+                    mask_view.as_ref(),
+                    noise_view.as_ref(),
+                    Rc::clone(pipeline),
+                    material_keys,
+                    constants,
+                    tex_resolutions,
+                    mask_tex,
+                    noise_tex,
                 )
             })
             .collect()

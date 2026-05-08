@@ -44,10 +44,22 @@ impl Buffers {
 
     pub fn draw_rect(&mut self, queue: &Queue, pos: [Vec3; 4]) {
         let rect = [
-            Vertex { pos: pos[0].to_array(), uv: [0.0, 0.0] },
-            Vertex { pos: pos[1].to_array(), uv: [1.0, 0.0] },
-            Vertex { pos: pos[2].to_array(), uv: [1.0, 1.0] },
-            Vertex { pos: pos[3].to_array(), uv: [0.0, 1.0] },
+            Vertex {
+                pos: pos[0].to_array(),
+                uv: [0.0, 0.0],
+            },
+            Vertex {
+                pos: pos[1].to_array(),
+                uv: [1.0, 0.0],
+            },
+            Vertex {
+                pos: pos[2].to_array(),
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                pos: pos[3].to_array(),
+                uv: [0.0, 1.0],
+            },
         ];
 
         let indices: [u32; 6] = [0, 2, 1, 0, 3, 2].map(|f| f + self.vertex_len);
@@ -68,8 +80,19 @@ impl Buffers {
         self.vertex_len += rect.len() as u32;
     }
 
-    pub fn draw_texture(&mut self, queue: &Queue, origin: Vec3, angles: Vec3, scale: Vec3, size: Vec2) {
-        let size_scaled = size * Vec2 { x: scale.x, y: scale.y };
+    pub fn draw_texture(
+        &mut self,
+        queue: &Queue,
+        origin: Vec3,
+        angles: Vec3,
+        scale: Vec3,
+        size: Vec2,
+    ) {
+        let size_scaled = size
+            * Vec2 {
+                x: scale.x,
+                y: scale.y,
+            };
         let z = origin.z - 1.0;
 
         let rotation_mat = Mat2::from_angle(angles.z.to_radians());

@@ -1,16 +1,22 @@
+//! Shader preprocessing for converting GLSL to WGSL.
+//!
+//! This module transforms Wallpaper Engine GLSL shaders into WGSL format
+//! compatible with WebGPU, handling layout collection, variable replacement,
+//! and conditional varying hoisting.
+
 use wgpu::naga::ShaderStage;
 
 pub use super::shader_header::WM_SAMPLER_BINDING;
-pub use super::shader_layout::EffectLayout;
-pub use super::shader_transform::preprocess_with_layout;
+pub use super::transform::EffectLayout;
+pub use super::transform::collect_layout;
+pub use super::transform::preprocess_with_layout;
 
-use super::shader_layout::collect_layout;
-use super::shader_transform::preprocess_with_layout_tracked;
-
+/// Preprocess a vertex and fragment shader pair, returning the transformed
+/// source code and collected layout information.
 pub fn preprocess_pair(vert: &str, frag: &str) -> (String, String, EffectLayout) {
     let layout = collect_layout(vert, frag);
     let (mut vert_out, vert_emitted) =
-        preprocess_with_layout_tracked(vert, ShaderStage::Vertex, &layout);
+        super::transform::preprocess_with_layout_tracked(vert, ShaderStage::Vertex, &layout);
     let frag_out = preprocess_with_layout(frag, ShaderStage::Fragment, &layout);
 
     // Ensure vertex always outputs all varyings unconditionally.
@@ -35,11 +41,7 @@ pub fn preprocess_pair(vert: &str, frag: &str) -> (String, String, EffectLayout)
 
 /// Hoist varying declarations out of #if blocks so they are always available
 /// as vertex outputs, while keeping the assignment code inside #if blocks.
-fn hoist_conditional_varyings(
-    output: &str,
-    layout: &EffectLayout,
-    missing: &[&String],
-) -> String {
+fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&String]) -> String {
     let mut result = String::with_capacity(output.len() + 512);
     let mut if_depth: u32 = 0;
     let mut hoisted_decls: Vec<String> = Vec::new();
@@ -56,10 +58,7 @@ fn hoist_conditional_varyings(
         }
 
         // Check if this is a conditional varying declaration (vertex stage: "out")
-        if if_depth > 0
-            && trimmed.starts_with("layout(")
-            && trimmed.contains(") out ")
-        {
+        if if_depth > 0 && trimmed.starts_with("layout(") && trimmed.contains(") out ") {
             let name = extract_pp_varying_name(trimmed);
             if let Some(ref n) = name {
                 if missing.iter().any(|v| v == &n) && !hoisted_names.contains(n) {
@@ -79,10 +78,7 @@ fn hoist_conditional_varyings(
     // (after #version and #define headers, before main code)
     if !hoisted_decls.is_empty() {
         let insertion = find_decl_insertion_point(&result);
-        let decl_block: String = hoisted_decls
-            .iter()
-            .map(|d| format!("{}\n", d))
-            .collect();
+        let decl_block: String = hoisted_decls.iter().map(|d| format!("{}\n", d)).collect();
         result.insert_str(insertion, &decl_block);
     }
 
@@ -91,7 +87,7 @@ fn hoist_conditional_varyings(
         let ty = layout
             .varying_types
             .get(var_name.as_str())
-            .map(|s| s.as_str())
+            .map(|s: &String| s.as_str())
             .unwrap_or("vec4");
         result = add_varying_init(&result, var_name, ty);
     }

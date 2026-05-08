@@ -6,11 +6,8 @@ use crate::scene::{
         scene_loader::Scene,
     },
     renderer::{
-        app::WgpuApp,
-        draw::DrawQueue,
+        app::WgpuApp, draw::DrawQueue, post_process::PostProcess, projection::Projection,
         vertex::Vertex,
-        post_process::PostProcess,
-        projection::Projection,
     },
 };
 

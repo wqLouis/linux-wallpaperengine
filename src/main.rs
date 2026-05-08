@@ -4,8 +4,8 @@ use std::path::Path;
 
 use clap::Parser;
 
-use crate::scene::adapters::{winit_adapter, wlr_layer_shell_adapter};
 use crate::scene::adapters::wlr_app::FitMode;
+use crate::scene::adapters::{winit_adapter, wlr_layer_shell_adapter};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -66,7 +66,10 @@ fn main() {
         "contain" | "fit" => FitMode::Contain,
         "stretch" => FitMode::Stretch,
         _ => {
-            eprintln!("Unknown fit-mode '{}'. Valid: cover, contain, stretch", args.fit_mode);
+            eprintln!(
+                "Unknown fit-mode '{}'. Valid: cover, contain, stretch",
+                args.fit_mode
+            );
             return;
         }
     };

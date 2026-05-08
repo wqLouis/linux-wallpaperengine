@@ -23,23 +23,38 @@ pub fn render_intermediate_passes(
     screen_res: [u32; 2],
 ) {
     queue.write_buffer(&buffers.projection, 0, bytes_of(&identity_matrix()));
-    super::app::write_effect_uniforms(queue, draw_queue.queue.as_ref(), elapsed, &identity_matrix(), screen_res);
+    super::app::write_effect_uniforms(
+        queue,
+        draw_queue.queue.as_ref(),
+        elapsed,
+        &identity_matrix(),
+        screen_res,
+    );
 
     let mut inter_encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
 
     for draw_object in draw_queue.queue.iter() {
-        let Some(ref pp) = draw_object.intermediates else { continue };
+        let Some(ref pp) = draw_object.intermediates else {
+            continue;
+        };
 
-        render_source_pass(&mut inter_encoder, draw_object, pp, draw_queue, projection_bindgroup);
+        render_source_pass(
+            &mut inter_encoder,
+            draw_object,
+            pp,
+            draw_queue,
+            projection_bindgroup,
+        );
 
         let n_effects = draw_object.effect_bindgroups.len();
         let mut source_view = &pp.view_a;
         let mut target_view = &pp.view_b;
 
         for (i, effect_bg) in draw_object.effect_bindgroups.iter().enumerate() {
-            let pipedata = draw_queue.render_pipelines.values().find(|d| {
-                Rc::ptr_eq(&d.pipeline, &effect_bg.pipeline)
-            });
+            let pipedata = draw_queue
+                .render_pipelines
+                .values()
+                .find(|d| Rc::ptr_eq(&d.pipeline, &effect_bg.pipeline));
 
             {
                 let mut pass = inter_encoder.begin_render_pass(&RenderPassDescriptor {
@@ -49,7 +64,12 @@ pub fn render_intermediate_passes(
                         depth_slice: None,
                         resolve_target: None,
                         ops: Operations {
-                            load: LoadOp::Clear(Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                            load: LoadOp::Clear(Color {
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0,
+                            }),
                             store: StoreOp::Store,
                         },
                     })],
@@ -61,7 +81,11 @@ pub fn render_intermediate_passes(
                 pass.set_bind_group(1, projection_bindgroup.projection.as_ref(), &[]);
 
                 let inter_bg = effect_bindgroup::make_effect_intermediate_bindgroup(
-                    device, pipedata.unwrap(), effect_bg, source_view, &post_process.sampler,
+                    device,
+                    pipedata.unwrap(),
+                    effect_bg,
+                    source_view,
+                    &post_process.sampler,
                 );
                 pass.set_bind_group(0, &inter_bg, &[]);
                 pass.draw_indexed(0..6, 0, 0..1);
@@ -73,7 +97,12 @@ pub fn render_intermediate_passes(
         }
 
         if n_effects % 2 == 1 {
-            let bg = pp.make_bindgroup_for(device, &post_process.layout, &post_process.sampler, target_view);
+            let bg = pp.make_bindgroup_for(
+                device,
+                &post_process.layout,
+                &post_process.sampler,
+                target_view,
+            );
             let mut pass = inter_encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(RenderPassColorAttachment {
@@ -81,7 +110,12 @@ pub fn render_intermediate_passes(
                     depth_slice: None,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        load: LoadOp::Clear(Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
                         store: StoreOp::Store,
                     },
                 })],
@@ -98,7 +132,13 @@ pub fn render_intermediate_passes(
 
     queue.submit(Some(inter_encoder.finish()));
     queue.write_buffer(&buffers.projection, 0, bytes_of(projection_matrix));
-    super::app::write_effect_uniforms(queue, draw_queue.queue.as_ref(), elapsed, projection_matrix, screen_res);
+    super::app::write_effect_uniforms(
+        queue,
+        draw_queue.queue.as_ref(),
+        elapsed,
+        projection_matrix,
+        screen_res,
+    );
 }
 
 fn render_source_pass(
@@ -115,7 +155,12 @@ fn render_source_pass(
             depth_slice: None,
             resolve_target: None,
             ops: Operations {
-                load: LoadOp::Clear(Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                load: LoadOp::Clear(Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                }),
                 store: StoreOp::Store,
             },
         })],

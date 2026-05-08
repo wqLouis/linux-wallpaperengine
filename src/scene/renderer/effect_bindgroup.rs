@@ -6,9 +6,7 @@ use wgpu::*;
 use crate::scene::renderer::{
     post_process::PostProcess,
     post_processor::{
-        effect_param,
-        pipeline_handler::EffectPipelineData,
-        shader_preprocessor::WM_SAMPLER_BINDING,
+        effect_param, pipeline_handler::EffectPipelineData, shader_preprocessor::WM_SAMPLER_BINDING,
     },
 };
 
@@ -24,8 +22,14 @@ pub fn make_effect_intermediate_bindgroup(
     for i in 0..pipedata.layout.sampler_count() {
         let view: &TextureView = match i {
             0 => source_view,
-            1 => effect_bg.mask_view.as_ref().unwrap_or(&effect_bg.blank_view),
-            2 => effect_bg.noise_view.as_ref().unwrap_or(&effect_bg.blank_view),
+            1 => effect_bg
+                .mask_view
+                .as_ref()
+                .unwrap_or(&effect_bg.blank_view),
+            2 => effect_bg
+                .noise_view
+                .as_ref()
+                .unwrap_or(&effect_bg.blank_view),
             _ => &effect_bg.blank_view,
         };
         entries.push(BindGroupEntry {

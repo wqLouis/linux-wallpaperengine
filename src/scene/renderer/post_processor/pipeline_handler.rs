@@ -9,7 +9,7 @@ use crate::scene::{
         post_processor::{
             effect_param::UniformLayout,
             pipeline_helpers,
-            shader_preprocessor::{self, EffectLayout},
+            shader_preprocessor::{EffectLayout, preprocess_pair},
         },
         vertex::Vertex,
     },
@@ -88,8 +88,7 @@ fn create_effect_pipeline(
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
 
-    let (vert_processed, frag_processed, layout) =
-        shader_preprocessor::preprocess_pair(vert_source, frag_source);
+    let (vert_processed, frag_processed, layout) = preprocess_pair(vert_source, frag_source);
 
     let vert_module = device.create_shader_module(ShaderModuleDescriptor {
         label: None,
@@ -180,10 +179,7 @@ pub fn load_mask_texture(
 ) -> Option<(Texture, TextureView)> {
     // Try multiple path resolutions: the .pkg stores files under "materials/"
     // but JSON references may use relative paths like "masks/..."
-    let candidates = [
-        format!("{}.tex", path),
-        format!("materials/{}.tex", path),
-    ];
+    let candidates = [format!("{}.tex", path), format!("materials/{}.tex", path)];
     let tex = candidates.iter().find_map(|key| scene.textures.get(key));
     let tex = tex?;
 

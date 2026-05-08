@@ -1,4 +1,12 @@
+# Rust
 /target
+
+# Test files
 /test
 
+# For ai agents
 TODO.md
+/AGENTS
+
+# obsidian
+.obsidian

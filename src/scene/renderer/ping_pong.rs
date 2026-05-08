@@ -1,7 +1,7 @@
 use wgpu::*;
 
-use super::vertex::{Vertex, NDC_VERTICES};
 use super::post_process::PostProcess;
+use super::vertex::{NDC_VERTICES, Vertex};
 
 pub struct PingPongTextures {
     // Own the textures; only views are read directly (ownership keeps views alive)
@@ -30,7 +30,11 @@ impl PingPongTextures {
         let create_tex = |device: &Device| {
             device.create_texture(&TextureDescriptor {
                 label: None,
-                size: Extent3d { width, height, depth_or_array_layers: 1 },
+                size: Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: TextureDimension::D2,
@@ -50,8 +54,14 @@ impl PingPongTextures {
             label: None,
             layout: &post_process.layout,
             entries: &[
-                BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&view_a) },
-                BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&post_process.sampler) },
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&view_a),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&post_process.sampler),
+                },
             ],
         });
 
@@ -71,14 +81,34 @@ impl PingPongTextures {
         });
         queue.write_buffer(&ndc_ibuf, 0, bytemuck::bytes_of(&[0u32, 2, 1, 0, 3, 2]));
 
-        Self { tex_a, tex_b, view_a, view_b, bindgroup: bg, _blank_view: blank_view, ndc_vbuf, ndc_ibuf }
+        Self {
+            tex_a,
+            tex_b,
+            view_a,
+            view_b,
+            bindgroup: bg,
+            _blank_view: blank_view,
+            ndc_vbuf,
+            ndc_ibuf,
+        }
     }
 
-    pub fn make_bindgroup(&self, device: &Device, layout: &BindGroupLayout, sampler: &Sampler) -> BindGroup {
+    pub fn make_bindgroup(
+        &self,
+        device: &Device,
+        layout: &BindGroupLayout,
+        sampler: &Sampler,
+    ) -> BindGroup {
         Self::make_source_bindgroup(device, layout, &self.view_a, sampler)
     }
 
-    pub fn make_bindgroup_for(&self, device: &Device, layout: &BindGroupLayout, sampler: &Sampler, view: &TextureView) -> BindGroup {
+    pub fn make_bindgroup_for(
+        &self,
+        device: &Device,
+        layout: &BindGroupLayout,
+        sampler: &Sampler,
+        view: &TextureView,
+    ) -> BindGroup {
         Self::make_source_bindgroup(device, layout, view, sampler)
     }
 
@@ -92,8 +122,14 @@ impl PingPongTextures {
             label: None,
             layout,
             entries: &[
-                BindGroupEntry { binding: 0, resource: BindingResource::TextureView(view) },
-                BindGroupEntry { binding: 1, resource: BindingResource::Sampler(sampler) },
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(sampler),
+                },
             ],
         })
     }

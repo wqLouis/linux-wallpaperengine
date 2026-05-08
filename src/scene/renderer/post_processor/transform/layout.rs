@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::shader_header::get_headers;
+use super::super::shader_header::get_headers;
 
 #[derive(Debug, Clone)]
 pub struct EffectLayout {

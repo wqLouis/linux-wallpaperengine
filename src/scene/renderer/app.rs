@@ -29,12 +29,18 @@ pub struct WgpuApp {
     pub post_process: Option<PostProcess>,
     pub resolution: Option<[u32; 2]>,
     pub start_time: Instant,
+    pub elapsed_ms: u64,
     pub projection_matrix: [[f32; 4]; 4],
     pub no_effects: bool,
 }
 
 impl WgpuApp {
-    pub async fn new(scene_path: String, surface: InitAppSurface, size: [u32; 2], no_effects: bool) -> Self {
+    pub async fn new(
+        scene_path: String,
+        surface: InitAppSurface,
+        size: [u32; 2],
+        no_effects: bool,
+    ) -> Self {
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::VULKAN | Backends::METAL,
             ..Default::default()
@@ -71,43 +77,77 @@ impl WgpuApp {
         let audio_stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
 
         Self {
-            surface, buffers, projection_bindgroup, scene_path,
-            clear_color: Vec3::ZERO, device, queue, audio_stream,
-            draw_queue: None, resolution: None, post_process: None,
-            start_time: Instant::now(), projection_matrix: [[1.0; 4]; 4],
-            no_effects,
+            surface,
+            buffers,
+            projection_bindgroup,
+            scene_path,
+            clear_color: Vec3::ZERO,
+            device,
+            queue,
+            audio_stream,
+            draw_queue: None,
+            resolution: None,
+            post_process: None,
+            start_time: Instant::now(),
+            elapsed_ms: 0,
+            projection_matrix: [[1.0; 4]; 4],
+            no_effects: no_effects,
         }
     }
 
     pub fn render(&mut self) -> Option<()> {
-        let elapsed = self.start_time.elapsed().as_secs_f32();
+        let now = Instant::now();
+        let delta = now.saturating_duration_since(self.start_time);
+        self.start_time = now;
+        self.elapsed_ms = self.elapsed_ms.wrapping_add(delta.as_millis() as u64);
+        // Wrap g_Time to 1 hour to maintain f32 precision
+        let elapsed = ((self.elapsed_ms % 3_600_000) as f32) / 1000.0;
 
         let draw_queue = self.draw_queue.as_ref()?;
         let post_process = self.post_process.as_ref()?;
         let screen_res = [self.surface.config.width, self.surface.config.height];
 
-        write_effect_uniforms(&self.queue, draw_queue.queue.as_ref(), elapsed, &self.projection_matrix, screen_res);
+        write_effect_uniforms(
+            &self.queue,
+            draw_queue.queue.as_ref(),
+            elapsed,
+            &self.projection_matrix,
+            screen_res,
+        );
 
         let has_multi = draw_queue.queue.iter().any(|o| o.intermediates.is_some());
         if has_multi {
             intermediate_pass::render_intermediate_passes(
-                &self.device, &self.queue, &self.buffers,
-                &self.projection_bindgroup, &self.projection_matrix,
-                draw_queue, post_process, elapsed, screen_res,
+                &self.device,
+                &self.queue,
+                &self.buffers,
+                &self.projection_bindgroup,
+                &self.projection_matrix,
+                draw_queue,
+                post_process,
+                elapsed,
+                screen_res,
             );
         }
 
         render_final_pass(
-            &self.device, &self.queue, &self.surface,
-            &self.buffers, &self.projection_bindgroup,
-            draw_queue, post_process, self.clear_color,
+            &self.device,
+            &self.queue,
+            &self.surface,
+            &self.buffers,
+            &self.projection_bindgroup,
+            draw_queue,
+            post_process,
+            self.clear_color,
         )
     }
 
     pub fn resize(&mut self, size: [u32; 2]) {
         self.surface.config.width = size[0];
         self.surface.config.height = size[1];
-        self.surface.surface.configure(&self.device, &self.surface.config);
+        self.surface
+            .surface
+            .configure(&self.device, &self.surface.config);
     }
 }
 
@@ -121,8 +161,23 @@ fn render_final_pass(
     post_process: &PostProcess,
     clear_color: Vec3,
 ) -> Option<()> {
-    let output = surface.surface.get_current_texture().unwrap();
-    let view = output.texture.create_view(&TextureViewDescriptor::default());
+    let output = match surface.surface.get_current_texture() {
+        Ok(frame) => frame,
+        Err(SurfaceError::Lost | SurfaceError::Outdated) => {
+            surface.surface.configure(device, &surface.config);
+            return None;
+        }
+        Err(SurfaceError::Timeout) => {
+            return None;
+        }
+        Err(e) => {
+            eprintln!("Surface error: {:?}", e);
+            return None;
+        }
+    };
+    let view = output
+        .texture
+        .create_view(&TextureViewDescriptor::default());
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
 
     {
@@ -152,14 +207,16 @@ fn render_final_pass(
         for draw_object in draw_queue.queue.iter() {
             render_pass.set_pipeline(&draw_queue.image_pipeline);
             if let Some(ref pp) = draw_object.intermediates {
-                let final_bg = pp.make_bindgroup(device, &post_process.layout, &post_process.sampler);
+                let final_bg =
+                    pp.make_bindgroup(device, &post_process.layout, &post_process.sampler);
                 render_pass.set_bind_group(0, &final_bg, &[]);
             } else {
                 render_pass.set_bind_group(0, &draw_object.bindgroup, &[]);
             }
             render_pass.draw_indexed(
                 draw_object.index_range[0]..draw_object.index_range[1],
-                0, 0..1,
+                0,
+                0..1,
             );
         }
     }
@@ -191,7 +248,9 @@ pub fn write_effect_uniforms(
                     &mut staging,
                     &effect_bg.constants,
                     &effect_bg.material_keys,
-                    elapsed, projection, &sys,
+                    elapsed,
+                    projection,
+                    &sys,
                 );
                 queue.write_buffer(buf, 0, &staging);
             }
