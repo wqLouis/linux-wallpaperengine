@@ -16,14 +16,14 @@ A single drawable item in the scene.
 pub struct DrawObject {
     pub texture_object: TextureObject,
     pub index_range: [u32; 2],                   // Range in global index buffer
-    pub bindgroup: BindGroup,                     // Texture + sampler
-    pub pipelines: Vec<Rc<RenderPipeline>>,       // Effect pipelines (1 per effect)
-    pub effect_bindgroups: Vec<EffectBindGroup>,  // Per-effect GPU resources
+    pub bindgroup: BindGroup,                    // Texture + sampler (bindings 0, 1)
+    pub pipelines: Vec<Rc<RenderPipeline>>,      // Effect pipelines (1 per effect)
+    pub effect_bindgroups: Vec<EffectBindGroup>, // Per-effect GPU resources
     pub intermediates: Option<PingPongTextures>,  // For multi-effect rendering
 }
 ```
 
-#### Construction (private `build` method)
+#### `DrawObject::build(...)` (private)
 
 Called by `DrawQueue::new()` for each texture object:
 
@@ -39,12 +39,12 @@ Called by `DrawQueue::new()` for each texture object:
 ```rust
 pub struct DrawQueue {
     pub queue: Rc<Vec<DrawObject>>,              // Ordered draw list
-    pub render_pipelines: BTreeMap<String, EffectPipelineData>,  // Effect cache
-    pub image_pipeline: RenderPipeline,           // Default image shader
+    pub render_pipelines: BTreeMap<String, EffectPipelineData>, // Effect cache
+    pub image_pipeline: RenderPipeline,          // Default image shader
 }
 ```
 
-#### `DrawQueue::new(device, queue, buffers, scene, texture_objects, image_pipeline, post_process, projection_bgl) -> Self`
+#### `DrawQueue::new(...) -> Self`
 
 Builds draw objects for all texture objects. The `render_pipelines` map is shared across objects to cache effect pipeline compilation.
 
@@ -91,13 +91,13 @@ Double-buffered render targets for multi-effect objects.
 
 ```rust
 pub struct PingPongTextures {
-    pub tex_a: Texture,          // Render target A (Rgba8UnormSrgb)
-    pub tex_b: Texture,          // Render target B
+    pub tex_a: Texture,     // Render target A (Rgba8UnormSrgb)
+    pub tex_b: Texture,     // Render target B
     pub view_a: TextureView,
     pub view_b: TextureView,
-    pub bindgroup: BindGroup,    // view_a + sampler
-    pub ndc_vbuf: Buffer,        // Fullscreen quad vertex buffer
-    pub ndc_ibuf: Buffer,        // Fullscreen quad index buffer
+    pub bindgroup: BindGroup,  // view_a + sampler
+    pub ndc_vbuf: Buffer,      // Fullscreen quad vertex buffer
+    pub ndc_ibuf: Buffer,      // Fullscreen quad index buffer
 }
 ```
 
@@ -105,17 +105,13 @@ pub struct PingPongTextures {
 
 Creates twin render targets sized to the texture dimensions, pre-filled with NDC quad geometry. The NDC quad is a fullscreen triangle strip covering `[-1,1]`.
 
-### `PingPongTextures::make_bindgroup(device, layout, sampler) -> BindGroup`
+### Bindgroup Methods
 
-Returns a bind group referencing `view_a` + sampler (the default output).
-
-### `PingPongTextures::make_bindgroup_for(device, layout, sampler, view) -> BindGroup`
-
-Returns a bind group referencing a specific view + sampler. Used after ping-pong to point at the correct output texture.
-
-### `PingPongTextures::make_source_bindgroup(device, layout, view, sampler) -> BindGroup`
-
-Low-level helper: creates a bind group with texture (binding 0) + sampler (binding 1).
+| Method | Description |
+|--------|-------------|
+| `make_bindgroup(device, layout, sampler)` | Returns bindgroup referencing `view_a` + sampler |
+| `make_bindgroup_for(device, layout, sampler, view)` | Returns bindgroup for a specific view + sampler |
+| `make_source_bindgroup(device, layout, view, sampler)` | Low-level: texture (0) + sampler (1) |
 
 ---
 
@@ -125,19 +121,19 @@ Low-level helper: creates a bind group with texture (binding 0) + sampler (bindi
 
 Orchestrates the multi-pass rendering for objects with effects.
 
-### `render_intermediate_passes(device, queue, buffers, projection_bindgroup, projection_matrix, draw_queue, post_process, elapsed, screen_res)`
+### `render_intermediate_passes(...)`
 
 Called when any draw object has effects. For each object:
 
-1. **Source pass** — renders the original texture to `view_a` using `image_pipeline`
-2. **Effect passes** — for each effect in order:
+1. **Writes identity projection** — temporarily overrides projection buffer for NDC rendering
+2. **Source pass** — renders the original texture to `view_a` using `image_pipeline`
+3. **Effect passes** — for each effect in order:
    - Renders to current target (`view_a` or `view_b`)
    - Applies the effect shader (`effect_bg.pipeline`)
    - Uses the previous pass output as source texture
    - Swaps source/target each iteration
-3. **Copy-back** (if odd effect count) — copies the final result back to `view_a` for the final pass
-
-Between intermediate and final passes, the projection buffer is temporarily overwritten with identity (for NDC rendering) then restored.
+4. **Copy-back** (if odd effect count) — copies the final result back to `view_a` for the final pass
+5. **Restores projection** — writes original projection back to buffer
 
 ---
 
@@ -154,11 +150,13 @@ Between intermediate and final passes, the projection buffer is temporarily over
      │                 ▼
      │  render_intermediate_passes()
      │  ┌─────────────────────────┐
-     │  │ Source → view_a         │
+     │  │ Write identity projection
+     │  │ Source → view_a        │
      │  │ Effect0: view_a → view_b│
      │  │ Effect1: view_b → view_a│
      │  │ ...                     │
-     │  │ Copy-back to view_a     │
+     │  │ Copy-back if odd count  │
+     │  │ Restore original projection
      │  └─────────────────────────┘
      │                 │
      └─ No ────────────┘
@@ -169,3 +167,47 @@ Between intermediate and final passes, the projection buffer is temporarily over
      │  present()        │
      └───────────────────┘
 ```
+
+### Intermediate Pass Details
+
+The intermediate pass handles the projection matrix specially:
+
+1. **Before intermediate passes:** Projection buffer is overwritten with identity matrix, and `write_effect_uniforms` is called with identity
+2. **After intermediate passes:** Original projection is restored, `write_effect_uniforms` is called again with the real matrix
+
+This ensures NDC-space fullscreen quad rendering works correctly during effect passes.
+
+---
+
+## Vertex Buffer Layout
+
+Each `Vertex` in the global vertex buffer:
+
+```rust
+#[repr(C)]
+pub struct Vertex {
+    pub pos: [f32; 3],  // World-space position (location 0)
+    pub uv: [f32; 2],   // Texture coordinates (location 1)
+}
+```
+
+The NDC quad vertices (used in intermediate passes):
+
+```rust
+const NDC_VERTICES: [[f32; 3]; 4] = [
+    [-1.0, -1.0, 0.0],
+    [ 1.0, -1.0, 0.0],
+    [-1.0,  1.0, 0.0],
+    [ 1.0,  1.0, 0.0],
+];
+```
+
+### Buffer Sizes
+
+```rust
+pub const MAX_TEXTURE: u32 = 512;
+pub const MAX_VERTEX: u32 = MAX_TEXTURE * 4;   // 2048 vertices
+pub const MAX_INDEX: u32 = MAX_TEXTURE * 6;    // 3072 indices
+```
+
+These limits determine the maximum number of texture objects that can be loaded.
