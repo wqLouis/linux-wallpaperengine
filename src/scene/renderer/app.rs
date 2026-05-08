@@ -29,6 +29,7 @@ pub struct WgpuApp {
     pub post_process: Option<PostProcess>,
     pub resolution: Option<[u32; 2]>,
     pub start_time: Instant,
+    pub elapsed_ms: u64,
     pub projection_matrix: [[f32; 4]; 4],
 }
 
@@ -73,12 +74,17 @@ impl WgpuApp {
             surface, buffers, projection_bindgroup, scene_path,
             clear_color: Vec3::ZERO, device, queue, audio_stream,
             draw_queue: None, resolution: None, post_process: None,
-            start_time: Instant::now(), projection_matrix: [[1.0; 4]; 4],
+            start_time: Instant::now(), elapsed_ms: 0, projection_matrix: [[1.0; 4]; 4],
         }
     }
 
     pub fn render(&mut self) -> Option<()> {
-        let elapsed = self.start_time.elapsed().as_secs_f32();
+        let now = Instant::now();
+        let delta = now.saturating_duration_since(self.start_time);
+        self.start_time = now;
+        self.elapsed_ms = self.elapsed_ms.wrapping_add(delta.as_millis() as u64);
+        // Wrap g_Time to 1 hour to maintain f32 precision
+        let elapsed = ((self.elapsed_ms % 3_600_000) as f32) / 1000.0;
 
         let draw_queue = self.draw_queue.as_ref()?;
         let post_process = self.post_process.as_ref()?;
@@ -119,7 +125,20 @@ fn render_final_pass(
     post_process: &PostProcess,
     clear_color: Vec3,
 ) -> Option<()> {
-    let output = surface.surface.get_current_texture().unwrap();
+    let output = match surface.surface.get_current_texture() {
+        Ok(frame) => frame,
+        Err(SurfaceError::Lost | SurfaceError::Outdated) => {
+            surface.surface.configure(device, &surface.config);
+            return None;
+        }
+        Err(SurfaceError::Timeout) => {
+            return None;
+        }
+        Err(e) => {
+            eprintln!("Surface error: {:?}", e);
+            return None;
+        }
+    };
     let view = output.texture.create_view(&TextureViewDescriptor::default());
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
 
