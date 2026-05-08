@@ -8,5 +8,6 @@ mod ping_pong;
 mod post_process;
 mod post_processor;
 mod projection;
+pub mod render_pass;
 mod surface;
 pub mod vertex;

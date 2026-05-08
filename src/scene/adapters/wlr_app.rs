@@ -1,19 +1,23 @@
+//! Wayland (wlr-layer-shell) adapter types and trait implementations.
+//!
+//! The wallpaper is rendered at `Layer::Background`, behind all windows.
+//! Cursor-based parallax is NOT available here (wayland security model:
+//! background-layer surfaces never receive pointer focus). An animated
+//! parallax drift (from scene.json `cameraparallax*` settings) is used
+//! as a fallback — all adapters get this automatically via [`WgpuApp`].
+
 use smithay_client_toolkit::{
     compositor::CompositorHandler,
-    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
-    delegate_seat,
+    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{
-        Capability, SeatHandler, SeatState,
-        pointer::{PointerEvent, PointerEventKind, PointerHandler},
-    },
+    seat::{Capability, SeatHandler, SeatState},
     shell::wlr_layer::{LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
 };
 use wayland_client::{
     Connection, QueueHandle,
-    protocol::{wl_output, wl_pointer, wl_seat, wl_surface},
+    protocol::{wl_output, wl_seat, wl_surface},
 };
 
 use crate::scene::renderer::app::WgpuApp;
@@ -35,8 +39,6 @@ pub struct Wgpu {
     pub app: WgpuApp,
     pub fit_mode: FitMode,
     pub wp_resolution: [u32; 2],
-    pub pointer: Option<wl_pointer::WlPointer>,
-    pub surface: wl_surface::WlSurface,
 }
 
 impl CompositorHandler for Wgpu {
@@ -127,68 +129,26 @@ impl SeatHandler for Wgpu {
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
     fn new_capability(
         &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        seat: wl_seat::WlSeat,
-        capability: Capability,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: wl_seat::WlSeat,
+        _: Capability,
     ) {
-        if capability == Capability::Pointer && self.pointer.is_none() {
-            let pointer = self
-                .seat_state
-                .get_pointer(qh, &seat)
-                .expect("Failed to create pointer");
-            self.pointer = Some(pointer);
-        }
     }
     fn remove_capability(
         &mut self,
-        _conn: &Connection,
+        _: &Connection,
         _: &QueueHandle<Self>,
-        _seat: wl_seat::WlSeat,
-        capability: Capability,
+        _: wl_seat::WlSeat,
+        _: Capability,
     ) {
-        if capability == Capability::Pointer && self.pointer.is_some() {
-            self.pointer.take().unwrap().release();
-        }
     }
-    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {}
-}
-
-impl PointerHandler for Wgpu {
-    fn pointer_frame(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _pointer: &wl_pointer::WlPointer,
-        events: &[PointerEvent],
-    ) {
-        for event in events {
-            // Only process events for our surface
-            if &event.surface != &self.surface {
-                continue;
-            }
-            match event.kind {
-                PointerEventKind::Motion { .. } => {
-                    let (sx, sy) = event.position;
-                    // Normalize cursor position to [0, 1] range, (0,0) = top-left, as expected by g_ParallaxPosition
-                    let nx = sx as f32 / self.wp_resolution[0] as f32;
-                    let ny = sy as f32 / self.wp_resolution[1] as f32;
-                    self.app.user_params =
-                        crate::scene::renderer::app::UserParams {
-                            cursor_position: [nx, ny],
-                            cursor_pixel: [sx as u32, sy as u32],
-                        };
-                }
-                _ => {}
-            }
-        }
-    }
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
 }
 
 delegate_compositor!(Wgpu);
 delegate_output!(Wgpu);
 delegate_seat!(Wgpu);
-delegate_pointer!(Wgpu);
 delegate_layer!(Wgpu);
 delegate_registry!(Wgpu);
 

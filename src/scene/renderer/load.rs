@@ -1,3 +1,6 @@
+//! Asset loading: parses the .pkg scene, uploads textures and geometry,
+//! creates render pipelines, and builds the draw queue.
+
 use std::{io::Cursor, path::Path};
 
 use crate::scene::{
@@ -56,6 +59,15 @@ impl WgpuApp {
         self.projection_matrix = camera_uniform.projection;
 
         self.resolution = Some(size);
+
+        // Store scene parallax settings for animated drift fallback
+        let general = &scene.root.general;
+        self.parallax_amount = general.cameraparallaxamount as f32;
+        self.parallax_delay = general.cameraparallaxdelay as f32;
+        self.parallax_mouse_influence = general
+            .cameraparallaxmouseinfluence
+            .as_f64()
+            .unwrap_or(0.5) as f32;
 
         self.post_process = Some(post_process);
     }

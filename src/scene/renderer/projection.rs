@@ -1,3 +1,8 @@
+//! Orthographic camera projection for wallpaper scenes.
+//!
+//! Builds a combined projection×view matrix from the scene.json camera
+//! parameters (eye, center, up, orthogonal projection bounds).
+
 use crate::scene::{loader::scene::Root, renderer::buffer::Buffers};
 use bytemuck::bytes_of;
 use glam::{Mat4, Vec3};

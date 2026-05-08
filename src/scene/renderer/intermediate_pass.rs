@@ -1,3 +1,9 @@
+//! Intermediate effect render passes (ping-pong).
+//!
+//! For objects with post-process effects, this module renders the source
+//! texture through each effect's shader pipeline using a pair of render
+//! targets (ping-pong). The final result is used by the final render pass.
+
 use std::rc::Rc;
 
 use bytemuck::bytes_of;
@@ -10,6 +16,7 @@ use super::{
     ping_pong::PingPongTextures,
     post_process::PostProcess,
     projection::ProjectionBindGroups,
+    render_pass,
 };
 
 pub fn render_intermediate_passes(
@@ -25,7 +32,7 @@ pub fn render_intermediate_passes(
     user_params: &UserParams,
 ) {
     queue.write_buffer(&buffers.projection, 0, bytes_of(&identity_matrix()));
-    super::app::write_effect_uniforms(
+    render_pass::write_effect_uniforms(
         queue,
         draw_queue.queue.as_ref(),
         elapsed,
@@ -135,7 +142,7 @@ pub fn render_intermediate_passes(
 
     queue.submit(Some(inter_encoder.finish()));
     queue.write_buffer(&buffers.projection, 0, bytes_of(projection_matrix));
-    super::app::write_effect_uniforms(
+    render_pass::write_effect_uniforms(
         queue,
         draw_queue.queue.as_ref(),
         elapsed,

@@ -1,3 +1,9 @@
+//! Draw queue construction: batches scene objects into GPU draw calls.
+//!
+//! Each [`TextureObject`] from the scene loader is converted into a
+//! [`DrawObject`] with its texture bind group, effect bind groups, and
+//! optional ping-pong intermediate textures for post-processing.
+
 use std::{collections::BTreeMap, rc::Rc};
 
 use wgpu::*;

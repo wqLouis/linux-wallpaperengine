@@ -1,3 +1,9 @@
+//! Winit-based adapter: creates an always-on-bottom window.
+//!
+//! This adapter works on both X11 and Wayland (via XWayland or native
+//! wayland winit). Cursor tracking works because winit windows receive
+//! pointer events even when stacked behind other windows.
+
 use std::sync::{Arc, Mutex};
 
 use pollster::block_on;

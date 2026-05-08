@@ -1,3 +1,9 @@
+//! GPU uniform buffer layout and per-frame value population.
+//!
+//! Parses shader uniform declarations into an [`UniformLayout`] (offsets
+//! + sizes), then fills and uploads the buffer each frame with system
+//! values (time, projection, cursor) and material constants.
+
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
