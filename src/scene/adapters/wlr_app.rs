@@ -28,12 +28,25 @@ use smithay_client_toolkit::{
     },
 };
 use wayland_client::{
-    Connection, Proxy, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_output, wl_seat, wl_surface},
 };
+use wayland_protocols::wp::{
+    fractional_scale::v1::client::{
+        wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+        wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+    },
+    viewporter::client::{
+        wp_viewporter::WpViewporter,
+        wp_viewport::WpViewport,
+    },
+};
 
 use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
+
+#[derive(Debug)]
+struct FractionalScaleData;
 
 pub struct Wgpu {
     pub registry_state: RegistryState,
@@ -42,51 +55,220 @@ pub struct Wgpu {
     pub app: WgpuApp,
     pub fit_mode: super::FitMode,
     pub wp_resolution: [u32; 2],
+
+    /// Fractional scale, encoded as numerator/120 (default 120 = 1.0x).
+    /// Updated by wp_fractional_scale_v1::preferred_scale, or computed
+    /// from output info as fallback.
+    scale_num: u32,
+    /// True once preferred_scale event was received (locks out fallback).
+    scale_received: bool,
+
+    // Last configure state, so we can re-apply when scale arrives.
+    last_logical: Option<(u32, u32)>,
+    last_layer: Option<LayerSurface>,
+    // Track last applied to skip redundant reconfigures.
+    last_applied_scale: u32,
+    last_applied_logical: Option<(u32, u32)>,
+
+    // Protocol objects that must be kept alive.
+    _fractional_scale_mgr: Option<WpFractionalScaleManagerV1>,
+    _fractional_scale: Option<WpFractionalScaleV1>,
+    _viewporter: Option<WpViewporter>,
+    viewport: Option<WpViewport>,
 }
 
 impl CompositorHandler for Wgpu {
-    fn scale_factor_changed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: i32,
-    ) {
-    }
-    fn transform_changed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: wl_output::Transform,
-    ) {
-    }
+    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
+    fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
-    fn surface_enter(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
-    ) {
-    }
-    fn surface_leave(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
-    ) {
-    }
+    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
 }
 
 impl OutputHandler for Wgpu {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output_state
+    fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        eprintln!("[wlr] OutputHandler::new_output");
+        // Output info is now available. Try computing the scale.
+        if !self.scale_received && self.last_logical.is_some() {
+            self.compute_scale_from_output(&output);
+        }
     }
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        eprintln!("[wlr] OutputHandler::update_output");
+        if !self.scale_received {
+            self.compute_scale_from_output(&output);
+        }
+    }
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+}
+
+// ---- Protocol dispatch implementations ----
+
+impl Dispatch<WpFractionalScaleManagerV1, FractionalScaleData, Wgpu> for Wgpu {
+    fn event(
+        _: &mut Wgpu,
+        _: &WpFractionalScaleManagerV1,
+        _: <WpFractionalScaleManagerV1 as Proxy>::Event,
+        _: &FractionalScaleData,
+        _: &Connection,
+        _: &QueueHandle<Wgpu>,
+    ) { unreachable!() }
+}
+
+impl Dispatch<WpFractionalScaleV1, FractionalScaleData, Wgpu> for Wgpu {
+    fn event(
+        state: &mut Wgpu,
+        _: &WpFractionalScaleV1,
+        event: <WpFractionalScaleV1 as Proxy>::Event,
+        _: &FractionalScaleData,
+        _: &Connection,
+        _: &QueueHandle<Wgpu>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            eprintln!("[wlr] preferred_scale: {} (×{:.2})", scale, scale as f64 / 120.0);
+            state.scale_num = scale;
+            state.scale_received = true;
+            state.reconfigure(); // re-apply with the real scale
+        }
+    }
+}
+
+impl Dispatch<WpViewporter, FractionalScaleData, Wgpu> for Wgpu {
+    fn event(
+        _: &mut Wgpu,
+        _: &WpViewporter,
+        _: <WpViewporter as Proxy>::Event,
+        _: &FractionalScaleData,
+        _: &Connection,
+        _: &QueueHandle<Wgpu>,
+    ) { unreachable!() }
+}
+
+impl Dispatch<WpViewport, FractionalScaleData, Wgpu> for Wgpu {
+    fn event(
+        _: &mut Wgpu,
+        _: &WpViewport,
+        _: <WpViewport as Proxy>::Event,
+        _: &FractionalScaleData,
+        _: &Connection,
+        _: &QueueHandle<Wgpu>,
+    ) { unreachable!() }
+}
+
+// ---- Core logic ----
+
+impl Wgpu {
+    /// Fallback: compute fractional scale from output's physical mode
+    /// vs logical size (e.g. 3840/2560 = 1.5).
+    fn compute_scale_from_output(&mut self, output: &wl_output::WlOutput) {
+        eprintln!("[wlr] compute_scale_from_output: scale_received={}, last_logical={:?}",
+            self.scale_received, self.last_logical);
+        let Some(info) = self.output_state.info(output) else {
+            eprintln!("[wlr]   no output info yet");
+            return;
+        };
+        let Some(mode) = info.modes.iter().find(|m| m.current) else {
+            eprintln!("[wlr]   no current mode");
+            return;
+        };
+
+        // Get logical size: prefer xdg_output, fall back to configure size.
+        let (log_w, log_h) = match info.logical_size {
+            Some((w, h)) if w > 0 && h > 0 => (w, h),
+            _ => match self.last_logical {
+                Some((w, h)) => (w as i32, h as i32),
+                _ => return,
+            },
+        };
+        if log_w <= 0 || log_h <= 0 { return; }
+
+        let w_scale = mode.dimensions.0 as f64 / log_w as f64;
+        let h_scale = mode.dimensions.1 as f64 / log_h as f64;
+        let computed = ((w_scale + h_scale) / 2.0 * 120.0).round() as u32;
+
+        eprintln!(
+            "[wlr] output fallback: mode=({},{}) logical=({log_w},{log_h}) → scale={computed} (×{:.2})",
+            mode.dimensions.0, mode.dimensions.1,
+            computed as f64 / 120.0,
+        );
+
+        if computed > self.scale_num {
+            self.scale_num = computed;
+            self.scale_received = true;
+            self.reconfigure();
+        }
+    }
+
+    /// Apply current scale to produce physical buffer size, set up
+    /// wp_viewport, and resize the swapchain.
+    fn reconfigure(&mut self) {
+        let Some((log_w, log_h)) = self.last_logical else { return };
+
+        // Skip if nothing changed since last apply.
+        if self.scale_num == self.last_applied_scale
+            && self.last_applied_logical == self.last_logical
+        {
+            return;
+        }
+
+        // If scale hasn't been received yet, try computing from outputs.
+        if !self.scale_received {
+            // Collect to Vec first to avoid borrow conflicts.
+            let outputs: Vec<wl_output::WlOutput> = self.output_state.outputs().collect();
+            for output in &outputs {
+                self.compute_scale_from_output(output);
+                if self.scale_received { break; }
+            }
+        }
+
+        let Some(ref layer) = self.last_layer else { return };
+
+        let (wp_w, wp_h) = (self.wp_resolution[0] as f32, self.wp_resolution[1] as f32);
+
+        // Fit-adjusted logical size (what the compositor shows).
+        let (layer_w, layer_h) = match self.fit_mode {
+            super::FitMode::Stretch => (log_w, log_h),
+            _ => {
+                let s = match self.fit_mode {
+                    super::FitMode::Cover =>
+                        f32::max(log_w as f32 / wp_w, log_h as f32 / wp_h),
+                    super::FitMode::Contain =>
+                        f32::min(log_w as f32 / wp_w, log_h as f32 / wp_h),
+                    _ => unreachable!(),
+                };
+                ((wp_w * s).round() as u32, (wp_h * s).round() as u32)
+            }
+        };
+
+        // Physical buffer = logical × scale
+        let f = self.scale_num as f64 / 120.0;
+        let phys_w = (layer_w as f64 * f).round() as u32;
+        let phys_h = (layer_h as f64 * f).round() as u32;
+
+        eprintln!(
+            "[wlr] reconfigure: logical=({log_w},{log_h}) layer=({layer_w},{layer_h}) \
+             scale={f:.3} physical=({phys_w},{phys_h})",
+        );
+
+        // Tell compositor the logical size via wp_viewport.
+        // This avoids the buffer overflowing the surface.
+        if let Some(ref vp) = self.viewport {
+            vp.set_destination(layer_w as i32, layer_h as i32);
+        }
+
+        // Set layer surface size (logical) and keep buffer_scale = 1
+        // as required by the fractional-scale protocol.
+        layer.set_size(layer_w, layer_h);
+        let _ = layer.set_buffer_scale(1);
+
+        self.app.resize([phys_w, phys_h]);
+        if self.app.draw_queue.is_some() { self.app.render(); }
+
+        // Remember what we applied so we can skip redundant calls.
+        self.last_applied_scale = self.scale_num;
+        self.last_applied_logical = self.last_logical;
+    }
 }
 
 impl LayerShellHandler for Wgpu {
@@ -99,39 +281,17 @@ impl LayerShellHandler for Wgpu {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
-        let (new_width, new_height) = configure.new_size;
-        if new_width == 0 && new_height == 0 {
-            return;
-        }
+        let (w, h) = configure.new_size;
+        if w == 0 && h == 0 { return; }
 
-        // Scale wallpaper to fill the output (fit mode), keeping both
-        // the layer surface and WGPU surface at the same size so the
-        // compositor doesn't get a buffer larger than the surface.
-        // The WGPU rendering happens in wallpaper coordinates via the
-        // projection matrix, so the swapchain size just needs to match
-        // the layer surface size.
-        let (use_w, use_h) = match self.fit_mode {
-            super::FitMode::Stretch => (new_width, new_height),
-            _ => {
-                let (wp_w, wp_h) = (self.wp_resolution[0] as f32, self.wp_resolution[1] as f32);
-                let scale = match self.fit_mode {
-                    super::FitMode::Cover => f32::max(new_width as f32 / wp_w, new_height as f32 / wp_h),
-                    super::FitMode::Contain => f32::min(new_width as f32 / wp_w, new_height as f32 / wp_h),
-                    _ => unreachable!(),
-                };
-                ((wp_w * scale).round() as u32, (wp_h * scale).round() as u32)
-            }
-        };
-        layer.set_size(use_w, use_h);
-        self.app.resize([use_w, use_h]);
-        self.app.render().unwrap();
+        self.last_logical = Some((w, h));
+        self.last_layer = Some(layer.clone());
+        self.reconfigure();
     }
 }
 
 impl SeatHandler for Wgpu {
-    fn seat_state(&mut self) -> &mut SeatState {
-        &mut self.seat_state
-    }
+    fn seat_state(&mut self) -> &mut SeatState { &mut self.seat_state }
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
     fn new_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, _: Capability) {}
     fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, _: Capability) {}
@@ -145,9 +305,7 @@ delegate_layer!(Wgpu);
 delegate_registry!(Wgpu);
 
 impl ProvidesRegistryState for Wgpu {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry_state
-    }
+    fn registry(&mut self) -> &mut RegistryState { &mut self.registry_state }
     registry_handlers![OutputState];
 }
 
@@ -156,9 +314,35 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
     let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
     let qh = event_queue.handle();
 
+    // --- Bind protocols ---
+
     let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
     let layer_shell = LayerShell::bind(&globals, &qh).unwrap();
     let surface = compositor_state.create_surface(&qh);
+
+    // wp_fractional_scale_manager_v1
+    let frac_mgr: Option<WpFractionalScaleManagerV1> =
+        globals.bind(&qh, 1..=1, FractionalScaleData).ok();
+    if frac_mgr.is_some() {
+        eprintln!("[wlr] wp_fractional_scale_manager_v1 bound");
+    } else {
+        eprintln!("[wlr] wp_fractional_scale_manager_v1 not available");
+    }
+
+    let frac_scale: Option<WpFractionalScaleV1> = frac_mgr.as_ref().map(|m: &WpFractionalScaleManagerV1| {
+        let fs = m.get_fractional_scale(&surface, &qh, FractionalScaleData);
+        eprintln!("[wlr] wp_fractional_scale_v1 created");
+        fs
+    });
+
+    // wp_viewporter
+    let viewporter: Option<WpViewporter> =
+        globals.bind(&qh, 1..=1, FractionalScaleData).ok();
+    let viewport: Option<WpViewport> = viewporter.as_ref().map(|v: &WpViewporter| {
+        let vp = v.get_viewport(&surface, &qh, FractionalScaleData);
+        eprintln!("[wlr] wp_viewporter bound, viewport created");
+        vp
+    });
 
     let layer = layer_shell.create_layer_surface(
         &qh, surface, Layer::Background, Some("linux wallpaper engine"), None,
@@ -192,9 +376,18 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
         app,
         fit_mode,
         wp_resolution: wp_res,
+        scale_num: 120,
+        scale_received: false,
+        last_logical: None,
+        last_layer: None,
+        _fractional_scale_mgr: frac_mgr,
+        _fractional_scale: frac_scale,
+        _viewporter: viewporter,
+        viewport,
+        last_applied_scale: 120,
+        last_applied_logical: None,
     };
 
-    // Event-driven render loop: dispatch wayland events, render each frame
     let frame_duration = Duration::from_millis(16);
     loop {
         event_queue.dispatch_pending(&mut wgpu).unwrap();
