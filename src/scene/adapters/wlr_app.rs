@@ -11,7 +11,11 @@
 //! cursor position are therefore unavailable in the wlr adapter.  The winit
 //! adapter should be used when cursor-parallax is desired.
 
-use std::{ptr::NonNull, time::Duration};
+use std::{
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use pollster::block_on;
 use raw_window_handle::{
@@ -64,14 +68,13 @@ pub struct Wgpu {
     pub fit_mode: super::FitMode,
     pub wp_resolution: [u32; 2],
 
-    /// Fractional scale, encoded as numerator/120 (default 120 = 1.0x).
-    /// Updated by wp_fractional_scale_v1::preferred_scale, or computed
-    /// from output info as fallback.
     scale_num: u32,
     /// True once preferred_scale event was received (locks out fallback).
     scale_received: bool,
+    /// True once the first configure has been applied and the swapchain
+    /// resized to match the output. Rendering is skipped until set.
+    configured: bool,
 
-    // Last configure state, so we can re-apply when scale arrives.
     last_logical: Option<(u32, u32)>,
     last_layer: Option<LayerSurface>,
     // Track last applied to skip redundant reconfigures.
@@ -209,32 +212,41 @@ impl Wgpu {
 
         let (wp_w, wp_h) = (self.wp_resolution[0] as f32, self.wp_resolution[1] as f32);
 
-        let (layer_w, layer_h) = match self.fit_mode {
-            super::FitMode::Stretch => (log_w, log_h),
-            _ => {
-                let s = match self.fit_mode {
-                    super::FitMode::Cover =>
-                        f32::max(log_w as f32 / wp_w, log_h as f32 / wp_h),
-                    super::FitMode::Contain =>
-                        f32::min(log_w as f32 / wp_w, log_h as f32 / wp_h),
-                    _ => unreachable!(),
-                };
-                ((wp_w * s).round() as u32, (wp_h * s).round() as u32)
+        let f = self.scale_num as f64 / 120.0;
+
+        // For cover mode, the swapchain is larger than the surface and the
+        // viewport crops the center-visible region. Stretch/Contain use matching sizes.
+        let (layer_w, layer_h, phys_w, phys_h) = match self.fit_mode {
+            super::FitMode::Cover => {
+                let s = f32::max(log_w as f32 / wp_w, log_h as f32 / wp_h);
+                let pw = (wp_w as f64 * s as f64 * f).round() as u32;
+                let ph = (wp_h as f64 * s as f64 * f).round() as u32;
+                if let Some(ref vp) = self.viewport {
+                    let crop_w = log_w as f64 * f;
+                    let crop_h = log_h as f64 * f;
+                    let src_x = ((pw as f64 - crop_w) / 2.0).max(0.0);
+                    let src_y = ((ph as f64 - crop_h) / 2.0).max(0.0);
+                    vp.set_source(src_x, src_y, crop_w, crop_h);
+                    vp.set_destination(log_w as i32, log_h as i32);
+                }
+                (log_w, log_h, pw, ph)
+            }
+            super::FitMode::Stretch => {
+                (log_w, log_h, (log_w as f64 * f) as u32, (log_h as f64 * f) as u32)
+            }
+            super::FitMode::Contain => {
+                let s = f32::min(log_w as f32 / wp_w, log_h as f32 / wp_h);
+                let lw = (wp_w * s).round() as u32;
+                let lh = (wp_h * s).round() as u32;
+                (lw, lh, (lw as f64 * f) as u32, (lh as f64 * f) as u32)
             }
         };
-
-        let f = self.scale_num as f64 / 120.0;
-        let phys_w = (layer_w as f64 * f).round() as u32;
-        let phys_h = (layer_h as f64 * f).round() as u32;
-
-        if let Some(ref vp) = self.viewport {
-            vp.set_destination(layer_w as i32, layer_h as i32);
-        }
 
         layer.set_size(layer_w, layer_h);
         let _ = layer.set_buffer_scale(1);
 
         self.app.resize([phys_w, phys_h]);
+        self.configured = true;
         if self.app.draw_queue.is_some() { self.app.render(); }
 
         self.last_applied_scale = self.scale_num;
@@ -354,6 +366,7 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
         wp_resolution: wp_res,
         scale_num: 120,
         scale_received: false,
+        configured: false,
         last_logical: None,
         last_layer: None,
         _fractional_scale_mgr: frac_mgr,
@@ -364,16 +377,37 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
         last_applied_logical: None,
     };
 
+    // Watchdog: if the GPU doesn't complete a render within 5 seconds,
+    // the driver has hung — abort so the retry loop can restart us.
+    let watchdog_triggered = std::sync::Arc::new(AtomicBool::new(false));
+    let watchdog_flag = watchdog_triggered.clone();
+    let watchdog_pid = std::process::id();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(5));
+            if watchdog_flag.load(Ordering::Relaxed) {
+                // Main thread made progress, reset the flag
+                watchdog_flag.store(false, Ordering::Relaxed);
+            } else {
+                // No progress for 5 seconds — GPU is hung
+                eprintln!("[wlr] watchdog: GPU appears hung, aborting process {}", watchdog_pid);
+                std::process::abort();
+            }
+        }
+    });
+
     let frame_duration = Duration::from_millis(16);
     loop {
         if let Err(e) = event_queue.dispatch_pending(&mut wgpu) {
             eprintln!("[wlr] Wayland dispatch error: {:?}", e);
             break;
         }
-        if wgpu.app.render().is_none() {
-            std::thread::sleep(Duration::from_millis(100));
-        } else {
+        if wgpu.configured {
+            let _ = wgpu.app.render();
+            watchdog_triggered.store(true, Ordering::Relaxed);
             std::thread::sleep(frame_duration);
+        } else {
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
     eprintln!("[wlr] render loop exited, will restart");
