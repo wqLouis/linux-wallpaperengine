@@ -57,10 +57,10 @@ pub fn make_effect_intermediate_bindgroup(
     })
 }
 
-/// Per-effect GPU resources: pipeline, uniform buffer, mask/noise textures.
 pub struct EffectBindGroup {
     pub pipeline: Rc<RenderPipeline>,
-    /// Initial bind group (kept for possible single-pass use).
+    // Bind group recreated per-frame via make_effect_intermediate_bindgroup;
+    // kept here for potential single-pass rendering path
     #[allow(dead_code)]
     pub bindgroup: BindGroup,
     pub uniform_buffer: Option<Buffer>,

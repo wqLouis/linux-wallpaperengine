@@ -1,7 +1,5 @@
 use wgpu::*;
 
-/// A fullscreen quad in normalized device coordinates `[-1, 1]`.
-/// Used by ping-pong intermediate effect passes.
 pub const NDC_VERTICES: [Vertex; 4] = [
     Vertex {
         pos: [-1.0, 1.0, 0.0],
@@ -21,7 +19,6 @@ pub const NDC_VERTICES: [Vertex; 4] = [
     },
 ];
 
-/// A single vertex with position and UV coordinates.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct Vertex {

@@ -45,9 +45,7 @@ impl WgpuApp {
             self.no_effects,
         );
 
-        if let Some(ref stream) = self.audio_stream {
-            load_audios(stream, objects.audio, &mut scene);
-        }
+        load_audios(&self.audio_stream, objects.audio, &mut scene);
 
         self.draw_queue = Some(draw_queue);
 

@@ -30,4 +30,5 @@ winit = "0.30.12"
 debug = false
 strip = true
 lto = "thin"
+panic = "abort"
 codegen-units = 1

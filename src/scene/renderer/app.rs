@@ -23,10 +23,10 @@ use super::{
 
 pub use super::surface::InitAppSurface;
 
-/// User interaction parameters (cursor position) set by the adapter each frame.
+/// User interaction parameters that adapters can update (cursor position, etc.)
 #[derive(Debug, Clone)]
 pub struct UserParams {
-    /// Normalized cursor position in [0, 1] range, (0,0) = top-left
+    /// Normalized cursor position in [0, 1] range (0,0) = top-left, (1,1) = bottom-right
     pub cursor_position: [f32; 2],
     /// Raw pixel cursor position
     #[allow(dead_code)]
@@ -44,10 +44,7 @@ impl Default for UserParams {
     }
 }
 
-/// Top-level application state owning all GPU resources.
-///
-/// Created by [`WgpuApp::new`], loaded via [`WgpuApp::load`], then driven
-/// by the per-frame [`WgpuApp::render`] call from an adapter.
+/// Top-level application state owning all WGPU resources.
 pub struct WgpuApp {
     pub surface: AppSurface,
     pub buffers: Buffers,
@@ -56,7 +53,7 @@ pub struct WgpuApp {
     pub clear_color: Vec3,
     pub device: Device,
     pub queue: Queue,
-    pub audio_stream: Option<rodio::OutputStream>,
+    pub audio_stream: rodio::OutputStream,
     pub draw_queue: Option<DrawQueue>,
     pub post_process: Option<PostProcess>,
     pub resolution: Option<[u32; 2]>,
@@ -114,7 +111,7 @@ impl WgpuApp {
         let surface = AppSurface::new(surface, &instance, &adapter, size);
         let buffers = Buffers::new(&device, MAX_INDEX as u64, MAX_VERTEX as u64);
         let projection_bindgroup = ProjectionBindGroups::new(&device);
-        let audio_stream = rodio::OutputStreamBuilder::open_default_stream().ok();
+        let audio_stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
 
         Self {
             surface,

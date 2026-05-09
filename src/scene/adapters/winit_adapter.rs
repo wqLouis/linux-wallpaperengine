@@ -99,10 +99,6 @@ impl ApplicationHandler for WinitApp {
     }
 }
 
-/// Run the wallpaper engine in a standalone winit window.
-///
-/// Creates an always-on-bottom, borderless fullscreen window and runs
-/// the event loop until the window is closed.
 pub fn start(pkg_path: String, no_effects: bool) {
     let event_loop = EventLoop::new().unwrap();
     let mut app = WinitApp {

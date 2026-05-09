@@ -5,7 +5,6 @@ use serde_json::Value;
 
 use super::scene::Vectors;
 
-/// A single item in the wallpaper scene (texture, sound, light, etc.).
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Object {
@@ -85,7 +84,6 @@ pub struct Object {
     pub disablepropagation: Option<bool>,
 }
 
-/// A shader effect applied to an object.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Effect {
@@ -96,7 +94,6 @@ pub struct Effect {
     pub visible: Value,
 }
 
-/// A single render pass within an effect.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pass {
@@ -108,7 +105,6 @@ pub struct Pass {
     pub usertextures: Option<(Value, Value)>,
 }
 
-/// Shader compilation flags (`[COMBO]` defines) that control effect variants.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Combos {

@@ -14,7 +14,6 @@ pub struct Root {
     pub version: i64,
 }
 
-/// Camera configuration parsed from `scene.json`.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Camera {
@@ -23,7 +22,6 @@ pub struct Camera {
     pub up: Vectors,
 }
 
-/// Scene-wide settings parsed from `scene.json`.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct General {
@@ -65,7 +63,6 @@ pub struct General {
     pub lightconfig: Option<Lightconfig>,
 }
 
-/// Orthographic projection bounds (the scene's native resolution).
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Orthogonalprojection {

@@ -8,14 +8,12 @@ use bytemuck::bytes_of;
 use glam::{Mat4, Vec3};
 use wgpu::*;
 
-/// Camera view-projection matrix uploaded to the GPU.
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 pub struct CameraUniform {
     pub projection: [[f32; 4]; 4],
 }
 
-/// Orthographic camera parameters parsed from the scene.
 pub struct Projection {
     center: Vec3,
     eye: Vec3,
@@ -27,7 +25,6 @@ pub struct Projection {
     _fov: f32,
 }
 
-/// Bind group layout and bind group for the camera projection uniform.
 pub struct ProjectionBindGroups {
     pub projection_layout: BindGroupLayout,
     pub projection: Option<BindGroup>,
@@ -78,9 +75,22 @@ impl ProjectionBindGroups {
 impl Projection {
     pub fn new(root: &Root) -> Self {
         Projection {
-            center: root.camera.center.parse().unwrap(),
-            eye: root.camera.eye.parse().unwrap(),
-            up: root.camera.up.parse().unwrap(),
+            // Very rough may breaks
+            center: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: root.camera.center.parse().unwrap()[2] as f32,
+            },
+            eye: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: root.camera.eye.parse().unwrap()[2] as f32,
+            },
+            up: Vec3 {
+                x: root.camera.up.parse().unwrap()[0] as f32,
+                y: root.camera.up.parse().unwrap()[1] as f32,
+                z: root.camera.up.parse().unwrap()[2] as f32,
+            },
             width: root.general.orthogonalprojection.width as f32,
             height: root.general.orthogonalprojection.height as f32,
             nearz: root.general.nearz as f32,

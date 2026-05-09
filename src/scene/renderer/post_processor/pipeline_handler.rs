@@ -15,7 +15,6 @@ use crate::scene::{
     },
 };
 
-/// Compiled effect pipeline with its shader layout and uniform metadata.
 #[derive(Debug)]
 pub struct EffectPipelineData {
     pub pipeline: Rc<RenderPipeline>,
@@ -24,10 +23,6 @@ pub struct EffectPipelineData {
     pub uniform_layout: UniformLayout,
 }
 
-/// Get or create an effect pipeline, caching by effect path + texture combo.
-///
-/// Compiles the shader if not already cached, adding the result to
-/// `pipelines`.  Returns `None` if the shader cannot be found or compiled.
 pub fn get_or_create_pipeline(
     device: &Device,
     effect_path: String,
@@ -176,10 +171,6 @@ fn create_effect_pipeline(
     })
 }
 
-/// Load a mask or noise texture from the scene and upload to GPU.
-///
-/// Tries path candidates `{path}.tex` and `materials/{path}.tex`.
-/// Selects GPU format based on file extension (R8, RG88, or RGBA8).
 pub fn load_mask_texture(
     device: &Device,
     queue: &Queue,

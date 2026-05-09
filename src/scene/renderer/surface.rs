@@ -3,14 +3,12 @@ use std::{fmt::Debug, sync::Arc};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use wgpu::*;
 
-/// WGPU surface wrapper for either a raw Wayland handle or a winit window.
 #[derive(Debug)]
 pub struct AppSurface {
     pub surface: Surface<'static>,
     pub config: SurfaceConfiguration,
 }
 
-/// Specifies how to create the WGPU surface — raw handles (Wayland) or a winit window.
 pub enum InitAppSurface {
     Raw((RawDisplayHandle, RawWindowHandle)),
     Winit(Arc<winit::window::Window>),

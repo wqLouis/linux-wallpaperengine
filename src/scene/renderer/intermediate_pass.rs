@@ -19,14 +19,6 @@ use super::{
     render_pass,
 };
 
-/// Run multi-pass effect rendering for objects with post-process shaders.
-///
-/// For each object with effects:
-/// 1. Renders the source texture to ping-pong target A
-/// 2. Applies each effect shader, alternating between A and B
-/// 3. Copies the final result back to A for the final pass
-///
-/// Temporarily overwrites the projection buffer with identity for NDC rendering.
 pub fn render_intermediate_passes(
     device: &Device,
     queue: &Queue,
@@ -74,11 +66,6 @@ pub fn render_intermediate_passes(
                 .values()
                 .find(|d| Rc::ptr_eq(&d.pipeline, &effect_bg.pipeline));
 
-            let Some(pipedata) = pipedata else {
-                eprintln!("[intermediate] skipping effect: pipeline not found");
-                continue;
-            };
-
             {
                 let mut pass = inter_encoder.begin_render_pass(&RenderPassDescriptor {
                     label: None,
@@ -105,7 +92,7 @@ pub fn render_intermediate_passes(
 
                 let inter_bg = effect_bindgroup::make_effect_intermediate_bindgroup(
                     device,
-                    pipedata,
+                    pipedata.unwrap(),
                     effect_bg,
                     source_view,
                     &post_process.sampler,

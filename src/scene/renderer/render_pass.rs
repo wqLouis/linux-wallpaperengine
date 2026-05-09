@@ -17,11 +17,10 @@ use super::{
     surface::AppSurface,
 };
 
-/// Draw all objects to the swapchain in a single render pass.
+/// Render all draw objects to the swapchain surface.
 ///
-/// Returns `None` if the swapchain needs reconfiguration or a transient
-/// surface error occurred.  Each object is drawn with either its direct
-/// texture bind group (no effects) or the ping-pong result (after effects).
+/// Each object is drawn with either its direct bind group (no post-processing)
+/// or the intermediate ping-pong texture (after applying effects).
 pub fn render_final_pass(
     device: &Device,
     queue: &Queue,
@@ -99,7 +98,11 @@ pub fn render_final_pass(
     Some(())
 }
 
-/// Upload per-frame uniforms (time, projection, cursor, material constants) to GPU.
+/// Write per-frame uniform data into effect bind group buffers.
+///
+/// Each effect bind group has a uniform buffer containing system values
+/// (time, projection, screen resolution, cursor position) and material
+/// constants. This function populates and uploads that data every frame.
 pub fn write_effect_uniforms(
     queue: &Queue,
     objects: &[DrawObject],

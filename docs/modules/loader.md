@@ -6,126 +6,191 @@ Parses Wallpaper Engine `.pkg` files and converts raw scene data into structured
 
 ## `scene` — Scene Root & Core Types
 
+**File:** `scene.rs`
+
 ### `Root`
 
-Top-level scene container parsed from `scene.json`.
+Top-level scene container.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `camera` | `Camera` | Default camera configuration |
-| `general` | `General` | Scene-wide settings (clear color, projection, bloom, etc.) |
+| `camera` | `Camera` | Default camera |
+| `general` | `General` | Scene-wide settings |
 | `objects` | `Vec<Object>` | All scene objects |
 | `version` | `i64` | Scene format version |
 
 ### `Camera`
 
+Camera configuration for view/projection matrices.
+
 | Field | Type | Description |
 |-------|------|-------------|
-| `center` | `Vectors` | Look-at target position |
+| `center` | `Vectors` | Look-at target |
 | `eye` | `Vectors` | Camera position |
 | `up` | `Vectors` | Up vector |
 
-### `General` (key fields)
+### `General`
+
+Scene-wide rendering parameters. Key fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `clearcolor` | `Vectors` | Background clear color (RGB 0–255) |
+| `clearcolor` | `Vectors` | Background clear color (0-255) |
 | `orthogonalprojection` | `Orthogonalprojection` | Scene resolution (width × height) |
 | `nearz` / `farz` | `f64` | Near/far clip planes |
 | `ambientcolor` | `Vectors` | Ambient light color |
-| `bloom` / `bloomstrength` | `bool` / `f64` | Bloom settings |
+| `bloom` / `bloomstrength` / `bloomthreshold` | bool/f64 | Bloom settings |
+| `hdr` | `bool` | HDR enabled |
 | `cameraparallaxamount` | `f64` | Parallax mouse influence |
-
-### `Vectors`
-
-Flexible 2D/3D vector parsed from `scene.json`. Supports three representations:
-
-| Variant | Example | Result |
-|---------|---------|--------|
-| `Scaler(f64)` | `1.0` | `Vec3(x, x, x)` |
-| `Vectors(String)` | `"1 2 3"` or `"1 2"` | `Vec3(x, y, z)` or `Vec3(x, y, 0)` |
-| `Object(Value)` | JSON object | `None` (unsupported) |
-
-**Method:** `parse() -> Option<Vec3>` — converts to `glam::Vec3`.
+| `fov` / `zoom` | `f64` | Perspective settings |
+| `lightconfig` | `Option<Lightconfig>` | Point/spot light configuration |
 
 ### `Orthogonalprojection`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `width` | `i64` | Scene width in pixels |
-| `height` | `i64` | Scene height in pixels |
+```rust
+pub struct Orthogonalprojection {
+    pub height: i64,
+    pub width: i64,
+}
+```
+
+### `Vectors`
+
+Flexible 2D/3D vector type supporting three representations:
+
+```rust
+pub enum Vectors {
+    Scaler(f64),              // Uniform scalar → Vec3(x, x, x)
+    Vectors(String),         // Space-separated "x y" or "x y z"
+    Object(Value),           // JSON object (not supported)
+}
+```
+
+**Method:** `parse(&self) -> Option<Vec3>` — Converts to `glam::Vec3`.
+
+### `BindUserProperty<T>`
+
+Wallpaper Engine's property binding system for dynamic values:
+
+```rust
+pub enum BindUserProperty<T> {
+    Value(T),                              // Direct value
+    Object(serde_json::Map<String, Value>) // Bound to user property
+}
+```
+
+**Method:** `value(self) -> Option<T>` — Extracts the actual value or resolves binding from `{"value": ...}`.
 
 ---
 
 ## `object` — Scene Object Definitions
 
+**File:** `object.rs`
+
 ### `Object`
 
-A single item in the scene (texture, audio, node, light, etc.). Key fields:
+Represents a single item in the scene. Fields include:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `i64` | Unique ID |
+| `id` | `i64` | Unique object ID |
 | `name` | `String` | Display name |
-| `image` | `Option<String>` | Texture material path (if texture object) |
-| `origin` / `angles` / `scale` | `Option<Vectors>` | Transform (position, rotation, scale) |
+| `image` | `Option<String>` | Texture path (if texture object) |
+| `origin` / `angles` / `scale` | `Option<Vectors>` | Transform |
 | `size` | `Option<Vectors>` | Dimensions |
-| `effects` | `Vec<Effect>` | Shader effects applied to this object |
-| `parent` | `Option<i64>` | Parent ID for transform inheritance |
+| `effects` | `Vec<Effect>` | Shader effects |
+| `parent` | `Option<i64>` | Parent object ID for transform inheritance |
 | `sound` | `Vec<String>` | Audio file paths |
+| `playbackmode` | `Option<String>` | "loop" or other |
 | `visible` | `Option<BindUserProperty<bool>>` | Visibility toggle |
+| `color_blend_mode` | `Option<i64>` | Blend mode |
+| `model` | `Option<Value>` | Model reference (`.mdl` files) |
+| `animationlayers` | `Vec<Animationlayer>` | Animation layers |
+| `particle` | `Option<String>` | Particle system reference |
 
 ### `Effect`
 
+A shader effect applied to an object.
+
 | Field | Type | Description |
 |-------|------|-------------|
-| `file` | `String` | Effect JSON path (e.g. `project.json`) |
+| `file` | `String` | Effect JSON path (e.g., `project.json`) |
 | `id` | `i64` | Unique ID |
-| `name` | `String` | Display name |
+| `name` | `String` | Effect name |
 | `passes` | `Vec<Pass>` | Render passes |
 | `visible` | `Value` | Visibility |
 
 ### `Pass`
 
+A single render pass in an effect.
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `constantshadervalues` | `Option<BTreeMap<String, Value>>` | Material constant overrides |
 | `id` | `i64` | Pass ID |
-| `textures` | `Vec<Option<String>>` | Additional textures (mask, noise) |
-| `combos` | `Option<Combos>` | Shader compilation flags |
+| `textures` | `Vec<Option<String>>` | Additional textures: index 0=mask, 1=noise |
+| `combos` | `Option<Combos>` | Shader combo defines |
+| `usertextures` | `Option<(Value, Value)>` | User-defined textures |
+| `material` | (in JSON) | Material file path |
 
 ### `Combos`
 
-Shader compilation defines (`[COMBO]` annotations) that control shader variants. Includes flags like `VERTICAL`, `NOISE`, `ANTIALIAS`, `ENABLEMASK`, `BLENDMODE`, `TRANSFORM`, and many more.
+Shader compilation defines that control shader variants. All fields are `Option<i64>`:
+
+| Field | Effect |
+|-------|--------|
+| `VERTICAL` | Vertical orientation |
+| `NOISE` | Noise displacement |
+| `ANTIALIAS` | Anti-aliasing |
+| `A_SMOOTH_CURVE` | Smooth curve blending |
+| `BLENDMODE` | Blend mode selection |
+| `MODE` | General mode switch |
+| `REPEAT` | Texture repeat |
+| `ENABLEMASK` | Mask usage |
+| `TRANSFORM` | Transformation mode |
+| `...` | Many more variants |
 
 ---
 
 ## `scene_loader` — Package File Parser
 
+**File:** `scene_loader.rs`
+
 ### `Scene`
 
-The fully-loaded asset container:
+The fully-loaded scene asset container.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `root` | `Root` | Parsed `scene.json` |
-| `textures` | `BTreeMap<String, Rc<Tex>>` | Parsed `.tex` texture data |
-| `jsons` | `BTreeMap<String, String>` | Raw JSON file contents (shader configs, materials) |
-| `misc` | `BTreeMap<String, Vec<u8>>` | Other files (shader source, audio) |
+```rust
+pub struct Scene {
+    pub root: Root,                              // Parsed scene.json
+    pub textures: BTreeMap<String, Rc<Tex>>,     // .tex → parsed texture
+    pub jsons: BTreeMap<String, String>,          // .json → raw string
+    pub misc: BTreeMap<String, Vec<u8>>,          // Other files (shaders, audio)
+}
+```
 
-### `Scene::new(path) -> Self`
+### `Scene::new(path: String) -> Self`
 
-1. Opens `.pkg` via `Pkg::new(path)`
-2. Classifies each file:
-   - `.tex` → parse to RGBA via `Tex::new` + `parse_to_rgba` (threaded)
+Parses a `.pkg` file:
+
+1. Uses `depkg::Pkg::new(path)` to open the package
+2. For each file:
+   - `.tex` → parse to RGBA (threaded via `Tex::new` + `parse_to_rgba`)
    - `.json` → store as string
    - Other → store as raw bytes
-3. Parses `scene.json` as `Root`
-4. Returns complete `Scene`
+3. Shows a progress bar via `indicatif::ProgressBar`
+4. Parses `scene.json` as `Root`
+5. Returns the complete `Scene`
+
+**Threading:** `.tex` files are parsed in parallel using `thread::spawn`, with results merged into a single `BTreeMap`.
 
 ---
 
 ## `object_loader` — Object Conversion
+
+**File:** `object_loader.rs`
+
+Converts raw `Object`/`Effect` definitions into render-ready types.
 
 ### `TextureObject`
 
@@ -134,8 +199,9 @@ The fully-loaded asset container:
 | `texture` | `Rc<Tex>` | Parsed RGBA texture data |
 | `origin` | `Vec3` | World-space position |
 | `angles` | `Vec3` | Rotation (Euler, degrees) |
-| `size` | `Vec2` | Width / height |
+| `size` | `Vec2` | Width/height |
 | `scale` | `Vec3` | Scale multiplier |
+| `parent` | `Option<i64>` | Parent object ID |
 | `effects` | `Vec<Effect>` | Shader effects |
 
 ### `AudioObject`
@@ -147,25 +213,39 @@ The fully-loaded asset container:
 
 ### `ObjectMap`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `texture` | `Vec<TextureObject>` | Ordered texture draw list |
-| `audio` | `Vec<AudioObject>` | Audio objects |
+```rust
+pub struct ObjectMap {
+    pub texture: Vec<TextureObject>,
+    pub audio: Vec<AudioObject>,
+}
+```
 
-### `ObjectMap::new(objects, scene) -> Self`
+### `ObjectMap::new(objects: &Vec<Object>, scene: &Scene) -> Self`
 
-1. Classifies each object as texture, audio, or transform node
-2. Skips invisible objects
-3. Resolves parent-child transform inheritance (accumulates angles, scale, origin)
-4. Returns ordered texture and audio vectors
+1. Iterates all objects, classifying each as:
+   - **Texture** — has `image` field, loads `.tex` via `Model` JSON
+   - **Audio** — has `sound` files, maps `playbackmode` to `PlaybackMode`
+   - **Node** — transform-only parent for hierarchy
+2. Resolves parent-child transform inheritance (accumulates angles, scale, origin)
+3. Returns ordered `texture` and `audio` vectors
+
+**Visibility:** Objects with `visible == false` are skipped.
+
+**Model Loading:** For texture objects, reads `Model` JSON (material path), resolves `.tex` file.
 
 ---
 
 ## `model` — Material Model
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `material` | `String` | Path to the `.tex` file to load and display |
-| `autosize` | `bool` | Auto-size flag |
-| `cropoffset` | `Option<String>` | Crop offset |
-| `puppet` | `Option<String>` | Skeletal animation reference (`.puppet`) |
+**File:** `model.rs`
+
+```rust
+pub struct Model {
+    pub autosize: bool,
+    pub cropoffset: Option<String>,
+    pub material: String,        // Path to material .tex file
+    pub puppet: Option<String>,  // Skeletal animation reference (.puppet)
+}
+```
+
+Referenced by texture objects in `object.image`. The `material` field points to the actual `.tex` file to load and display.

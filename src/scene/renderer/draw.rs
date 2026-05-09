@@ -19,29 +19,22 @@ use crate::scene::{
     },
 };
 
-/// A single drawable object with its texture, effects, and GPU resources.
 pub struct DrawObject {
+    // Owns the source TextureObject (kept alive for the struct's lifetime)
     #[allow(dead_code)]
     pub texture_object: TextureObject,
-    /// Range into the global index buffer for this object's quad.
     pub index_range: [u32; 2],
-    /// Bind group for the base texture image (binding 0) + sampler (binding 1).
     pub bindgroup: BindGroup,
-    /// Compiled effect pipelines (kept alive for effect bind groups).
+    // Rc handles keeping effect pipelines alive; pipelines accessed via effect_bindgroups
     #[allow(dead_code)]
     pub pipelines: Vec<Rc<RenderPipeline>>,
-    /// Per-effect GPU resources (uniform buffers, mask/noise textures).
     pub effect_bindgroups: Vec<EffectBindGroup>,
-    /// Ping-pong textures for multi-pass effect rendering, if effects exist.
     pub intermediates: Option<PingPongTextures>,
 }
 
-/// Ordered list of draw objects and cached effect pipelines.
 pub struct DrawQueue {
     pub queue: Rc<Vec<DrawObject>>,
-    /// Cache of effect pipelines keyed by effect path + texture combo.
     pub render_pipelines: BTreeMap<String, pipeline_handler::EffectPipelineData>,
-    /// Default image rendering pipeline (WGSL shader).
     pub image_pipeline: RenderPipeline,
 }
 
