@@ -8,6 +8,10 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+/// A fully-loaded wallpaper scene, ready for rendering.
+///
+/// Contains the parsed scene graph, textures, JSON configs, and raw
+/// shader/audio bytes extracted from a `.pkg` file.
 pub struct Scene {
     pub root: crate::scene::loader::scene::Root,
     pub textures: BTreeMap<String, Rc<Tex>>,

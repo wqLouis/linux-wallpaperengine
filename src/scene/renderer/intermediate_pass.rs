@@ -19,6 +19,14 @@ use super::{
     render_pass,
 };
 
+/// Run multi-pass effect rendering for objects with post-process shaders.
+///
+/// For each object with effects:
+/// 1. Renders the source texture to ping-pong target A
+/// 2. Applies each effect shader, alternating between A and B
+/// 3. Copies the final result back to A for the final pass
+///
+/// Temporarily overwrites the projection buffer with identity for NDC rendering.
 pub fn render_intermediate_passes(
     device: &Device,
     queue: &Queue,

@@ -9,6 +9,7 @@ use crate::scene::loader::{
     scene_loader::Scene,
 };
 
+/// A renderable texture object after resolving transforms and effects.
 #[derive(Debug, Clone)]
 pub struct TextureObject {
     pub texture: Rc<Tex>,
@@ -20,11 +21,13 @@ pub struct TextureObject {
     pub effects: Vec<Effect>,
 }
 
+/// An audio object with playback mode.
 pub struct AudioObject {
     pub sounds: Vec<String>,
     pub playback_mode: PlaybackMode,
 }
 
+/// Map of all scene objects split into texture and audio lists.
 pub struct ObjectMap {
     pub texture: Vec<TextureObject>,
     pub audio: Vec<AudioObject>,

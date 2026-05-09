@@ -6,6 +6,10 @@
 
 use std::collections::BTreeMap;
 
+/// Layout of a GPU uniform buffer for an effect shader.
+///
+/// Maps uniform names to byte offsets and sizes, computed from
+/// shader uniform declarations.
 #[derive(Debug, Clone)]
 pub struct UniformLayout {
     offsets: BTreeMap<String, (u64, u64)>,
@@ -156,10 +160,11 @@ impl UniformLayout {
     }
 }
 
+/// Per-frame system values uploaded to every effect's uniform buffer.
 pub struct SystemUniforms {
     pub screen_resolution: [u32; 2],
     pub tex_resolutions: BTreeMap<String, [f32; 4]>,
-    /// Normalized cursor position in [0, 1] range, (0,0) = top-left (UV space)
+    /// Normalized cursor position in [0, 1] range, (0,0) = top-left
     pub cursor_position: [f32; 2],
 }
 

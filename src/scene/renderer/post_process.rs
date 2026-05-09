@@ -1,5 +1,8 @@
 use wgpu::*;
 
+/// Shared sampler, bind group layout, and blank texture for post-processing.
+///
+/// Created once per wallpaper load and used by all effect bind groups.
 pub struct PostProcess {
     pub sampler: Sampler,
     pub layout: BindGroupLayout,

@@ -53,6 +53,9 @@ use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
 #[derive(Debug)]
 struct FractionalScaleData;
 
+/// Wayland protocol state for the layer-shell wallpaper adapter.
+///
+/// Holds all smithay-client-toolkit state and the [`WgpuApp`] instance.
 pub struct Wgpu {
     pub registry_state: RegistryState,
     pub seat_state: SeatState,
@@ -277,6 +280,11 @@ impl ProvidesRegistryState for Wgpu {
     registry_handlers![OutputState, SeatState];
 }
 
+/// Run the wallpaper engine as a Wayland background layer.
+///
+/// Connects to the Wayland display, creates a `Background` layer surface,
+/// and enters a render loop.  Exits when the Wayland connection drops
+/// or a fatal error occurs (caller should retry).
 pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
     let conn = Connection::connect_to_env().unwrap();
     let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();

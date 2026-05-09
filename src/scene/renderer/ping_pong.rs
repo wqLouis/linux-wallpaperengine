@@ -9,6 +9,11 @@ use wgpu::*;
 use super::post_process::PostProcess;
 use super::vertex::{NDC_VERTICES, Vertex};
 
+/// A pair of render targets for ping-pong multi-pass effect rendering.
+///
+/// Effects are applied by alternating between two textures: read from
+/// one, write to the other, then swap. Also provides NDC vertex/index
+/// buffers for fullscreen-quad effect passes.
 pub struct PingPongTextures {
     #[allow(dead_code)]
     tex_a: Texture,

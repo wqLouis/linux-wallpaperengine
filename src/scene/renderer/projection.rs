@@ -8,12 +8,14 @@ use bytemuck::bytes_of;
 use glam::{Mat4, Vec3};
 use wgpu::*;
 
+/// Camera view-projection matrix uploaded to the GPU.
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 pub struct CameraUniform {
     pub projection: [[f32; 4]; 4],
 }
 
+/// Orthographic camera parameters parsed from the scene.
 pub struct Projection {
     center: Vec3,
     eye: Vec3,
@@ -25,6 +27,7 @@ pub struct Projection {
     _fov: f32,
 }
 
+/// Bind group layout and bind group for the camera projection uniform.
 pub struct ProjectionBindGroups {
     pub projection_layout: BindGroupLayout,
     pub projection: Option<BindGroup>,

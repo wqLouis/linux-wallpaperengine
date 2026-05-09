@@ -7,28 +7,32 @@ use clap::Parser;
 use crate::scene::adapters::FitMode;
 use crate::scene::adapters::{winit_adapter, wlr_app};
 
+/// Command-line arguments for the wallpaper engine.
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
-    // wallpaper .pkg file path
+    /// Path to a `.pkg` wallpaper file.
     #[arg(short, default_value = "./scene.pkg")]
     path: String,
 
-    // different display mode [wlr, winit]
+    /// Display backend: `"wlr"` (Wayland layer-shell) or `"winit"` (standalone window).
     #[arg(short, default_value = "wlr")]
     modes: String,
 
-    // How to fit wallpaper to output: cover, contain, or stretch
+    /// How to fit the wallpaper to the output: `"cover"`, `"contain"`, or `"stretch"`.
     #[arg(long, default_value = "cover")]
     fit_mode: String,
 
-    // Bypass all post-process effects, render as static image
+    /// Skip all post-process effects and render as a static image.
     #[arg(long, default_value_t = false)]
     no_effects: bool,
 }
 
+/// Maximum number of textures that can be bound per shader stage.
 pub const MAX_TEXTURE: u32 = 512;
+/// Maximum vertex count in the global vertex buffer (= `MAX_TEXTURE * 4`).
 pub const MAX_VERTEX: u32 = MAX_TEXTURE * 4;
+/// Maximum index count in the global index buffer (= `MAX_TEXTURE * 6`).
 pub const MAX_INDEX: u32 = MAX_TEXTURE * 6;
 
 fn main() {
@@ -49,15 +53,20 @@ fn main() {
         }
     };
 
-    // Retry loop: if wallpaper engine crashes (GPU error, Wayland error, etc.),
+    // Retry loop: if wallpaper engine crashes (panic, GPU error, Wayland error),
     // wait a moment and restart automatically.
     loop {
-        match args.modes.as_str() {
-            "winit" => winit_adapter::start(args.path.clone(), args.no_effects),
-            "wlr" => wlr_app::start(args.path.clone(), fit_mode, args.no_effects),
-            _ => break,
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match args.modes.as_str() {
+                "winit" => winit_adapter::start(args.path.clone(), args.no_effects),
+                "wlr" => wlr_app::start(args.path.clone(), fit_mode, args.no_effects),
+                _ => {}
+            }
+        }));
+        match result {
+            Ok(_) => eprintln!("[main] wallpaper engine exited normally, restarting..."),
+            Err(e) => eprintln!("[main] wallpaper engine panicked: {:?}, restarting...", e),
         }
-        eprintln!("[main] wallpaper engine exited, restarting in 2 seconds...");
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
 }

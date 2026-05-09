@@ -3,6 +3,11 @@ use wgpu::*;
 
 use super::vertex::Vertex;
 
+/// Pre-allocated GPU vertex, index, and projection buffers.
+///
+/// Vertices and indices are appended by [`draw_rect`](Buffers::draw_rect)
+/// and [`draw_texture`](Buffers::draw_texture); the projection buffer holds
+/// the camera view-projection matrix.
 pub struct Buffers {
     pub vertex: Buffer,
     pub index: Buffer,
