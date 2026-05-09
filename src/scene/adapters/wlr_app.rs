@@ -13,6 +13,7 @@
 
 use std::{ptr::NonNull, time::Duration};
 
+use log;
 use pollster::block_on;
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
@@ -128,7 +129,7 @@ impl Dispatch<WpFractionalScaleV1, FractionalScaleData, Wgpu> for Wgpu {
         _: &QueueHandle<Wgpu>,
     ) {
         if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
-            eprintln!("[wlr] preferred_scale: {} (×{:.2})", scale, scale as f64 / 120.0);
+            log::info!("preferred_scale: {} (×{:.2})", scale, scale as f64 / 120.0);
             state.scale_num = scale;
             state.scale_received = true;
             state.reconfigure();
@@ -292,14 +293,14 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
     let frac_mgr: Option<WpFractionalScaleManagerV1> =
         globals.bind(&qh, 1..=1, FractionalScaleData).ok();
     if frac_mgr.is_some() {
-        eprintln!("[wlr] wp_fractional_scale_manager_v1 bound");
+        log::info!("wp_fractional_scale_manager_v1 bound");
     } else {
-        eprintln!("[wlr] wp_fractional_scale_manager_v1 not available");
+        log::info!("wp_fractional_scale_manager_v1 not available");
     }
 
     let frac_scale: Option<WpFractionalScaleV1> = frac_mgr.as_ref().map(|m: &WpFractionalScaleManagerV1| {
         let fs = m.get_fractional_scale(&surface, &qh, FractionalScaleData);
-        eprintln!("[wlr] wp_fractional_scale_v1 created");
+        log::info!("wp_fractional_scale_v1 created");
         fs
     });
 
@@ -308,7 +309,7 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
         globals.bind(&qh, 1..=1, FractionalScaleData).ok();
     let viewport: Option<WpViewport> = viewporter.as_ref().map(|v: &WpViewporter| {
         let vp = v.get_viewport(&surface, &qh, FractionalScaleData);
-        eprintln!("[wlr] wp_viewporter bound, viewport created");
+        log::info!("wp_viewporter bound, viewport created");
         vp
     });
 
@@ -357,9 +358,16 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
     };
 
     let frame_duration = Duration::from_millis(16);
+    let mut frame_count: u64 = 0;
     loop {
+        log::debug!("frame {}: dispatching events...", frame_count);
         event_queue.dispatch_pending(&mut wgpu).unwrap();
-        wgpu.app.render();
+        log::debug!("frame {}: calling render...", frame_count);
+        let render_result = wgpu.app.render();
+        if render_result.is_none() {
+            log::warn!("frame {}: render returned None", frame_count);
+        }
         std::thread::sleep(frame_duration);
+        frame_count = frame_count.wrapping_add(1);
     }
 }

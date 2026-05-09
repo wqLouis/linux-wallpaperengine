@@ -3,6 +3,7 @@ mod scene;
 use std::path::Path;
 
 use clap::Parser;
+use log::LevelFilter;
 
 use crate::scene::adapters::FitMode;
 use crate::scene::adapters::{winit_adapter, wlr_app};
@@ -25,6 +26,10 @@ struct Args {
     // Bypass all post-process effects, render as static image
     #[arg(long, default_value_t = false)]
     no_effects: bool,
+
+    // Log level: all, warning, errors
+    #[arg(short = 'l', long, default_value = "warning")]
+    log_level: String,
 }
 
 pub const MAX_TEXTURE: u32 = 512;
@@ -33,6 +38,21 @@ pub const MAX_INDEX: u32 = MAX_TEXTURE * 6;
 
 fn main() {
     let args = Args::parse();
+
+    let level = match args.log_level.as_str() {
+        "all" => LevelFilter::Debug,
+        "warning" => LevelFilter::Warn,
+        "errors" => LevelFilter::Error,
+        _ => {
+            eprintln!("Unknown log-level '{}'. Valid: all, warning, errors", args.log_level);
+            return;
+        }
+    };
+
+    env_logger::Builder::new()
+        .filter_level(level)
+        .format_timestamp_millis()
+        .init();
 
     let path = Path::new(&args.path);
     if path.exists() == false || path.extension().unwrap_or_default() != "pkg" {

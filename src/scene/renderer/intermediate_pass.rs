@@ -7,6 +7,7 @@
 use std::rc::Rc;
 
 use bytemuck::bytes_of;
+use log;
 use wgpu::*;
 
 use super::{
@@ -31,6 +32,7 @@ pub fn render_intermediate_passes(
     screen_res: [u32; 2],
     user_params: &UserParams,
 ) {
+    log::debug!("starting intermediate passes, {} objects", draw_queue.queue.len());
     queue.write_buffer(&buffers.projection, 0, bytes_of(&identity_matrix()));
     render_pass::write_effect_uniforms(
         queue,
@@ -43,11 +45,12 @@ pub fn render_intermediate_passes(
 
     let mut inter_encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
 
-    for draw_object in draw_queue.queue.iter() {
+    for (obj_idx, draw_object) in draw_queue.queue.iter().enumerate() {
         let Some(ref pp) = draw_object.intermediates else {
             continue;
         };
 
+        log::debug!("object[{}] has {} effects", obj_idx, draw_object.effect_bindgroups.len());
         render_source_pass(
             &mut inter_encoder,
             draw_object,
@@ -140,6 +143,7 @@ pub fn render_intermediate_passes(
         }
     }
 
+    log::debug!("submitting intermediate encoder...");
     queue.submit(Some(inter_encoder.finish()));
     queue.write_buffer(&buffers.projection, 0, bytes_of(projection_matrix));
     render_pass::write_effect_uniforms(
@@ -150,6 +154,7 @@ pub fn render_intermediate_passes(
         screen_res,
         user_params,
     );
+    log::debug!("intermediate passes done");
 }
 
 fn render_source_pass(

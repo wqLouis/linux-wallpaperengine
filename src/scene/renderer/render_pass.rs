@@ -5,6 +5,7 @@
 //! into effect bind group buffers.
 
 use glam::Vec3;
+use log;
 use wgpu::*;
 
 use super::{
@@ -33,14 +34,21 @@ pub fn render_final_pass(
 ) -> Option<()> {
     // Acquire the next swapchain frame
     let output = match surface.surface.get_current_texture() {
-        Ok(frame) => frame,
+        Ok(frame) => {
+            log::debug!("acquired swapchain texture");
+            frame
+        }
         Err(SurfaceError::Lost | SurfaceError::Outdated) => {
+            log::warn!("surface lost/outdated, reconfiguring...");
             surface.surface.configure(device, &surface.config);
             return None;
         }
-        Err(SurfaceError::Timeout) => return None,
+        Err(SurfaceError::Timeout) => {
+            log::warn!("surface timeout");
+            return None;
+        }
         Err(e) => {
-            eprintln!("Surface error: {:?}", e);
+            log::error!("surface error: {:?}", e);
             return None;
         }
     };
@@ -50,6 +58,7 @@ pub fn render_final_pass(
         .create_view(&TextureViewDescriptor::default());
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
 
+    log::debug!("drawing {} objects...", draw_queue.queue.len());
     {
         let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: None,
@@ -93,8 +102,11 @@ pub fn render_final_pass(
         }
     }
 
+    log::debug!("submitting to queue...");
     queue.submit(Some(encoder.finish()));
+    log::debug!("presenting...");
     output.present();
+    log::debug!("frame done");
     Some(())
 }
 

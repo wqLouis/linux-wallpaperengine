@@ -7,6 +7,7 @@
 use std::time::Instant;
 
 use glam::Vec3;
+use log;
 use wgpu::*;
 
 use crate::{MAX_INDEX, MAX_TEXTURE, MAX_VERTEX};
@@ -143,15 +144,31 @@ impl WgpuApp {
         // Wrap g_Time to 1 hour to maintain f32 precision
         let elapsed = ((self.elapsed_ms % 3_600_000) as f32) / 1000.0;
 
-        let draw_queue = self.draw_queue.as_ref()?;
-        let post_process = self.post_process.as_ref()?;
+        log::debug!("frame start: elapsed={:.2}s", elapsed);
+
+        let draw_queue = match self.draw_queue.as_ref() {
+            Some(dq) => dq,
+            None => {
+                log::error!("ABORT: draw_queue is None");
+                return None;
+            }
+        };
+        let post_process = match self.post_process.as_ref() {
+            Some(pp) => pp,
+            None => {
+                log::error!("ABORT: post_process is None");
+                return None;
+            }
+        };
         let screen_res = [self.surface.config.width, self.surface.config.height];
+        log::debug!("screen_res={:?} n_objects={}", screen_res, draw_queue.queue.len());
 
         // --- Parallax: use adapter cursor position ---
         let mut params = self.user_params.clone();
         params.cursor_position = self.compute_parallax_cursor();
 
         // --- Upload per-frame uniforms to all effect bind groups ---
+        log::debug!("writing effect uniforms...");
         render_pass::write_effect_uniforms(
             &self.queue,
             draw_queue.queue.as_ref(),
@@ -162,7 +179,9 @@ impl WgpuApp {
         );
 
         // --- Run intermediate post-process passes (effects) ---
-        if draw_queue.queue.iter().any(|o| o.intermediates.is_some()) {
+        let has_intermediates = draw_queue.queue.iter().any(|o| o.intermediates.is_some());
+        log::debug!("has_intermediates={}", has_intermediates);
+        if has_intermediates {
             intermediate_pass::render_intermediate_passes(
                 &self.device,
                 &self.queue,
@@ -175,10 +194,12 @@ impl WgpuApp {
                 screen_res,
                 &params,
             );
+            log::debug!("intermediate passes done");
         }
 
         // --- Final render pass to swapchain ---
-        render_pass::render_final_pass(
+        log::debug!("starting final render pass...");
+        let result = render_pass::render_final_pass(
             &self.device,
             &self.queue,
             &self.surface,
@@ -187,7 +208,13 @@ impl WgpuApp {
             draw_queue,
             post_process,
             self.clear_color,
-        )
+        );
+        if result.is_some() {
+            log::debug!("final render pass OK");
+        } else {
+            log::warn!("final render pass FAILED");
+        }
+        result
     }
 
     pub fn resize(&mut self, size: [u32; 2]) {

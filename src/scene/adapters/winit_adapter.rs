@@ -6,6 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use log;
 use pollster::block_on;
 use winit::{
     application::ApplicationHandler,
@@ -68,8 +69,13 @@ impl ApplicationHandler for WinitApp {
                 let app = app.as_mut().unwrap();
                 self.window.as_ref().unwrap().pre_present_notify();
 
-                app.render();
+                log::debug!("RedrawRequested: calling render...");
+                let render_result = app.render();
+                if render_result.is_none() {
+                    log::warn!("render returned None");
+                }
                 self.window.as_ref().unwrap().request_redraw();
+                log::debug!("requested next redraw");
             }
             WindowEvent::Resized(physical_size) => {
                 let app = app.as_mut().unwrap();

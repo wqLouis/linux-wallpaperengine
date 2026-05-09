@@ -8,6 +8,8 @@ description = "Yet another linux wallpaper engine"
 bytemuck = "1.25.0"
 calloop = "0.14.4"
 clap = { version = "4.5.58", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"
 pkg_parser = { path = "src/pkg_parser" }
 glam = "0.31.0"
 indicatif = "0.18.3"
