@@ -49,9 +49,15 @@ fn main() {
         }
     };
 
-    match args.modes.as_str() {
-        "winit" => winit_adapter::start(args.path, args.no_effects),
-        "wlr" => wlr_app::start(args.path, fit_mode, args.no_effects),
-        _ => {}
+    // Retry loop: if wallpaper engine crashes (GPU error, Wayland error, etc.),
+    // wait a moment and restart automatically.
+    loop {
+        match args.modes.as_str() {
+            "winit" => winit_adapter::start(args.path.clone(), args.no_effects),
+            "wlr" => wlr_app::start(args.path.clone(), fit_mode, args.no_effects),
+            _ => break,
+        }
+        eprintln!("[main] wallpaper engine exited, restarting in 2 seconds...");
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 }

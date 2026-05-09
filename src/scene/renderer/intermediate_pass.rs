@@ -66,6 +66,11 @@ pub fn render_intermediate_passes(
                 .values()
                 .find(|d| Rc::ptr_eq(&d.pipeline, &effect_bg.pipeline));
 
+            let Some(pipedata) = pipedata else {
+                eprintln!("[intermediate] skipping effect: pipeline not found");
+                continue;
+            };
+
             {
                 let mut pass = inter_encoder.begin_render_pass(&RenderPassDescriptor {
                     label: None,
@@ -92,7 +97,7 @@ pub fn render_intermediate_passes(
 
                 let inter_bg = effect_bindgroup::make_effect_intermediate_bindgroup(
                     device,
-                    pipedata.unwrap(),
+                    pipedata,
                     effect_bg,
                     source_view,
                     &post_process.sampler,

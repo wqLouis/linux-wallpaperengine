@@ -358,8 +358,15 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
 
     let frame_duration = Duration::from_millis(16);
     loop {
-        event_queue.dispatch_pending(&mut wgpu).unwrap();
-        wgpu.app.render();
-        std::thread::sleep(frame_duration);
+        if let Err(e) = event_queue.dispatch_pending(&mut wgpu) {
+            eprintln!("[wlr] Wayland dispatch error: {:?}", e);
+            break;
+        }
+        if wgpu.app.render().is_none() {
+            std::thread::sleep(Duration::from_millis(100));
+        } else {
+            std::thread::sleep(frame_duration);
+        }
     }
+    eprintln!("[wlr] render loop exited, will restart");
 }

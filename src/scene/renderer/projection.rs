@@ -75,22 +75,9 @@ impl ProjectionBindGroups {
 impl Projection {
     pub fn new(root: &Root) -> Self {
         Projection {
-            // Very rough may breaks
-            center: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: root.camera.center.parse().unwrap()[2] as f32,
-            },
-            eye: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: root.camera.eye.parse().unwrap()[2] as f32,
-            },
-            up: Vec3 {
-                x: root.camera.up.parse().unwrap()[0] as f32,
-                y: root.camera.up.parse().unwrap()[1] as f32,
-                z: root.camera.up.parse().unwrap()[2] as f32,
-            },
+            center: root.camera.center.parse().unwrap(),
+            eye: root.camera.eye.parse().unwrap(),
+            up: root.camera.up.parse().unwrap(),
             width: root.general.orthogonalprojection.width as f32,
             height: root.general.orthogonalprojection.height as f32,
             nearz: root.general.nearz as f32,
