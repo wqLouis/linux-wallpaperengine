@@ -2,9 +2,14 @@
 //!
 //! Renders the wallpaper on a `Layer::Background` surface behind all windows.
 //! The WGPU swapchain uses the wallpaper's native resolution; the compositor
-//! handles scaling the layer surface to fill the output. Cursor-based parallax
-//! is unavailable on wayland (background surfaces never receive pointer focus),
-//! so an animated drift from the scene's `cameraparallax*` settings is used.
+//! handles scaling the layer surface to fill the output.
+//!
+//! ## Depth parallax
+//!
+//! Wayland's security model does not allow background (or any non-focused)
+//! surfaces to receive pointer events.  Depth-parallax effects that rely on
+//! cursor position are therefore unavailable in the wlr adapter.  The winit
+//! adapter should be used when cursor-parallax is desired.
 
 use std::{ptr::NonNull, time::Duration};
 
@@ -88,14 +93,11 @@ impl CompositorHandler for Wgpu {
 impl OutputHandler for Wgpu {
     fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        eprintln!("[wlr] OutputHandler::new_output");
-        // Output info is now available. Try computing the scale.
         if !self.scale_received && self.last_logical.is_some() {
             self.compute_scale_from_output(&output);
         }
     }
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        eprintln!("[wlr] OutputHandler::update_output");
         if !self.scale_received {
             self.compute_scale_from_output(&output);
         }
@@ -129,7 +131,7 @@ impl Dispatch<WpFractionalScaleV1, FractionalScaleData, Wgpu> for Wgpu {
             eprintln!("[wlr] preferred_scale: {} (×{:.2})", scale, scale as f64 / 120.0);
             state.scale_num = scale;
             state.scale_received = true;
-            state.reconfigure(); // re-apply with the real scale
+            state.reconfigure();
         }
     }
 }
@@ -159,21 +161,10 @@ impl Dispatch<WpViewport, FractionalScaleData, Wgpu> for Wgpu {
 // ---- Core logic ----
 
 impl Wgpu {
-    /// Fallback: compute fractional scale from output's physical mode
-    /// vs logical size (e.g. 3840/2560 = 1.5).
     fn compute_scale_from_output(&mut self, output: &wl_output::WlOutput) {
-        eprintln!("[wlr] compute_scale_from_output: scale_received={}, last_logical={:?}",
-            self.scale_received, self.last_logical);
-        let Some(info) = self.output_state.info(output) else {
-            eprintln!("[wlr]   no output info yet");
-            return;
-        };
-        let Some(mode) = info.modes.iter().find(|m| m.current) else {
-            eprintln!("[wlr]   no current mode");
-            return;
-        };
+        let Some(info) = self.output_state.info(output) else { return };
+        let Some(mode) = info.modes.iter().find(|m| m.current) else { return };
 
-        // Get logical size: prefer xdg_output, fall back to configure size.
         let (log_w, log_h) = match info.logical_size {
             Some((w, h)) if w > 0 && h > 0 => (w, h),
             _ => match self.last_logical {
@@ -187,12 +178,6 @@ impl Wgpu {
         let h_scale = mode.dimensions.1 as f64 / log_h as f64;
         let computed = ((w_scale + h_scale) / 2.0 * 120.0).round() as u32;
 
-        eprintln!(
-            "[wlr] output fallback: mode=({},{}) logical=({log_w},{log_h}) → scale={computed} (×{:.2})",
-            mode.dimensions.0, mode.dimensions.1,
-            computed as f64 / 120.0,
-        );
-
         if computed > self.scale_num {
             self.scale_num = computed;
             self.scale_received = true;
@@ -200,21 +185,16 @@ impl Wgpu {
         }
     }
 
-    /// Apply current scale to produce physical buffer size, set up
-    /// wp_viewport, and resize the swapchain.
     fn reconfigure(&mut self) {
         let Some((log_w, log_h)) = self.last_logical else { return };
 
-        // Skip if nothing changed since last apply.
         if self.scale_num == self.last_applied_scale
             && self.last_applied_logical == self.last_logical
         {
             return;
         }
 
-        // If scale hasn't been received yet, try computing from outputs.
         if !self.scale_received {
-            // Collect to Vec first to avoid borrow conflicts.
             let outputs: Vec<wl_output::WlOutput> = self.output_state.outputs().collect();
             for output in &outputs {
                 self.compute_scale_from_output(output);
@@ -226,7 +206,6 @@ impl Wgpu {
 
         let (wp_w, wp_h) = (self.wp_resolution[0] as f32, self.wp_resolution[1] as f32);
 
-        // Fit-adjusted logical size (what the compositor shows).
         let (layer_w, layer_h) = match self.fit_mode {
             super::FitMode::Stretch => (log_w, log_h),
             _ => {
@@ -241,31 +220,20 @@ impl Wgpu {
             }
         };
 
-        // Physical buffer = logical × scale
         let f = self.scale_num as f64 / 120.0;
         let phys_w = (layer_w as f64 * f).round() as u32;
         let phys_h = (layer_h as f64 * f).round() as u32;
 
-        eprintln!(
-            "[wlr] reconfigure: logical=({log_w},{log_h}) layer=({layer_w},{layer_h}) \
-             scale={f:.3} physical=({phys_w},{phys_h})",
-        );
-
-        // Tell compositor the logical size via wp_viewport.
-        // This avoids the buffer overflowing the surface.
         if let Some(ref vp) = self.viewport {
             vp.set_destination(layer_w as i32, layer_h as i32);
         }
 
-        // Set layer surface size (logical) and keep buffer_scale = 1
-        // as required by the fractional-scale protocol.
         layer.set_size(layer_w, layer_h);
         let _ = layer.set_buffer_scale(1);
 
         self.app.resize([phys_w, phys_h]);
         if self.app.draw_queue.is_some() { self.app.render(); }
 
-        // Remember what we applied so we can skip redundant calls.
         self.last_applied_scale = self.scale_num;
         self.last_applied_logical = self.last_logical;
     }
@@ -306,7 +274,7 @@ delegate_registry!(Wgpu);
 
 impl ProvidesRegistryState for Wgpu {
     fn registry(&mut self) -> &mut RegistryState { &mut self.registry_state }
-    registry_handlers![OutputState];
+    registry_handlers![OutputState, SeatState];
 }
 
 pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {

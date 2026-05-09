@@ -36,7 +36,9 @@ pub struct UserParams {
 impl Default for UserParams {
     fn default() -> Self {
         Self {
-            cursor_position: [0.0, 0.0],
+            // Center by default.  On Wayland (wlr adapter) cursor tracking
+            // is unavailable, so staying at centre means no parallax shift.
+            cursor_position: [0.5, 0.5],
             cursor_pixel: [0, 0],
         }
     }
@@ -60,37 +62,14 @@ pub struct WgpuApp {
     pub projection_matrix: [[f32; 4]; 4],
     pub no_effects: bool,
     pub user_params: UserParams,
-    pub parallax_amount: f32,
-    pub parallax_delay: f32,
-    pub parallax_mouse_influence: f32,
 }
 
 impl WgpuApp {
-    /// Compute the effective parallax cursor position for the current frame.
-    ///
-    /// Blends the live adapter cursor (winit) with an animated drift (wayland
-    /// fallback) using the scene's `cameraparallaxmouseinfluence` setting.
-    /// Returns normalized coordinates in [0, 1] range (UV space).
+    /// Return the adapter's cursor position for depth parallax.
+    /// Falls back to centre when no adapter provides cursor tracking
+    /// (e.g. the wlr adapter on Wayland).
     fn compute_parallax_cursor(&self) -> [f32; 2] {
-        let drift = if self.parallax_amount > 0.0 {
-            let t = self.elapsed_ms as f32 / 1000.0;
-            // Higher delay = slower oscillation. Rate inversely proportional to delay.
-            let rate = 0.2 / self.parallax_delay.max(0.01);
-            let amp = self.parallax_amount * 0.5;
-            [
-                (t * rate).sin() * amp + 0.5,
-                (t * rate * 0.7).cos() * amp + 0.5,
-            ]
-        } else {
-            [0.5f32; 2]
-        };
-
-        let cursor = self.user_params.cursor_position;
-        let mi = self.parallax_mouse_influence;
-        [
-            cursor[0] * mi + drift[0] * (1.0 - mi),
-            cursor[1] * mi + drift[1] * (1.0 - mi),
-        ]
+        self.user_params.cursor_position
     }
 
     pub async fn new(
@@ -151,9 +130,6 @@ impl WgpuApp {
             projection_matrix: [[1.0; 4]; 4],
             no_effects: no_effects,
             user_params: UserParams::default(),
-            parallax_amount: 0.0,
-            parallax_delay: 0.0,
-            parallax_mouse_influence: 0.0,
         }
     }
 
@@ -171,7 +147,7 @@ impl WgpuApp {
         let post_process = self.post_process.as_ref()?;
         let screen_res = [self.surface.config.width, self.surface.config.height];
 
-        // --- Parallax: blend live cursor with animated drift ---
+        // --- Parallax: use adapter cursor position ---
         let mut params = self.user_params.clone();
         params.cursor_position = self.compute_parallax_cursor();
 
