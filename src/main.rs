@@ -46,6 +46,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     parse_video: bool,
 
+    /// Parse .mdl puppet model files to JSON during extraction.
+    #[arg(long, default_value_t = false)]
+    parse_mdl: bool,
+
     /// Dry run — show what would be extracted without writing files.
     #[arg(long, default_value_t = false)]
     dry_run: bool,
@@ -101,14 +105,15 @@ fn main() {
         let pkg = pkg_parser::pkg_parser::parser::Pkg::new(Path::new(&args.path));
         let target = Path::new(&output);
         log::info!(
-            "Extracting {} files to {} (parse_tex={}, parse_video={}, dry_run={})",
+            "Extracting {} files to {} (parse_tex={}, parse_video={}, parse_mdl={}, dry_run={})",
             pkg.files.len(),
             target.display(),
             args.parse_tex,
             args.parse_video,
+            args.parse_mdl,
             args.dry_run,
         );
-        pkg.save_pkg(&target, args.dry_run, args.parse_tex, args.parse_video);
+        pkg.save_pkg(&target, args.dry_run, args.parse_tex, args.parse_video, args.parse_mdl);
         return;
     }
 

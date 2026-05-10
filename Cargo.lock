@@ -2117,6 +2117,8 @@ dependencies = [
  "image",
  "log",
  "lz4_flex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
