@@ -138,9 +138,28 @@ impl ObjectMap {
 
 impl ObjectMap {
     fn load_object(object: &Object, scene: &Scene) -> Option<ObjectType> {
+        // Common transform properties shared by texture and node objects
+        let origin = object
+            .origin
+            .as_ref()
+            .unwrap_or(&Vectors::default())
+            .parse()
+            .unwrap_or_default();
+        let angles = object
+            .angles
+            .as_ref()
+            .unwrap_or(&Vectors::default())
+            .parse()
+            .unwrap_or_default();
+        let scale = object
+            .scale
+            .as_ref()
+            .unwrap_or(&Vectors::Scaler(1.0))
+            .parse()
+            .unwrap_or_default();
+
         if object.image.is_some() {
             // Texture
-
             if object.visible.is_some() {
                 let visible = object.visible.clone().unwrap().value().unwrap_or(true);
                 if !visible {
@@ -148,24 +167,6 @@ impl ObjectMap {
                 }
             }
 
-            let origin = object
-                .origin
-                .as_ref()
-                .unwrap_or(&Vectors::default())
-                .parse()
-                .unwrap_or_default();
-            let angles = object
-                .angles
-                .as_ref()
-                .unwrap_or(&Vectors::default())
-                .parse()
-                .unwrap_or_default();
-            let scale = object
-                .scale
-                .as_ref()
-                .unwrap_or(&Vectors::Scaler(1.0))
-                .parse()
-                .unwrap_or_default();
             let size = object
                 .size
                 .as_ref()
@@ -210,25 +211,6 @@ impl ObjectMap {
                 playback_mode: playback_mode,
             }));
         }
-
-        let origin = object
-            .origin
-            .as_ref()
-            .unwrap_or(&Vectors::default())
-            .parse()
-            .unwrap_or_default();
-        let scale = object
-            .scale
-            .as_ref()
-            .unwrap_or(&Vectors::Scaler(1.0))
-            .parse()
-            .unwrap_or_default();
-        let angles = object
-            .angles
-            .as_ref()
-            .unwrap_or(&Vectors::default())
-            .parse()
-            .unwrap_or_default();
 
         Some(ObjectType::Node(Node {
             origin,

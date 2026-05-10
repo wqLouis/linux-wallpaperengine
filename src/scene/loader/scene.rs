@@ -95,27 +95,26 @@ impl Vectors {
     pub fn parse(&self) -> Option<Vec3> {
         match self {
             Vectors::Scaler(val) => Some(Vec3 {
-                x: val.clone() as f32,
-                y: val.clone() as f32,
-                z: val.clone() as f32,
+                x: *val as f32,
+                y: *val as f32,
+                z: *val as f32,
             }),
             Vectors::Vectors(val) => {
                 let vec = val
                     .split_whitespace()
-                    .into_iter()
                     .map(|f| f.parse::<f32>().unwrap_or_default())
                     .collect::<Vec<f32>>();
 
                 match vec.as_slice() {
                     [x, y] => Some(Vec3 {
-                        x: x.clone(),
-                        y: y.clone(),
+                        x: *x,
+                        y: *y,
                         z: 0.0,
                     }),
                     [x, y, z] => Some(Vec3 {
-                        x: x.clone(),
-                        y: y.clone(),
-                        z: z.clone(),
+                        x: *x,
+                        y: *y,
+                        z: *z,
                     }),
                     _ => None,
                 }

@@ -67,7 +67,7 @@ impl Scene {
 
         let scene_string = jsons.get("scene.json").unwrap();
         let root: crate::scene::loader::scene::Root =
-            serde_json::from_str(scene_string).expect(&"Unsupported scene.json");
+            serde_json::from_str(scene_string).expect("Unsupported scene.json");
         let mut texs_locked = texs.lock().unwrap();
         let texs = std::mem::take(&mut *texs_locked)
             .into_iter()
