@@ -89,7 +89,12 @@ pub fn render_final_pass(
             // Use the intermediate result (post-effects) if available,
             // otherwise use the original texture bind group
             let bg = if let Some(ref pp) = draw_object.intermediates {
-                pp.make_bindgroup(device, &post_process.layout, &post_process.sampler, &pp.view_a)
+                pp.make_bindgroup(
+                    device,
+                    &post_process.layout,
+                    &post_process.sampler,
+                    &pp.view_a,
+                )
             } else {
                 draw_object.bindgroup.clone()
             };

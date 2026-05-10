@@ -125,5 +125,4 @@ impl ScaleState {
         }
         false
     }
-
 }

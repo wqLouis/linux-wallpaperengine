@@ -1,5 +1,5 @@
-use pkg_parser::pkg_parser::{parser::Pkg, tex_parser::Tex};
 use indicatif::ProgressBar;
+use pkg_parser::pkg_parser::{parser::Pkg, tex_parser::Tex};
 use std::{
     collections::BTreeMap,
     path::Path,

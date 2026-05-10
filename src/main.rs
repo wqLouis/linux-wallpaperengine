@@ -32,7 +32,6 @@ struct Args {
     log_level: String,
 
     // --- Extract / parse mode (instead of running the wallpaper engine) ---
-
     /// Extract and parse the .pkg file instead of running the wallpaper engine.
     /// Optionally specify an output directory (default: ./extracted).
     #[arg(short = 'x', default_value = None, num_args = 0..=1, default_missing_value = "extracted")]
@@ -68,7 +67,10 @@ fn main() {
         "warning" => (LevelFilter::Warn, false),
         "errors" => (LevelFilter::Error, false),
         _ => {
-            eprintln!("Unknown log-level '{}'. Valid: verbose, debug, warning, errors", args.log_level);
+            eprintln!(
+                "Unknown log-level '{}'. Valid: verbose, debug, warning, errors",
+                args.log_level
+            );
             return;
         }
     };
@@ -95,7 +97,10 @@ fn main() {
         "contain" | "fit" => FitMode::Contain,
         "stretch" => FitMode::Stretch,
         _ => {
-            eprintln!("Unknown fit-mode '{}'. Valid: cover, contain, stretch", args.fit_mode);
+            eprintln!(
+                "Unknown fit-mode '{}'. Valid: cover, contain, stretch",
+                args.fit_mode
+            );
             return;
         }
     };
@@ -113,7 +118,13 @@ fn main() {
             args.parse_mdl,
             args.dry_run,
         );
-        pkg.save_pkg(&target, args.dry_run, args.parse_tex, args.parse_video, args.parse_mdl);
+        pkg.save_pkg(
+            &target,
+            args.dry_run,
+            args.parse_tex,
+            args.parse_video,
+            args.parse_mdl,
+        );
         return;
     }
 

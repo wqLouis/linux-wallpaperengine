@@ -46,7 +46,7 @@ use wayland_protocols::wp::{
         wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
         wp_fractional_scale_v1::{self, WpFractionalScaleV1},
     },
-    viewporter::client::{wp_viewporter::WpViewporter, wp_viewport::WpViewport},
+    viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
 
 use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
@@ -130,13 +130,7 @@ impl OutputHandler for WlrState {
         }
     }
 
-    fn output_destroyed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_output::WlOutput,
-    ) {
-    }
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
 }
 
 // ---- Fractional-scale dispatch --------------------------------------------------
@@ -217,7 +211,10 @@ impl WlrState {
         if !self.scale.scale_received {
             let outputs: Vec<wl_output::WlOutput> = self.output_state.outputs().collect();
             for output in &outputs {
-                if self.scale.compute_from_output(&self.output_state, output, self.last_logical) {
+                if self
+                    .scale
+                    .compute_from_output(&self.output_state, output, self.last_logical)
+                {
                     break;
                 }
             }
@@ -240,12 +237,8 @@ impl WlrState {
             super::FitMode::Stretch => (log_w, log_h),
             _ => {
                 let s = match self.fit_mode {
-                    super::FitMode::Cover => {
-                        f32::max(log_w as f32 / wp_w, log_h as f32 / wp_h)
-                    }
-                    super::FitMode::Contain => {
-                        f32::min(log_w as f32 / wp_w, log_h as f32 / wp_h)
-                    }
+                    super::FitMode::Cover => f32::max(log_w as f32 / wp_w, log_h as f32 / wp_h),
+                    super::FitMode::Contain => f32::min(log_w as f32 / wp_w, log_h as f32 / wp_h),
                     _ => unreachable!(),
                 };
                 ((wp_w * s).round() as u32, (wp_h * s).round() as u32)
@@ -309,13 +302,7 @@ impl SeatHandler for WlrState {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seat_state
     }
-    fn new_seat(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
-    ) {
-    }
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
     fn new_capability(
         &mut self,
         _: &Connection,
@@ -332,13 +319,7 @@ impl SeatHandler for WlrState {
         _: Capability,
     ) {
     }
-    fn remove_seat(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
-    ) {
-    }
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -395,8 +376,7 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
         });
 
     // wp_viewporter
-    let viewporter: Option<WpViewporter> =
-        globals.bind(&qh, 1..=1, FractionalScaleData).ok();
+    let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, FractionalScaleData).ok();
     let viewport: Option<WpViewport> = viewporter.as_ref().map(|v: &WpViewporter| {
         let vp = v.get_viewport(&surface, &qh, FractionalScaleData);
         log::info!("wp_viewporter bound, viewport created");
@@ -416,14 +396,12 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
     layer.set_size(0, 0);
     layer.commit();
 
-    let raw_display_handle = RawDisplayHandle::Wayland(
-        WaylandDisplayHandle::new(NonNull::new(conn.backend().display_ptr() as *mut _).unwrap()),
-    );
-    let raw_window_handle = RawWindowHandle::Wayland(
-        WaylandWindowHandle::new(
-            NonNull::new(layer.wl_surface().id().as_ptr() as *mut _).unwrap(),
-        ),
-    );
+    let raw_display_handle = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
+        NonNull::new(conn.backend().display_ptr() as *mut _).unwrap(),
+    ));
+    let raw_window_handle = RawWindowHandle::Wayland(WaylandWindowHandle::new(
+        NonNull::new(layer.wl_surface().id().as_ptr() as *mut _).unwrap(),
+    ));
 
     let mut app = block_on(WgpuApp::new(
         pkg_path,

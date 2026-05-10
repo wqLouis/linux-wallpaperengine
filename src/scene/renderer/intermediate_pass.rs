@@ -11,12 +11,8 @@ use log;
 use wgpu::*;
 
 use super::{
-    app::UserParams,
-    draw::DrawQueue,
-    effect_bindgroup,
-    post_process::PostProcess,
-    projection::ProjectionBindGroups,
-    render_pass,
+    app::UserParams, draw::DrawQueue, effect_bindgroup, post_process::PostProcess,
+    projection::ProjectionBindGroups, render_pass,
 };
 
 pub fn render_intermediate_passes(
@@ -31,7 +27,10 @@ pub fn render_intermediate_passes(
     screen_res: [u32; 2],
     user_params: &UserParams,
 ) {
-    log::trace!("starting intermediate passes, {} objects", draw_queue.queue.len());
+    log::trace!(
+        "starting intermediate passes, {} objects",
+        draw_queue.queue.len()
+    );
     queue.write_buffer(&buffers.projection, 0, bytes_of(&identity_matrix()));
     render_pass::write_effect_uniforms(
         queue,
@@ -49,7 +48,11 @@ pub fn render_intermediate_passes(
             continue;
         };
 
-        log::trace!("object[{}] has {} effects", obj_idx, draw_object.effect_bindgroups.len());
+        log::trace!(
+            "object[{}] has {} effects",
+            obj_idx,
+            draw_object.effect_bindgroups.len()
+        );
 
         // Draw the source texture into the first ping-pong target
         {

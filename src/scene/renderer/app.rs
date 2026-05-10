@@ -13,13 +13,8 @@ use wgpu::*;
 use crate::{MAX_INDEX, MAX_TEXTURE, MAX_VERTEX};
 
 use super::{
-    buffer::Buffers,
-    draw::DrawQueue,
-    intermediate_pass,
-    post_process::PostProcess,
-    projection::ProjectionBindGroups,
-    render_pass,
-    surface::AppSurface,
+    buffer::Buffers, draw::DrawQueue, intermediate_pass, post_process::PostProcess,
+    projection::ProjectionBindGroups, render_pass, surface::AppSurface,
 };
 
 pub use super::surface::InitAppSurface;
@@ -161,7 +156,11 @@ impl WgpuApp {
             }
         };
         let screen_res = [self.surface.config.width, self.surface.config.height];
-        log::trace!("screen_res={:?} n_objects={}", screen_res, draw_queue.queue.len());
+        log::trace!(
+            "screen_res={:?} n_objects={}",
+            screen_res,
+            draw_queue.queue.len()
+        );
 
         // --- Parallax: use adapter cursor position ---
         let mut params = self.user_params.clone();
@@ -225,5 +224,3 @@ impl WgpuApp {
             .configure(&self.device, &self.surface.config);
     }
 }
-
-

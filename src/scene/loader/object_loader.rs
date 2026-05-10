@@ -1,7 +1,7 @@
 use std::{cell::RefCell, collections::BTreeMap, path::Path, rc::Rc};
 
-use pkg_parser::pkg_parser::tex_parser::Tex;
 use glam::{Vec2, Vec3};
+use pkg_parser::pkg_parser::tex_parser::Tex;
 
 use crate::scene::loader::{
     model::Model,
