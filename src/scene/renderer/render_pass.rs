@@ -35,7 +35,7 @@ pub fn render_final_pass(
     // Acquire the next swapchain frame
     let output = match surface.surface.get_current_texture() {
         Ok(frame) => {
-            log::debug!("acquired swapchain texture");
+            log::trace!("acquired swapchain texture");
             frame
         }
         Err(SurfaceError::Lost | SurfaceError::Outdated) => {
@@ -58,7 +58,7 @@ pub fn render_final_pass(
         .create_view(&TextureViewDescriptor::default());
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
 
-    log::debug!("drawing {} objects...", draw_queue.queue.len());
+    log::trace!("drawing {} objects...", draw_queue.queue.len());
     {
         let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: None,
@@ -89,7 +89,7 @@ pub fn render_final_pass(
             // Use the intermediate result (post-effects) if available,
             // otherwise use the original texture bind group
             let bg = if let Some(ref pp) = draw_object.intermediates {
-                pp.make_bindgroup(device, &post_process.layout, &post_process.sampler)
+                pp.make_bindgroup(device, &post_process.layout, &post_process.sampler, &pp.view_a)
             } else {
                 draw_object.bindgroup.clone()
             };
@@ -102,11 +102,11 @@ pub fn render_final_pass(
         }
     }
 
-    log::debug!("submitting to queue...");
+    log::trace!("submitting to queue...");
     queue.submit(Some(encoder.finish()));
-    log::debug!("presenting...");
+    log::trace!("presenting...");
     output.present();
-    log::debug!("frame done");
+    log::trace!("frame done");
     Some(())
 }
 

@@ -3,8 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 use wgpu::*;
 
-use super::shader_preprocessor::EffectLayout;
-use super::shader_preprocessor::WM_SAMPLER_BINDING;
+use super::transform::{EffectLayout, WM_SAMPLER_BINDING};
 
 pub fn apply_texture_combos(
     defines: &mut BTreeMap<String, String>,

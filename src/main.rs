@@ -27,9 +27,28 @@ struct Args {
     #[arg(long, default_value_t = false)]
     no_effects: bool,
 
-    // Log level: all, warning, errors
+    // Log level: verbose (everything + wgpu/naga), debug, warning, errors
     #[arg(short = 'l', long, default_value = "warning")]
     log_level: String,
+
+    // --- Extract / parse mode (instead of running the wallpaper engine) ---
+
+    /// Extract and parse the .pkg file instead of running the wallpaper engine.
+    /// Optionally specify an output directory (default: ./extracted).
+    #[arg(short = 'x', default_value = None, num_args = 0..=1, default_missing_value = "extracted")]
+    extract: Option<String>,
+
+    /// Parse .tex textures to PNG images during extraction.
+    #[arg(long, default_value_t = false)]
+    parse_tex: bool,
+
+    /// Parse video/GIF metadata during extraction.
+    #[arg(long, default_value_t = false)]
+    parse_video: bool,
+
+    /// Dry run — show what would be extracted without writing files.
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
 }
 
 pub const MAX_TEXTURE: u32 = 512;
@@ -39,20 +58,28 @@ pub const MAX_INDEX: u32 = MAX_TEXTURE * 6;
 fn main() {
     let args = Args::parse();
 
-    let level = match args.log_level.as_str() {
-        "all" => LevelFilter::Debug,
-        "warning" => LevelFilter::Warn,
-        "errors" => LevelFilter::Error,
+    let (level, verbose) = match args.log_level.as_str() {
+        "verbose" => (LevelFilter::Trace, true),
+        "debug" => (LevelFilter::Debug, false),
+        "warning" => (LevelFilter::Warn, false),
+        "errors" => (LevelFilter::Error, false),
         _ => {
-            eprintln!("Unknown log-level '{}'. Valid: all, warning, errors", args.log_level);
+            eprintln!("Unknown log-level '{}'. Valid: verbose, debug, warning, errors", args.log_level);
             return;
         }
     };
 
-    env_logger::Builder::new()
-        .filter_level(level)
-        .format_timestamp_millis()
-        .init();
+    let mut builder = env_logger::Builder::new();
+    builder.filter_level(level);
+    // Suppress noisy wgpu/naga crate logs at non-verbose levels.
+    // At "verbose" we allow everything (trace includes all crate logs).
+    if !verbose {
+        builder.filter(Some("wgpu"), LevelFilter::Warn);
+        builder.filter(Some("naga"), LevelFilter::Warn);
+        builder.filter(Some("wgpu_core"), LevelFilter::Warn);
+        builder.filter(Some("wgpu_hal"), LevelFilter::Warn);
+    }
+    builder.format_timestamp_millis().init();
 
     let path = Path::new(&args.path);
     if path.exists() == false || path.extension().unwrap_or_default() != "pkg" {
@@ -68,6 +95,22 @@ fn main() {
             return;
         }
     };
+
+    // Extract mode: parse and extract the .pkg file instead of running.
+    if let Some(output) = args.extract {
+        let pkg = pkg_parser::pkg_parser::parser::Pkg::new(Path::new(&args.path));
+        let target = Path::new(&output);
+        log::info!(
+            "Extracting {} files to {} (parse_tex={}, parse_video={}, dry_run={})",
+            pkg.files.len(),
+            target.display(),
+            args.parse_tex,
+            args.parse_video,
+            args.dry_run,
+        );
+        pkg.save_pkg(&target, args.dry_run, args.parse_tex, args.parse_video);
+        return;
+    }
 
     match args.modes.as_str() {
         "winit" => winit_adapter::start(args.path, args.no_effects),

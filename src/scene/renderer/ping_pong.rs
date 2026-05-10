@@ -76,32 +76,13 @@ impl PingPongTextures {
         }
     }
 
-    /// Create a bind group from `view_a` (the final result after all effects).
+    /// Create a bind group from the given view (used for both final and intermediate passes).
     pub fn make_bindgroup(
         &self,
         device: &Device,
         layout: &BindGroupLayout,
         sampler: &Sampler,
-    ) -> BindGroup {
-        Self::make_bg(device, layout, &self.view_a, sampler)
-    }
-
-    /// Create a bind group from an arbitrary view (used during intermediate swaps).
-    pub fn make_bindgroup_for(
-        &self,
-        device: &Device,
-        layout: &BindGroupLayout,
-        sampler: &Sampler,
         view: &TextureView,
-    ) -> BindGroup {
-        Self::make_bg(device, layout, view, sampler)
-    }
-
-    fn make_bg(
-        device: &Device,
-        layout: &BindGroupLayout,
-        view: &TextureView,
-        sampler: &Sampler,
     ) -> BindGroup {
         device.create_bind_group(&BindGroupDescriptor {
             label: None,

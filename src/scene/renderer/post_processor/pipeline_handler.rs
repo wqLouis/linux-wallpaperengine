@@ -9,7 +9,7 @@ use crate::scene::{
         post_processor::{
             effect_param::UniformLayout,
             pipeline_helpers,
-            shader_preprocessor::{EffectLayout, preprocess_pair},
+            transform::{EffectLayout, preprocess_pair},
         },
         vertex::Vertex,
     },

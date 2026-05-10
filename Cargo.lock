@@ -2115,6 +2115,7 @@ version = "1.2.0"
 dependencies = [
  "bcndecode",
  "image",
+ "log",
  "lz4_flex",
 ]
 

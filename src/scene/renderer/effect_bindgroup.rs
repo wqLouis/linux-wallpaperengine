@@ -6,9 +6,28 @@ use wgpu::*;
 use crate::scene::renderer::{
     post_process::PostProcess,
     post_processor::{
-        effect_param, pipeline_handler::EffectPipelineData, shader_preprocessor::WM_SAMPLER_BINDING,
+        effect_param, pipeline_handler::EffectPipelineData, shader_header::WM_SAMPLER_BINDING,
     },
 };
+
+/// Select the texture view for a given sampler slot.
+///
+/// Slot 0 = source texture, slot 1 = mask texture, slot 2 = noise texture.
+/// All other slots fall back to the blank texture.
+fn select_sampler_view<'a>(
+    i: usize,
+    source: &'a TextureView,
+    mask: Option<&'a TextureView>,
+    noise: Option<&'a TextureView>,
+    blank: &'a TextureView,
+) -> &'a TextureView {
+    match i {
+        0 => source,
+        1 => mask.unwrap_or(blank),
+        2 => noise.unwrap_or(blank),
+        _ => blank,
+    }
+}
 
 pub fn make_effect_intermediate_bindgroup(
     device: &Device,
@@ -20,18 +39,13 @@ pub fn make_effect_intermediate_bindgroup(
     let mut entries = Vec::new();
 
     for i in 0..pipedata.layout.sampler_count() {
-        let view: &TextureView = match i {
-            0 => source_view,
-            1 => effect_bg
-                .mask_view
-                .as_ref()
-                .unwrap_or(&effect_bg.blank_view),
-            2 => effect_bg
-                .noise_view
-                .as_ref()
-                .unwrap_or(&effect_bg.blank_view),
-            _ => &effect_bg.blank_view,
-        };
+        let view = select_sampler_view(
+            i,
+            source_view,
+            effect_bg.mask_view.as_ref(),
+            effect_bg.noise_view.as_ref(),
+            &effect_bg.blank_view,
+        );
         entries.push(BindGroupEntry {
             binding: i as u32 * 2,
             resource: BindingResource::TextureView(view),
@@ -108,12 +122,7 @@ impl EffectBindGroup {
 
         let mut entries: Vec<BindGroupEntry<'_>> = Vec::new();
         for i in 0..sampler_count {
-            let view: &TextureView = match i {
-                0 => source_view,
-                1 => mask_view.unwrap_or(&blank_view),
-                2 => noise_view.unwrap_or(&blank_view),
-                _ => &blank_view,
-            };
+            let view = select_sampler_view(i, source_view, mask_view, noise_view, &blank_view);
             entries.push(BindGroupEntry {
                 binding: i as u32 * 2,
                 resource: BindingResource::TextureView(view),

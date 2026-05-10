@@ -69,13 +69,13 @@ impl ApplicationHandler for WinitApp {
                 let app = app.as_mut().unwrap();
                 self.window.as_ref().unwrap().pre_present_notify();
 
-                log::debug!("RedrawRequested: calling render...");
+                log::trace!("RedrawRequested: calling render...");
                 let render_result = app.render();
                 if render_result.is_none() {
                     log::warn!("render returned None");
                 }
                 self.window.as_ref().unwrap().request_redraw();
-                log::debug!("requested next redraw");
+                log::trace!("requested next redraw");
             }
             WindowEvent::Resized(physical_size) => {
                 let app = app.as_mut().unwrap();

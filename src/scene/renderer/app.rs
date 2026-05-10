@@ -144,7 +144,7 @@ impl WgpuApp {
         // Wrap g_Time to 1 hour to maintain f32 precision
         let elapsed = ((self.elapsed_ms % 3_600_000) as f32) / 1000.0;
 
-        log::debug!("frame start: elapsed={:.2}s", elapsed);
+        log::trace!("frame start: elapsed={:.2}s", elapsed);
 
         let draw_queue = match self.draw_queue.as_ref() {
             Some(dq) => dq,
@@ -161,14 +161,14 @@ impl WgpuApp {
             }
         };
         let screen_res = [self.surface.config.width, self.surface.config.height];
-        log::debug!("screen_res={:?} n_objects={}", screen_res, draw_queue.queue.len());
+        log::trace!("screen_res={:?} n_objects={}", screen_res, draw_queue.queue.len());
 
         // --- Parallax: use adapter cursor position ---
         let mut params = self.user_params.clone();
         params.cursor_position = self.compute_parallax_cursor();
 
         // --- Upload per-frame uniforms to all effect bind groups ---
-        log::debug!("writing effect uniforms...");
+        log::trace!("writing effect uniforms...");
         render_pass::write_effect_uniforms(
             &self.queue,
             draw_queue.queue.as_ref(),
@@ -180,7 +180,7 @@ impl WgpuApp {
 
         // --- Run intermediate post-process passes (effects) ---
         let has_intermediates = draw_queue.queue.iter().any(|o| o.intermediates.is_some());
-        log::debug!("has_intermediates={}", has_intermediates);
+        log::trace!("has_intermediates={}", has_intermediates);
         if has_intermediates {
             intermediate_pass::render_intermediate_passes(
                 &self.device,
@@ -194,11 +194,11 @@ impl WgpuApp {
                 screen_res,
                 &params,
             );
-            log::debug!("intermediate passes done");
+            log::trace!("intermediate passes done");
         }
 
         // --- Final render pass to swapchain ---
-        log::debug!("starting final render pass...");
+        log::trace!("starting final render pass...");
         let result = render_pass::render_final_pass(
             &self.device,
             &self.queue,
@@ -210,7 +210,7 @@ impl WgpuApp {
             self.clear_color,
         );
         if result.is_some() {
-            log::debug!("final render pass OK");
+            log::trace!("final render pass OK");
         } else {
             log::warn!("final render pass FAILED");
         }

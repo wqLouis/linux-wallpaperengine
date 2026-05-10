@@ -12,9 +12,8 @@ use wgpu::*;
 
 use super::{
     app::UserParams,
-    draw::{DrawObject, DrawQueue},
+    draw::DrawQueue,
     effect_bindgroup,
-    ping_pong::PingPongTextures,
     post_process::PostProcess,
     projection::ProjectionBindGroups,
     render_pass,
@@ -32,7 +31,7 @@ pub fn render_intermediate_passes(
     screen_res: [u32; 2],
     user_params: &UserParams,
 ) {
-    log::debug!("starting intermediate passes, {} objects", draw_queue.queue.len());
+    log::trace!("starting intermediate passes, {} objects", draw_queue.queue.len());
     queue.write_buffer(&buffers.projection, 0, bytes_of(&identity_matrix()));
     render_pass::write_effect_uniforms(
         queue,
@@ -50,14 +49,35 @@ pub fn render_intermediate_passes(
             continue;
         };
 
-        log::debug!("object[{}] has {} effects", obj_idx, draw_object.effect_bindgroups.len());
-        render_source_pass(
-            &mut inter_encoder,
-            draw_object,
-            pp,
-            draw_queue,
-            projection_bindgroup,
-        );
+        log::trace!("object[{}] has {} effects", obj_idx, draw_object.effect_bindgroups.len());
+
+        // Draw the source texture into the first ping-pong target
+        {
+            let mut pass = inter_encoder.begin_render_pass(&RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &pp.view_a,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
+                        store: StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&draw_queue.image_pipeline);
+            pass.set_vertex_buffer(0, pp.ndc_vbuf.slice(..));
+            pass.set_index_buffer(pp.ndc_ibuf.slice(..), IndexFormat::Uint32);
+            pass.set_bind_group(0, &draw_object.bindgroup, &[]);
+            pass.set_bind_group(1, projection_bindgroup.projection.as_ref(), &[]);
+            pass.draw_indexed(0..6, 0, 0..1);
+        }
 
         let n_effects = draw_object.effect_bindgroups.len();
         let mut source_view = &pp.view_a;
@@ -110,7 +130,7 @@ pub fn render_intermediate_passes(
         }
 
         if n_effects % 2 == 1 {
-            let bg = pp.make_bindgroup_for(
+            let bg = pp.make_bindgroup(
                 device,
                 &post_process.layout,
                 &post_process.sampler,
@@ -143,7 +163,7 @@ pub fn render_intermediate_passes(
         }
     }
 
-    log::debug!("submitting intermediate encoder...");
+    log::trace!("submitting intermediate encoder...");
     queue.submit(Some(inter_encoder.finish()));
     queue.write_buffer(&buffers.projection, 0, bytes_of(projection_matrix));
     render_pass::write_effect_uniforms(
@@ -154,40 +174,7 @@ pub fn render_intermediate_passes(
         screen_res,
         user_params,
     );
-    log::debug!("intermediate passes done");
-}
-
-fn render_source_pass(
-    encoder: &mut CommandEncoder,
-    draw_object: &DrawObject,
-    pp: &PingPongTextures,
-    draw_queue: &DrawQueue,
-    projection_bindgroup: &ProjectionBindGroups,
-) {
-    let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-        label: None,
-        color_attachments: &[Some(RenderPassColorAttachment {
-            view: &pp.view_a,
-            depth_slice: None,
-            resolve_target: None,
-            ops: Operations {
-                load: LoadOp::Clear(Color {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.0,
-                }),
-                store: StoreOp::Store,
-            },
-        })],
-        ..Default::default()
-    });
-    pass.set_pipeline(&draw_queue.image_pipeline);
-    pass.set_vertex_buffer(0, pp.ndc_vbuf.slice(..));
-    pass.set_index_buffer(pp.ndc_ibuf.slice(..), IndexFormat::Uint32);
-    pass.set_bind_group(0, &draw_object.bindgroup, &[]);
-    pass.set_bind_group(1, projection_bindgroup.projection.as_ref(), &[]);
-    pass.draw_indexed(0..6, 0, 0..1);
+    log::trace!("intermediate passes done");
 }
 
 fn identity_matrix() -> [[f32; 4]; 4] {
