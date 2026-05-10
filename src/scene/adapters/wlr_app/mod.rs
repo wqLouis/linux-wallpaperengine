@@ -259,9 +259,6 @@ impl WlrState {
         let _ = layer.set_buffer_scale(1);
 
         self.app.resize([phys_w, phys_h]);
-        if self.app.draw_queue.is_some() {
-            self.app.render();
-        }
 
         self.scale.last_applied_scale = self.scale.scale_num;
         self.last_applied_logical = self.last_logical;

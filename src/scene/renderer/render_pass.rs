@@ -44,7 +44,8 @@ pub fn render_final_pass(
             return None;
         }
         Err(SurfaceError::Timeout) => {
-            log::warn!("surface timeout");
+            log::warn!("surface timeout, reconfiguring...");
+            surface.surface.configure(device, &surface.config);
             return None;
         }
         Err(e) => {
