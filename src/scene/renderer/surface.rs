@@ -42,7 +42,7 @@ impl AppSurface {
                 format: cap.formats[0],
                 width: size[0],
                 height: size[1],
-                present_mode: PresentMode::Mailbox,
+                present_mode: PresentMode::Fifo,
                 alpha_mode: CompositeAlphaMode::Auto,
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,

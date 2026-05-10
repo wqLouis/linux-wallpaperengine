@@ -13,7 +13,7 @@
 
 mod scale;
 
-use std::{ptr::NonNull, time::Duration};
+use std::ptr::NonNull;
 
 use log;
 use pollster::block_on;
@@ -422,7 +422,6 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
         last_applied_logical: None,
     };
 
-    let frame_duration = Duration::from_millis(16);
     let mut frame_count: u64 = 0;
     loop {
         log::trace!("frame {}: dispatching events...", frame_count);
@@ -432,7 +431,6 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
         if render_result.is_none() {
             log::warn!("frame {}: render returned None", frame_count);
         }
-        std::thread::sleep(frame_duration);
         frame_count = frame_count.wrapping_add(1);
     }
 }
