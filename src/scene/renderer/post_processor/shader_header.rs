@@ -17,5 +17,10 @@ pub fn get_headers() -> BTreeMap<&'static str, &'static str> {
     map.insert("common_blur.h", header!("common_blur.h"));
     map.insert("common_fragment.h", header!("common_fragment.h"));
     map.insert("common_vertex.h", header!("common_vertex.h"));
+    map.insert("common_fog.h", header!("common_fog.h"));
+    map.insert("common_foliage.h", header!("common_foliage.h"));
+    map.insert("common_particles.h", header!("common_particles.h"));
+    map.insert("common_pbr.h", header!("common_pbr.h"));
+    map.insert("common_pbr_2.h", header!("common_pbr_2.h"));
     map
 }

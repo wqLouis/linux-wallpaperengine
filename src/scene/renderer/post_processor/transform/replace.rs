@@ -141,6 +141,14 @@ pub fn replace_saturate(line: &str) -> String {
 
     while let Some(sat_start) = result[search_start..].find("saturate(") {
         let abs_start = search_start + sat_start;
+        // Only replace standalone saturate(, not Desaturate( / Saturation( etc.
+        if abs_start > 0 {
+            let prev_byte = result.as_bytes()[abs_start - 1];
+            if prev_byte.is_ascii_alphanumeric() || prev_byte == b'_' {
+                search_start = abs_start + 8; // skip "saturate"
+                continue;
+            }
+        }
         let args_start = abs_start + 9;
 
         let mut depth = 1;

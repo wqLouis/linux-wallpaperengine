@@ -95,7 +95,7 @@ impl Buffers {
             };
         let z = origin.z - 1.0;
 
-        let rotation_mat = Mat2::from_angle(angles.z.to_radians());
+        let rotation_mat = Mat2::from_angle(angles.z);
         let half = Vec2::new(size_scaled.x / 2.0, size_scaled.y / 2.0);
         let corners = [
             Vec2::new(-half.x, half.y),

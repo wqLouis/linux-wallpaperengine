@@ -180,76 +180,71 @@ impl ObjectMap {
             };
 
             let model_path = object.image.clone().unwrap_or_default();
-            let model = serde_json::from_str::<Model>(&scene.jsons.get(&model_path)?[..]).ok()?;
 
-            // Load the material JSON to find the actual texture reference.
-            // If the material has a `textures` array we load that tex;
-            // otherwise (shader-only like "flat") we create a 1×1 white
-            // solid placeholder so the object can still be rendered.
-            let material_json: Value =
-                serde_json::from_str(&scene.jsons.get(&model.material)?[..]).ok()?;
-            let texture: Rc<Tex> = match material_json["passes"]
-                .get(0)
-                .and_then(|p| p.get("textures"))
-                .and_then(|t| t.get(0))
-                .and_then(|t| t.as_str())
-            {
-                Some(tex_name) => {
-                    let tex_key = format!("materials/{}.tex", tex_name);
-                    match scene.textures.get(&tex_key) {
-                        Some(t) => t,
-                        None => {
-                            log::debug!(
-                                "cannot get texture '{}' for material '{}' (tex_name: {})",
-                                tex_key,
-                                model.material,
-                                tex_name,
-                            );
-                            return None;
-                        }
+            // Helper: build a 1×1 solid-colour fallback texture using the
+            // object's `color` / `alpha` properties.
+            let make_solid = || -> Rc<Tex> {
+                let color_vec = object
+                    .color
+                    .as_ref()
+                    .and_then(|c| c.parse())
+                    .unwrap_or(clear_color)
+                    .max(Vec3::ZERO);
+                let alpha_val = object
+                    .alpha
+                    .as_ref()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0);
+                let r = (color_vec.x.clamp(0.0, 1.0) * 255.0) as u8;
+                let g = (color_vec.y.clamp(0.0, 1.0) * 255.0) as u8;
+                let b = (color_vec.z.clamp(0.0, 1.0) * 255.0) as u8;
+                let a = (alpha_val.clamp(0.0, 1.0) * 255.0) as u8;
+                log::debug!(
+                    "solidlayer fallback for '{}': 1x1 rgba({},{},{},{})",
+                    object.name, r, g, b, a
+                );
+                Rc::new(Tex {
+                    texv: String::new(),
+                    texi: String::new(),
+                    texb: String::new(),
+                    size: 4,
+                    dimension: [1, 1],
+                    image_count: 1,
+                    mipmap_count: 1,
+                    lz4: false,
+                    decompressed_size: 4,
+                    extension: "solid".into(),
+                    payload: vec![r, g, b, a],
+                })
+            };
+
+            // Resolve the texture:
+            //   model JSON → material JSON → texture reference (tex file)
+            // Falls back to a solid-colour placeholder at every step.
+            let texture: Rc<Tex> = (|| -> Option<Rc<Tex>> {
+                let model_raw = scene.jsons.get(&model_path)?;
+                let model = serde_json::from_str::<Model>(&model_raw[..]).ok()?;
+                let material_raw = scene.jsons.get(&model.material)?;
+                let material_json: Value =
+                    serde_json::from_str(&material_raw[..]).ok()?;
+                let tex_name = material_json["passes"]
+                    .get(0)?
+                    .get("textures")?
+                    .get(0)?
+                    .as_str()?;
+                let tex_key = format!("materials/{}.tex", tex_name);
+                match scene.textures.get(&tex_key) {
+                    Some(t) => Some(t),
+                    None => {
+                        log::debug!(
+                            "cannot get texture '{}' for material '{}'",
+                            tex_key, model.material
+                        );
+                        None
                     }
                 }
-                None => {
-                    // Shader-only material — create a 1×1 solid texture
-                    // using the object's `color` and `alpha` properties.
-                    // Falls back to the scene's clear color, then white.
-                    let color_vec = object
-                        .color
-                        .as_ref()
-                        .and_then(|c| c.parse())
-                        .unwrap_or(clear_color)
-                        .max(Vec3::ZERO);
-
-                    let alpha_val = object
-                        .alpha
-                        .as_ref()
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(1.0);
-                    let r = (color_vec.x.clamp(0.0, 1.0) * 255.0) as u8;
-                    let g = (color_vec.y.clamp(0.0, 1.0) * 255.0) as u8;
-                    let b = (color_vec.z.clamp(0.0, 1.0) * 255.0) as u8;
-                    let a = (alpha_val.clamp(0.0, 1.0) * 255.0) as u8;
-                    log::trace!(
-                        "material '{}' has no textures, using 1x1 solid ({},{},{},{}) for object '{}'",
-                        model.material,
-                        r, g, b, a,
-                        object.name,
-                    );
-                    Rc::new(Tex {
-                        texv: String::new(),
-                        texi: String::new(),
-                        texb: String::new(),
-                        size: 4,
-                        dimension: [1, 1],
-                        image_count: 1,
-                        mipmap_count: 1,
-                        lz4: false,
-                        decompressed_size: 4,
-                        extension: "solid".into(),
-                        payload: vec![r, g, b, a],
-                    })
-                }
-            };
+            })()
+            .unwrap_or_else(make_solid);
 
             return Some(ObjectType::Texture(TextureObject {
                 origin,

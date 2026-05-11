@@ -1,34 +1,50 @@
-// Wallpaper Engine composite blending.
-// COMPOSITE combo values:
-//   0 = Normal (replace), 1 = Blend (alpha composite),
-//   2 = Under, 3 = Cutout
 
-vec2 ApplyCompositeOffset(vec2 coord, vec2 resolution) {
-    // OpenGL samples at pixel centers, no offset needed.
-    // Direct3D requires a half-texel offset which is handled
-    // by the HLSL_SM30 ifdef in the shader.
-    return coord;
+#include "common.h"
+#include "common_blending.h"
+
+uniform float g_CompositeAlpha; // {"material":"compositealpha","label":"ui_editor_properties_alpha","default":1,"range":[0.0, 2.0]}
+uniform vec2 g_CompositeOffset; // {"material":"compositeoffset","label":"ui_editor_properties_offset","default":"0 0","linked":true,"range":[-10.0, 10.0]}
+uniform vec3 g_CompositeColor; // {"material":"compositecolor","label":"ui_editor_properties_color","default":"1 1 1","type":"color"}
+
+vec2 ApplyCompositeOffset(vec2 texCoords, vec2 textureResolution)
+{
+#if COMPOSITE != 0
+	return texCoords + g_CompositeOffset / textureResolution;
+#else
+	return texCoords;
+#endif
 }
 
-vec4 ApplyComposite(vec4 original, vec4 composite) {
-#if COMPOSITE == 0
-    // Normal: composite replaces original
-    return composite;
-#elif COMPOSITE == 1
-    // Blend: alpha composite on top
-    vec3 rgb = mix(original.rgb, composite.rgb, composite.a);
-    float a = original.a + composite.a * (1.0 - original.a);
-    return vec4(rgb, a);
-#elif COMPOSITE == 2
-    // Under: original on top of composite
-    vec3 rgb = mix(composite.rgb, original.rgb, original.a);
-    float a = original.a + composite.a * (1.0 - original.a);
-    return vec4(rgb, a);
-#elif COMPOSITE == 3
-    // Cutout: composite alpha masks original
-    float a = original.a * composite.a;
-    return vec4(original.rgb * composite.a, a);
-#else
-    return composite;
+vec4 ApplyComposite(vec4 original, vec4 effect)
+{
+#if COMPOSITEMONO == 1
+	effect.rgb = CAST3(greyscale(effect.rgb));
 #endif
+
+	effect.rgb *= g_CompositeColor;
+
+	// Only return the effect
+#if COMPOSITE == 0
+	return effect;
+#endif
+
+	// Overlay the effect with a blend mode
+#if COMPOSITE == 1
+	effect.rgb = ApplyBlending(BLENDMODE, original.rgb, effect.rgb, effect.a * g_CompositeAlpha);
+	effect.a = max(effect.a * saturate(g_CompositeAlpha), original.a);
+#endif
+
+	// Put the effect below the original
+#if COMPOSITE == 2
+	effect.a *= saturate(g_CompositeAlpha);
+	effect = mix(effect, original, original.a);
+#endif
+
+	// Turn the pixels where the original is invisible
+#if COMPOSITE == 3
+	effect.a *= saturate(g_CompositeAlpha);
+	effect.a *= 1.0 - original.a;
+#endif
+
+	return effect;
 }

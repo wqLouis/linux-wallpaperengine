@@ -103,6 +103,7 @@ impl DrawObject {
                         device,
                         effect.file.clone(),
                         &pass.textures,
+                        pass.combos.as_ref(),
                         pipelines,
                         scene,
                         projection_bgl,

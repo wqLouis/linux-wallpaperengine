@@ -101,74 +101,11 @@ pub struct Pass {
     pub id: i64,
     #[serde(default)]
     pub textures: Vec<Option<String>>,
-    pub combos: Option<Combos>,
+    pub combos: Option<BTreeMap<String, i64>>,
     pub usertextures: Option<(Value, Value)>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Combos {
-    #[serde(rename = "VERTICAL")]
-    pub vertical: Option<i64>,
-    #[serde(rename = "NOISE")]
-    pub noise: Option<i64>,
-    #[serde(rename = "ANTIALIAS")]
-    pub antialias: Option<i64>,
-    #[serde(rename = "A_SMOOTH_CURVE")]
-    pub a_smooth_curve: Option<i64>,
-    #[serde(rename = "BLENDMODE")]
-    pub blendmode: Option<i64>,
-    #[serde(rename = "CLIP_HIGH")]
-    pub clip_high: Option<i64>,
-    #[serde(rename = "CLIP_LOW")]
-    pub clip_low: Option<i64>,
-    #[serde(rename = "RESOLUTION")]
-    pub resolution: Option<i64>,
-    #[serde(rename = "SHAPE")]
-    pub shape: Option<i64>,
-    #[serde(rename = "TRANSPARENCY")]
-    pub transparency: Option<i64>,
-    #[serde(rename = "KERNEL")]
-    pub kernel: Option<i64>,
-    #[serde(rename = "WRITEALPHA")]
-    pub writealpha: Option<i64>,
-    #[serde(rename = "AUDIOPROCESSING")]
-    pub audioprocessing: Option<i64>,
-    #[serde(rename = "AXIS")]
-    pub axis: Option<i64>,
-    #[serde(rename = "REPEAT")]
-    pub repeat: Option<i64>,
-    #[serde(rename = "DYE")]
-    pub dye: Option<i64>,
-    #[serde(rename = "BACKGROUND")]
-    pub background: Option<i64>,
-    #[serde(rename = "MODE")]
-    pub mode: Option<i64>,
-    #[serde(rename = "ENABLEMASK")]
-    pub enablemask: Option<i64>,
-    #[serde(rename = "DIRECTDRAW")]
-    pub directdraw: Option<i64>,
-    #[serde(rename = "RAYCORNER")]
-    pub raycorner: Option<i64>,
-    #[serde(rename = "RAYMODE")]
-    pub raymode: Option<i64>,
-    #[serde(rename = "RENDERING")]
-    pub rendering: Option<i64>,
-    #[serde(rename = "DIRECTION")]
-    pub direction: Option<i64>,
-    #[serde(rename = "SEGMENT")]
-    pub segment: Option<i64>,
-    #[serde(rename = "TRANSFORM")]
-    pub transform: Option<i64>,
-    #[serde(rename = "V_REMAPPING")]
-    pub v_remapping: Option<i64>,
-    #[serde(rename = "DUALWAVES")]
-    pub dualwaves: Option<i64>,
-    #[serde(rename = "PRECISE")]
-    pub precise: Option<i64>,
-    #[serde(rename = "REF_RES")]
-    pub ref_res: Option<i64>,
-}
+
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

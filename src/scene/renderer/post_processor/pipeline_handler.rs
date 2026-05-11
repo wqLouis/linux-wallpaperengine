@@ -27,23 +27,29 @@ pub fn get_or_create_pipeline(
     device: &Device,
     effect_path: String,
     pass_textures: &[Option<String>],
+    pass_combos: Option<&BTreeMap<String, i64>>,
     pipelines: &mut BTreeMap<String, EffectPipelineData>,
     scene: &Scene,
     projection_bgl: &BindGroupLayout,
 ) -> Option<Rc<RenderPipeline>> {
-    let cache_key = compute_cache_key(&effect_path, pass_textures);
+    let cache_key = compute_cache_key(&effect_path, pass_textures, pass_combos);
 
     if let Some(data) = pipelines.get(&cache_key) {
         return Some(Rc::clone(&data.pipeline));
     }
 
-    let data = create_effect_pipeline(device, &effect_path, pass_textures, scene, projection_bgl)?;
+    let data =
+        create_effect_pipeline(device, &effect_path, pass_textures, pass_combos, scene, projection_bgl)?;
     let pipeline_rc = Rc::clone(&data.pipeline);
     pipelines.insert(cache_key, data);
     Some(pipeline_rc)
 }
 
-fn compute_cache_key(effect_path: &str, pass_textures: &[Option<String>]) -> String {
+fn compute_cache_key(
+    effect_path: &str,
+    pass_textures: &[Option<String>],
+    pass_combos: Option<&BTreeMap<String, i64>>,
+) -> String {
     let mut key = effect_path.to_string();
     // textures[1] = g_Texture1 (MASK combo), textures[2] = g_Texture2 (TIMEOFFSET)
     if pass_textures.get(1).and_then(|t| t.as_deref()).is_some() {
@@ -52,6 +58,12 @@ fn compute_cache_key(effect_path: &str, pass_textures: &[Option<String>]) -> Str
     if pass_textures.get(2).and_then(|t| t.as_deref()).is_some() {
         key.push_str("|T1");
     }
+    // Include combo values so different combos get different cached pipelines
+    if let Some(combos) = pass_combos {
+        for (k, v) in combos {
+            key.push_str(&format!("|{}={}", k, v));
+        }
+    }
     key
 }
 
@@ -59,6 +71,7 @@ fn create_effect_pipeline(
     device: &Device,
     effect_path: &str,
     pass_textures: &[Option<String>],
+    pass_combos: Option<&BTreeMap<String, i64>>,
     scene: &Scene,
     projection_bgl: &BindGroupLayout,
 ) -> Option<EffectPipelineData> {
@@ -79,7 +92,24 @@ fn create_effect_pipeline(
     let frag_source = std::str::from_utf8(&frag_raw).ok()?;
     let vert_source = std::str::from_utf8(&vert_raw).ok()?;
 
+    // Priority (lowest → highest): shader defaults → material.json → scene pass
     let mut defines = pipeline_helpers::collect_default_defines(vert_source, frag_source);
+
+    // Read combos from material.json (e.g., {"VERTICAL": 1, "ENABLEMASK": 1})
+    if let Some(mat_combos) = material_json["passes"][0].get("combos").and_then(|c| c.as_object()) {
+        for (k, v) in mat_combos {
+            if let Some(n) = v.as_i64() {
+                defines.insert(k.clone(), n.to_string());
+            }
+        }
+    }
+
+    // Apply scene-pass combo overrides (highest priority)
+    if let Some(combos) = pass_combos {
+        for (k, v) in combos {
+            defines.insert(k.clone(), v.to_string());
+        }
+    }
 
     pipeline_helpers::apply_texture_combos(&mut defines, pass_textures);
 
@@ -177,10 +207,12 @@ pub fn load_mask_texture(
     scene: &Scene,
     path: &str,
 ) -> Option<(Texture, TextureView)> {
-    // Try multiple path resolutions: the .pkg stores files under "materials/"
-    // but JSON references may use relative paths like "masks/..."
-    let candidates = [format!("{}.tex", path), format!("materials/{}.tex", path)];
-    let tex = candidates.iter().find_map(|key| scene.textures.get(key));
+    // All tex files live under "materials/".  JSON references (from
+    // material.passes[].textures / effect.passes[].textures) use relative
+    // paths like "workshop/.../masks/..." or "effects/...", so we
+    // prepend "materials/" and append ".tex".
+    let tex_key = format!("materials/{}.tex", path);
+    let tex = scene.textures.get(&tex_key);
     let tex = tex?;
 
     // Select GPU format based on the texture's native encoding.

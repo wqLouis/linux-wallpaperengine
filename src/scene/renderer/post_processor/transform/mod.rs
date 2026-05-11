@@ -47,7 +47,19 @@ pub fn preprocess_with_layout_tracked(
                             {
                                 continue;
                             }
-                            result.push_str(hline);
+                            // Apply same transformations as the main body
+                            let mut transformed = htrim.to_string();
+                            transformed = transformed.replace("CAST2(", "vec2(");
+                            transformed = transformed.replace("CAST3(", "vec3(");
+                            transformed = transformed.replace("CAST4(", "vec4(");
+                            transformed = transformed.replace("CAST3X3(", "mat3(");
+                            transformed = replace::replace_saturate(&transformed);
+                            transformed = replace::replace_frac(&transformed);
+                            transformed = transformed.replace("texSample2D(", "texture(");
+                            transformed = transformed.replace("texSample2DLod(", "textureLod(");
+                            transformed = replace::replace_mul(&transformed);
+                            transformed = replace::replace_texture_calls(&transformed, &sampler_set);
+                            result.push_str(&transformed);
                             result.push('\n');
                         }
                         continue;
@@ -179,11 +191,19 @@ fn emit_declarations(result: &mut String, stage: ShaderStage, layout: &EffectLay
     for content in headers.values() {
         for line in content.lines() {
             let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with("//") {
+            if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#include") {
                 continue;
             }
             if trimmed.starts_with('#') {
-                result.push_str(line);
+                // Apply CAST transformations to #define macros
+                let mut transformed = trimmed.to_string();
+                transformed = transformed.replace("CAST2(", "vec2(");
+                transformed = transformed.replace("CAST3(", "vec3(");
+                transformed = transformed.replace("CAST4(", "vec4(");
+                transformed = transformed.replace("CAST3X3(", "mat3(");
+                transformed = replace::replace_saturate(&transformed);
+                transformed = replace::replace_frac(&transformed);
+                result.push_str(&transformed);
                 result.push('\n');
             }
         }
