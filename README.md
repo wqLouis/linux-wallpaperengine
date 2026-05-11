@@ -9,6 +9,8 @@ This project is an attempt to bring [Wallpaper Engine](https://www.wallpaperengi
 
 > **Status:** The software is functional but still under active development. Many wallpapers with post-processing effects work, but some features (full animation, video playback) are still incomplete.
 
+https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
+
 ## Features
 
 ### Rendering
