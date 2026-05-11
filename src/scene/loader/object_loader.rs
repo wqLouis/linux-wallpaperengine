@@ -1,7 +1,8 @@
-use std::{cell::RefCell, collections::BTreeMap, path::Path, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use glam::{Vec2, Vec3};
 use pkg_parser::pkg_parser::tex_parser::Tex;
+use serde_json::Value;
 
 use crate::scene::loader::{
     model::Model,
@@ -49,7 +50,7 @@ enum ObjectType {
 }
 
 impl ObjectMap {
-    pub fn new(objects: &Vec<Object>, scene: &Scene) -> Self {
+    pub fn with_clear_color(objects: &Vec<Object>, scene: &Scene, clear_color: Vec3) -> Self {
         let mut render_sequence: Vec<i64> = vec![];
 
         let mut texture_map: BTreeMap<i64, Rc<RefCell<TextureObject>>> = BTreeMap::new();
@@ -57,7 +58,7 @@ impl ObjectMap {
         let mut node_map: BTreeMap<i64, Node> = BTreeMap::new();
 
         for object in objects {
-            let Some(loaded_object) = Self::load_object(object, &scene) else {
+            let Some(loaded_object) = Self::load_object(object, &scene, clear_color) else {
                 continue;
             };
             match loaded_object {
@@ -137,7 +138,7 @@ impl ObjectMap {
 }
 
 impl ObjectMap {
-    fn load_object(object: &Object, scene: &Scene) -> Option<ObjectType> {
+    fn load_object(object: &Object, scene: &Scene, clear_color: Vec3) -> Option<ObjectType> {
         // Common transform properties shared by texture and node objects
         let origin = object
             .origin
@@ -179,13 +180,75 @@ impl ObjectMap {
             };
 
             let model_path = object.image.clone().unwrap_or_default();
-            let model = serde_json::from_str::<Model>(scene.jsons.get(&model_path)?).ok()?;
-            let mut material = Path::new(&model.material).to_path_buf();
-            material.set_extension("tex");
+            let model = serde_json::from_str::<Model>(&scene.jsons.get(&model_path)?[..]).ok()?;
 
-            let Some(texture) = scene.textures.get(material.as_os_str().to_str().unwrap()) else {
-                println!("cannot get texture: {:?}", material);
-                return None;
+            // Load the material JSON to find the actual texture reference.
+            // If the material has a `textures` array we load that tex;
+            // otherwise (shader-only like "flat") we create a 1×1 white
+            // solid placeholder so the object can still be rendered.
+            let material_json: Value =
+                serde_json::from_str(&scene.jsons.get(&model.material)?[..]).ok()?;
+            let texture: Rc<Tex> = match material_json["passes"]
+                .get(0)
+                .and_then(|p| p.get("textures"))
+                .and_then(|t| t.get(0))
+                .and_then(|t| t.as_str())
+            {
+                Some(tex_name) => {
+                    let tex_key = format!("materials/{}.tex", tex_name);
+                    match scene.textures.get(&tex_key) {
+                        Some(t) => t,
+                        None => {
+                            log::debug!(
+                                "cannot get texture '{}' for material '{}' (tex_name: {})",
+                                tex_key,
+                                model.material,
+                                tex_name,
+                            );
+                            return None;
+                        }
+                    }
+                }
+                None => {
+                    // Shader-only material — create a 1×1 solid texture
+                    // using the object's `color` and `alpha` properties.
+                    // Falls back to the scene's clear color, then white.
+                    let color_vec = object
+                        .color
+                        .as_ref()
+                        .and_then(|c| c.parse())
+                        .unwrap_or(clear_color)
+                        .max(Vec3::ZERO);
+
+                    let alpha_val = object
+                        .alpha
+                        .as_ref()
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(1.0);
+                    let r = (color_vec.x.clamp(0.0, 1.0) * 255.0) as u8;
+                    let g = (color_vec.y.clamp(0.0, 1.0) * 255.0) as u8;
+                    let b = (color_vec.z.clamp(0.0, 1.0) * 255.0) as u8;
+                    let a = (alpha_val.clamp(0.0, 1.0) * 255.0) as u8;
+                    log::trace!(
+                        "material '{}' has no textures, using 1x1 solid ({},{},{},{}) for object '{}'",
+                        model.material,
+                        r, g, b, a,
+                        object.name,
+                    );
+                    Rc::new(Tex {
+                        texv: String::new(),
+                        texi: String::new(),
+                        texb: String::new(),
+                        size: 4,
+                        dimension: [1, 1],
+                        image_count: 1,
+                        mipmap_count: 1,
+                        lz4: false,
+                        decompressed_size: 4,
+                        extension: "solid".into(),
+                        payload: vec![r, g, b, a],
+                    })
+                }
             };
 
             return Some(ObjectType::Texture(TextureObject {
@@ -194,7 +257,7 @@ impl ObjectMap {
                 size,
                 scale,
                 parent: object.parent,
-                texture: Rc::clone(texture),
+                texture: Rc::clone(&texture),
                 effects: object.effects.clone(),
             }));
         }

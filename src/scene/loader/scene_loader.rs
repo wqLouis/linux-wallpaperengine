@@ -2,18 +2,20 @@ use indicatif::ProgressBar;
 use pkg_parser::pkg_parser::{mdl_parser::MdlFile, parser::Pkg, tex_parser::Tex};
 use std::{
     collections::BTreeMap,
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
 };
 
+use super::assets_loader::{JsonBucket, MdlBucket, MiscBucket, TextureBucket};
+
 pub struct Scene {
     pub root: crate::scene::loader::scene::Root,
-    pub textures: BTreeMap<String, Rc<Tex>>,
-    pub mdls: BTreeMap<String, Rc<MdlFile>>,
-    pub jsons: BTreeMap<String, String>,
-    pub misc: BTreeMap<String, Vec<u8>>,
+    pub textures: TextureBucket,
+    pub mdls: MdlBucket,
+    pub jsons: JsonBucket,
+    pub misc: MiscBucket,
 }
 
 impl Scene {
@@ -33,7 +35,7 @@ impl Scene {
             let file_path = Path::new(&key);
             match file_path.extension().unwrap().to_str().unwrap() {
                 "tex" => {
-                    let key = key.clone();
+                    let key_clone = key.clone();
                     let texs = Arc::clone(&texs);
 
                     let handle = thread::spawn(move || {
@@ -44,9 +46,10 @@ impl Scene {
                             None => return,
                         };
 
-                        texs.lock().unwrap().insert(key, tex);
+                        texs.lock().unwrap().insert(key_clone, tex);
                     });
 
+                    log::debug!("pkg: enqueued tex: {}", key);
                     handles.push(handle);
                 }
                 "mdl" => {
@@ -55,9 +58,10 @@ impl Scene {
 
                     let handle = thread::spawn(move || {
                         let Some(mdl) = MdlFile::new(&val) else {
-                            log::warn!("failed to parse mdl: {}", key);
+                            log::warn!("pkg: failed to parse mdl: {}", key);
                             return;
                         };
+                        log::debug!("pkg: loaded mdl: {}", key);
                         mdls.lock().unwrap().insert(key, mdl);
                     });
 
@@ -65,10 +69,12 @@ impl Scene {
                 }
                 "json" => {
                     pb.inc(1);
+                    log::debug!("pkg: loaded json: {}", key);
                     jsons.insert(key, String::from_utf8_lossy(&val).to_string());
                 }
                 _ => {
                     pb.inc(1);
+                    log::debug!("pkg: loaded misc: {}", key);
                     misc.insert(key, val);
                 }
             }
@@ -98,10 +104,24 @@ impl Scene {
 
         Self {
             root,
-            jsons,
-            textures: texs,
-            mdls,
-            misc,
+            textures: TextureBucket::new(texs, None),
+            mdls: MdlBucket::new(mdls, None),
+            jsons: JsonBucket::new(jsons, None),
+            misc: MiscBucket::new(misc, None),
         }
+    }
+
+    /// Set the Wallpaper Engine assets directory for lazy-loading fallback.
+    ///
+    /// When a requested asset is not found in the in-memory buckets
+    /// (populated from the `.pkg` file), the bucket wrappers will attempt
+    /// to read it from `{assets_path}/{key}` on disk, parse it, cache it,
+    /// and return it.
+    pub fn set_assets_path(&mut self, assets_path: PathBuf) {
+        let path = Some(assets_path);
+        self.textures.set_assets_path(path.clone());
+        self.mdls.set_assets_path(path.clone());
+        self.jsons.set_assets_path(path.clone());
+        self.misc.set_assets_path(path);
     }
 }

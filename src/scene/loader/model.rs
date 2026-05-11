@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Model {
     pub autosize: bool,
     pub cropoffset: Option<String>,

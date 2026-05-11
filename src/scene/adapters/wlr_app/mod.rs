@@ -345,7 +345,12 @@ impl ProvidesRegistryState for WlrState {
 /// Creates a `Layer::Background` surface, binds the required Wayland
 /// globals (compositor, layer-shell, fractional-scale, viewporter), and
 /// enters the render loop.
-pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
+pub fn start(
+    pkg_path: String,
+    fit_mode: super::FitMode,
+    no_effects: bool,
+    assets_path: Option<String>,
+) {
     let conn = Connection::connect_to_env().unwrap();
     let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
     let qh = event_queue.handle();
@@ -405,6 +410,7 @@ pub fn start(pkg_path: String, fit_mode: super::FitMode, no_effects: bool) {
         InitAppSurface::Raw((raw_display_handle, raw_window_handle)),
         [256, 256],
         no_effects,
+        assets_path,
     ));
     app.load();
     let wp_res = app.resolution.expect("Unknown resolution");

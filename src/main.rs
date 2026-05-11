@@ -52,6 +52,11 @@ struct Args {
     /// Dry run — show what would be extracted without writing files.
     #[arg(long, default_value_t = false)]
     dry_run: bool,
+
+    /// Path to Wallpaper Engine assets directory for lazy-loading
+    /// fallback (e.g. Steam/steamapps/common/wallpaper_engine/assets).
+    #[arg(long, default_value = None)]
+    assets_path: Option<String>,
 }
 
 pub const MAX_TEXTURE: u32 = 512;
@@ -129,8 +134,8 @@ fn main() {
     }
 
     match args.modes.as_str() {
-        "winit" => winit_adapter::start(args.path, args.no_effects),
-        "wlr" => wlr_app::start(args.path, fit_mode, args.no_effects),
+        "winit" => winit_adapter::start(args.path, args.no_effects, args.assets_path),
+        "wlr" => wlr_app::start(args.path, fit_mode, args.no_effects, args.assets_path),
         _ => {}
     }
 }

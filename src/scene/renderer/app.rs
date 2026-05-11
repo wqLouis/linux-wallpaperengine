@@ -46,6 +46,7 @@ pub struct WgpuApp {
     pub buffers: Buffers,
     pub projection_bindgroup: ProjectionBindGroups,
     pub scene_path: String,
+    pub assets_path: Option<String>,
     pub clear_color: Vec3,
     pub device: Device,
     pub queue: Queue,
@@ -73,6 +74,7 @@ impl WgpuApp {
         surface: InitAppSurface,
         size: [u32; 2],
         no_effects: bool,
+        assets_path: Option<String>,
     ) -> Self {
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::VULKAN | Backends::METAL,
@@ -114,6 +116,7 @@ impl WgpuApp {
             buffers,
             projection_bindgroup,
             scene_path,
+            assets_path,
             clear_color: Vec3::ZERO,
             device,
             queue,

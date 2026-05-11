@@ -22,6 +22,16 @@ impl WgpuApp {
     /// load assets
     pub fn load(&mut self) {
         let mut scene = Scene::new(self.scene_path.clone());
+
+        // Enable lazy-loading fallback to Wallpaper Engine assets directory.
+        if let Some(ref assets_path) = self.assets_path {
+            log::info!(
+                "Using Wallpaper Engine assets path: {}",
+                assets_path
+            );
+            scene.set_assets_path(std::path::PathBuf::from(assets_path));
+        }
+
         let size = [
             scene.root.general.orthogonalprojection.width as u32,
             scene.root.general.orthogonalprojection.height as u32,
@@ -32,7 +42,11 @@ impl WgpuApp {
         self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 
         let pipeline = create_pipeline(&self, &post_process.layout);
-        let objects = ObjectMap::new(&scene.root.objects.clone(), &scene);
+        let objects = ObjectMap::with_clear_color(
+            &scene.root.objects.clone(),
+            &scene,
+            self.clear_color,
+        );
         let draw_queue = DrawQueue::new(
             &self.device,
             &self.queue,
@@ -45,7 +59,7 @@ impl WgpuApp {
             self.no_effects,
         );
 
-        load_audios(&self.audio_stream, objects.audio, &mut scene);
+        load_audios(&self.audio_stream, objects.audio, &scene);
 
         self.draw_queue = Some(draw_queue);
 
@@ -64,7 +78,7 @@ impl WgpuApp {
     }
 }
 
-fn load_audios(audio_stream: &OutputStream, audios: Vec<AudioObject>, scene: &mut Scene) {
+fn load_audios(audio_stream: &OutputStream, audios: Vec<AudioObject>, scene: &Scene) {
     let audio_mixer = audio_stream.mixer();
     let audio_sink = rodio::Sink::connect_new(audio_mixer);
 

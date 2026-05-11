@@ -17,13 +17,13 @@ use winit::{
 
 use crate::scene::renderer::app::WgpuApp;
 
-#[derive(Default)]
 struct WinitApp {
     app: Arc<Mutex<Option<WgpuApp>>>,
     window: Option<Arc<Window>>,
 
     pkg_path: String,
     no_effects: bool,
+    assets_path: Option<String>,
 }
 
 impl ApplicationHandler for WinitApp {
@@ -48,6 +48,7 @@ impl ApplicationHandler for WinitApp {
             crate::scene::renderer::app::InitAppSurface::Winit(Arc::clone(&window)),
             [size.width, size.height],
             self.no_effects,
+            self.assets_path.clone(),
         ));
 
         wgpu_app.load();
@@ -105,12 +106,14 @@ impl ApplicationHandler for WinitApp {
     }
 }
 
-pub fn start(pkg_path: String, no_effects: bool) {
+pub fn start(pkg_path: String, no_effects: bool, assets_path: Option<String>) {
     let event_loop = EventLoop::new().unwrap();
     let mut app = WinitApp {
         pkg_path,
         no_effects,
-        ..Default::default()
+        assets_path,
+        app: Arc::new(Mutex::new(None)),
+        window: None,
     };
 
     event_loop.run_app(&mut app).unwrap();

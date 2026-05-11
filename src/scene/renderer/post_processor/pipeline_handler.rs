@@ -62,11 +62,11 @@ fn create_effect_pipeline(
     scene: &Scene,
     projection_bgl: &BindGroupLayout,
 ) -> Option<EffectPipelineData> {
-    let effect_json: Value = serde_json::from_str(scene.jsons.get(effect_path)?).ok()?;
+    let effect_json: Value = serde_json::from_str(&scene.jsons.get(effect_path)?[..]).ok()?;
 
     let material_path = effect_json["passes"][0]["material"].as_str()?;
 
-    let material_json: Value = serde_json::from_str(scene.jsons.get(material_path)?).ok()?;
+    let material_json: Value = serde_json::from_str(&scene.jsons.get(material_path)?[..]).ok()?;
 
     let shader_name = material_json["passes"][0]["shader"].as_str()?;
 
@@ -76,8 +76,8 @@ fn create_effect_pipeline(
     let frag_raw = scene.misc.get(&frag_path)?;
     let vert_raw = scene.misc.get(&vert_path)?;
 
-    let frag_source = std::str::from_utf8(frag_raw).ok()?;
-    let vert_source = std::str::from_utf8(vert_raw).ok()?;
+    let frag_source = std::str::from_utf8(&frag_raw).ok()?;
+    let vert_source = std::str::from_utf8(&vert_raw).ok()?;
 
     let mut defines = pipeline_helpers::collect_default_defines(vert_source, frag_source);
 
