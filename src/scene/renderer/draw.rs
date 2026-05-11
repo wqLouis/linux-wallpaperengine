@@ -171,6 +171,12 @@ impl DrawObject {
     }
 
     fn upload_texture(device: &Device, queue: &Queue, tex_obj: &TextureObject) -> Texture {
+        let (format, bpp) = match tex_obj.texture.extension.as_str() {
+            "r8" => (TextureFormat::R8Unorm, 1u32),
+            "rg88" => (TextureFormat::Rg8Unorm, 2u32),
+            _ => (TextureFormat::Rgba8UnormSrgb, 4u32),
+        };
+
         let texture = device.create_texture(&TextureDescriptor {
             label: None,
             size: Extent3d {
@@ -181,7 +187,7 @@ impl DrawObject {
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8UnormSrgb,
+            format,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -196,7 +202,7 @@ impl DrawObject {
             &tex_obj.texture.payload,
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(tex_obj.texture.dimension[0] * 4),
+                bytes_per_row: Some(tex_obj.texture.dimension[0] * bpp),
                 rows_per_image: None,
             },
             Extent3d {
