@@ -56,6 +56,10 @@ impl UniformLayout {
         self.write(buf, name, bytemuck::bytes_of(&value))
     }
 
+    pub fn write_vec3(&self, buf: &mut [u8], name: &str, value: [f32; 3]) -> bool {
+        self.write(buf, name, bytemuck::bytes_of(&value))
+    }
+
     pub fn write_vec4(&self, buf: &mut [u8], name: &str, value: [f32; 4]) -> bool {
         self.write(buf, name, bytemuck::bytes_of(&value))
     }
@@ -125,6 +129,16 @@ impl UniformLayout {
                 .cloned()
                 .unwrap_or_else(|| material_key.clone());
 
+            // Resolve scene values that have a script/value wrapper:
+            //   {"script": "...", "value": <inner>}  →  <inner>
+            let resolved = match value {
+                serde_json::Value::Object(obj) => {
+                    obj.get("value").cloned()
+                }
+                _ => None,
+            };
+            let value = resolved.as_ref().unwrap_or(value);
+
             match value {
                 serde_json::Value::Number(n) => {
                     if let Some(v) = n.as_f64() {
@@ -139,6 +153,13 @@ impl UniformLayout {
                     match parts.len() {
                         2 => {
                             let _ = self.write_vec2(buf, &uniform_name, [parts[0], parts[1]]);
+                        }
+                        3 => {
+                            let _ = self.write_vec3(
+                                buf,
+                                &uniform_name,
+                                [parts[0], parts[1], parts[2]],
+                            );
                         }
                         4 => {
                             let _ = self.write_vec4(

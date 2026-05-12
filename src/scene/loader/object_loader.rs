@@ -19,6 +19,7 @@ pub struct TextureObject {
     pub scale: Vec3,
     pub parent: Option<i64>,
     pub effects: Vec<Effect>,
+    pub visible: bool,
 }
 
 pub struct AudioObject {
@@ -94,8 +95,12 @@ impl ObjectMap {
                     break;
                 }
 
-                if tex_parent.is_some() {
-                    let parent = tex_parent.unwrap().borrow();
+                if let Some(parent_rc) = tex_parent {
+                    let parent = parent_rc.borrow();
+                    // Propagate invisibility: if parent is not visible, child is also not visible
+                    if !parent.visible {
+                        texture.visible = false;
+                    }
                     texture.angles += parent.angles;
                     texture.scale *= parent.scale;
                     texture.origin += parent.origin;
@@ -107,8 +112,7 @@ impl ObjectMap {
                     }
                 }
 
-                if node_parent.is_some() {
-                    let parent = node_parent.unwrap();
+                if let Some(parent) = node_parent {
                     texture.angles += parent.angles;
                     texture.scale *= parent.scale;
                     texture.origin = parent.origin + texture.origin * parent.scale;
@@ -127,7 +131,11 @@ impl ObjectMap {
             let Some(tex_obj) = texture_map.remove(&id) else {
                 continue;
             };
-            texture_vec.push(Rc::into_inner(tex_obj).unwrap().into_inner());
+            let obj = Rc::into_inner(tex_obj).unwrap().into_inner();
+            if !obj.visible {
+                continue;
+            }
+            texture_vec.push(obj);
         }
 
         Self {
@@ -161,12 +169,11 @@ impl ObjectMap {
 
         if object.image.is_some() {
             // Texture
-            if object.visible.is_some() {
-                let visible = object.visible.clone().unwrap().value().unwrap_or(true);
-                if !visible {
-                    return None;
-                }
-            }
+            let visible = object
+                .visible
+                .clone()
+                .and_then(|v| v.value())
+                .unwrap_or(true);
 
             let size = object
                 .size
@@ -254,6 +261,7 @@ impl ObjectMap {
                 parent: object.parent,
                 texture: Rc::clone(&texture),
                 effects: object.effects.clone(),
+                visible,
             }));
         }
 

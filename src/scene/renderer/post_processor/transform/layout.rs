@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-use super::super::shader_header::get_headers;
-
 #[derive(Debug, Clone)]
 pub struct EffectLayout {
     pub sampler_names: Vec<String>,
@@ -25,7 +23,7 @@ impl EffectLayout {
     }
 }
 
-pub fn collect_layout(source1: &str, source2: &str) -> EffectLayout {
+pub fn collect_layout(source1: &str, source2: &str, headers: &BTreeMap<String, String>) -> EffectLayout {
     let mut sampler_names: Vec<String> = Vec::new();
     let mut uniform_map: BTreeMap<String, String> = BTreeMap::new();
     let mut varying_set: BTreeMap<String, u32> = BTreeMap::new();
@@ -40,6 +38,7 @@ pub fn collect_layout(source1: &str, source2: &str) -> EffectLayout {
     // Process vertex shader (source1) first, tracking all its varyings
     collect_from_source(
         source1,
+        headers,
         &mut sampler_names,
         &mut uniform_map,
         &mut varying_set,
@@ -55,6 +54,7 @@ pub fn collect_layout(source1: &str, source2: &str) -> EffectLayout {
     // Then process fragment shader (source2) for full layout
     collect_from_source(
         source2,
+        headers,
         &mut sampler_names,
         &mut uniform_map,
         &mut varying_set,
@@ -108,6 +108,7 @@ pub fn collect_layout(source1: &str, source2: &str) -> EffectLayout {
 
 fn collect_from_source(
     source: &str,
+    headers: &BTreeMap<String, String>,
     sampler_names: &mut Vec<String>,
     uniform_map: &mut BTreeMap<String, String>,
     varying_set: &mut BTreeMap<String, u32>,
@@ -115,7 +116,6 @@ fn collect_from_source(
     attribute_set: &mut BTreeMap<String, u32>,
     material_keys: &mut BTreeMap<String, String>,
 ) {
-    let headers = get_headers();
 
     for line in source.lines() {
         let trimmed = line.trim();
@@ -127,6 +127,7 @@ fn collect_from_source(
                     if let Some(header_content) = headers.get(include_file) {
                         collect_from_source(
                             header_content,
+                            headers,
                             sampler_names,
                             uniform_map,
                             varying_set,

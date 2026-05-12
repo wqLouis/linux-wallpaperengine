@@ -9,6 +9,7 @@ use crate::scene::{
         post_processor::{
             effect_param::UniformLayout,
             pipeline_helpers,
+            shader_header,
             transform::{EffectLayout, preprocess_pair},
         },
         vertex::Vertex,
@@ -118,7 +119,9 @@ fn create_effect_pipeline(
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
 
-    let (vert_processed, frag_processed, layout) = preprocess_pair(vert_source, frag_source);
+    let headers = shader_header::get_headers(&scene.misc);
+    let (vert_processed, frag_processed, layout) =
+        preprocess_pair(vert_source, frag_source, &headers, &defines);
 
     let vert_module = device.create_shader_module(ShaderModuleDescriptor {
         label: None,
@@ -212,8 +215,7 @@ pub fn load_mask_texture(
     // paths like "workshop/.../masks/..." or "effects/...", so we
     // prepend "materials/" and append ".tex".
     let tex_key = format!("materials/{}.tex", path);
-    let tex = scene.textures.get(&tex_key);
-    let tex = tex?;
+    let tex = scene.textures.get(&tex_key)?;
 
     // Select GPU format based on the texture's native encoding.
     // R8/RG88 stay single/two-channel (not expanded to RGBA),
