@@ -11,18 +11,30 @@ pub use layout::collect_layout;
 // Re-export WM_SAMPLER_BINDING from shader_header for convenience
 pub use super::shader_header::WM_SAMPLER_BINDING;
 
-pub fn preprocess_with_layout(
-    source: &str,
-    stage: ShaderStage,
-    layout: &EffectLayout,
-    headers: &BTreeMap<String, String>,
-    defines: &BTreeMap<String, String>,
-) -> String {
-    let (result, _) = preprocess_with_layout_tracked(source, stage, layout, headers, defines);
-    result
+/// Collect simple `#define NAME VALUE` macros from a shader/header source.
+/// Only top-level defines (not inside `#if` blocks) are collected.
+pub fn collect_source_defines(source: &str) -> BTreeMap<String, String> {
+    let mut macros = BTreeMap::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#define ") {
+            let rest = trimmed["#define ".len()..].trim();
+            if let Some(space_pos) = rest.find(|c: char| c.is_whitespace()) {
+                let name = rest[..space_pos].trim().to_string();
+                let value = rest[space_pos..].trim().to_string();
+                // Only collect simple numeric or identifier values
+                if !name.is_empty() {
+                    macros.insert(name, value);
+                }
+            }
+        }
+    }
+    macros
 }
 
 /// Evaluate a preprocessor condition like `BLENDMODE == 26` or `defined(MACRO)`.
+/// `defines` contains combo values; `source_macros` contains `#define` macros from
+/// shader source (e.g. `BOTTOM` → `0`).
 fn eval_if_condition(cond: &str, defines: &BTreeMap<String, String>) -> bool {
     let cond = cond.trim();
 
@@ -39,17 +51,14 @@ fn eval_if_condition(cond: &str, defines: &BTreeMap<String, String>) -> bool {
     }
 
     // Handle `NAME == VALUE` or `NAME != VALUE`
-    if let Some(eq_pos) = cond.find("==") {
-        let name = cond[..eq_pos].trim();
-        let value = cond[eq_pos + 2..].trim();
-        let def = defines.get(name).map(|s| s.as_str()).unwrap_or("0");
-        return def == value;
-    }
-    if let Some(ne_pos) = cond.find("!=") {
-        let name = cond[..ne_pos].trim();
-        let value = cond[ne_pos + 2..].trim();
-        let def = defines.get(name).map(|s| s.as_str()).unwrap_or("0");
-        return def != value;
+    for (op, op_len) in &[("==", 2), ("!=", 2)] {
+        if let Some(pos) = cond.find(op) {
+            let name = cond[..pos].trim();
+            let value = cond[pos + op_len..].trim();
+            let def = defines.get(name).map(|s| s.as_str()).unwrap_or("0");
+            let rhs = defines.get(value).map(|s| s.as_str()).unwrap_or(value);
+            return if *op == "==" { def == rhs } else { def != rhs };
+        }
     }
 
     // Handle `||` and `&&` (simple left-to-right, no precedence — enough for WE headers)
@@ -90,13 +99,11 @@ enum IfBlockState {
 /// during shader preprocessing.
 struct IfBlockProcessor {
     stack: Vec<IfBlockState>,
-    #[allow(dead_code)]
-    depth: u32,
 }
 
 impl IfBlockProcessor {
     fn new() -> Self {
-        Self { stack: Vec::new(), depth: 0 }
+        Self { stack: Vec::new() }
     }
 
     fn is_active(&self) -> bool {
@@ -114,14 +121,12 @@ impl IfBlockProcessor {
             let macro_name = trimmed["#ifdef".len()..].trim();
             let cond_true = defines.contains_key(macro_name);
             self.stack.push(if cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
-            self.depth += 1;
             return Some(true);
         }
         if trimmed.starts_with("#ifndef") {
             let macro_name = trimmed["#ifndef".len()..].trim();
             let cond_true = defines.contains_key(macro_name);
             self.stack.push(if !cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
-            self.depth += 1;
             return Some(true);
         }
         if trimmed.starts_with("#if")
@@ -131,7 +136,6 @@ impl IfBlockProcessor {
             let cond = trimmed["#if".len()..].trim();
             let cond_true = eval_if_condition(cond, defines);
             self.stack.push(if cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
-            self.depth += 1;
             return Some(true);
         }
 
@@ -153,24 +157,18 @@ impl IfBlockProcessor {
         }
 
         if trimmed.starts_with("#else") {
-            if trimmed.len() == 5 {
-                // plain `#else`
-                if let Some(top) = self.stack.last_mut() {
-                    match top {
-                        IfBlockState::Active => *top = IfBlockState::Done,
-                        IfBlockState::Inactive => *top = IfBlockState::Active,
-                        IfBlockState::Done => {}
-                    }
+            if let Some(top) = self.stack.last_mut() {
+                match top {
+                    IfBlockState::Active => *top = IfBlockState::Done,
+                    IfBlockState::Inactive => *top = IfBlockState::Active,
+                    IfBlockState::Done => {}
                 }
-                return Some(true);
             }
-            // `#else` with trailing content — let the caller decide
-            return None;
+            return Some(true);
         }
 
-        if trimmed == "#endif" {
+        if trimmed.starts_with("#endif") {
             self.stack.pop();
-            self.depth = self.depth.saturating_sub(1);
             return Some(true);
         }
 
@@ -199,46 +197,31 @@ pub fn preprocess_with_layout_tracked(
     for line in source.lines() {
         let trimmed = line.trim();
 
-        // --- #include handling (header inlining with #if evaluation) ---
+        // #include handling (header inlining with #if evaluation)
         if trimmed.starts_with("#include") {
-            if !ifp.is_active() {
-                continue;
-            }
-            if let Some(start) = trimmed.find('"') {
-                if let Some(end) = trimmed[start + 1..].find('"') {
-                    let include_file = &trimmed[start + 1..start + 1 + end];
-                    if let Some(header_content) = headers.get(include_file) {
-                        include_header_lines(
-                            header_content,
-                            defines,
-                            &sampler_set,
-                            &mut result,
-                            headers,
-                        );
-                        continue;
+            if ifp.is_active() {
+                if let Some(start) = trimmed.find('"') {
+                    if let Some(end) = trimmed[start + 1..].find('"') {
+                        let file = &trimmed[start + 1..start + 1 + end];
+                        if let Some(hdr) = headers.get(file) {
+                            include_header_lines(hdr, defines, &sampler_set, &mut result, headers);
+                        }
                     }
                 }
             }
             continue;
         }
 
-        // --- Preprocessor directive handling with #if evaluation ---
+        // Preprocessor directives
         if trimmed.starts_with('#') {
-            // Track whether we are in an active block for varying-hoisting purposes
             let was_active_before = ifp.is_active();
-
-            // Handle conditional directives via the shared processor
             if ifp.process_line(line, defines) == Some(true) {
                 continue;
             }
-            // `#else` with trailing content or other directives — fall through
-
-            // Other preprocessor directives: only emit if in active block
             if !was_active_before && !ifp.is_active() {
                 continue;
             }
-
-            // Skip duplicate #define of standard constants (already emitted by emit_declarations)
+            // Skip standard constants already emitted by emit_declarations
             if trimmed.starts_with("#define M_PI")
                 || trimmed.starts_with("#define M_PI_HALF")
                 || trimmed.starts_with("#define M_PI_2")
@@ -248,19 +231,16 @@ pub fn preprocess_with_layout_tracked(
             {
                 continue;
             }
-
             result.push_str(line);
             result.push('\n');
             continue;
         }
 
-        // Skip lines inside inactive #if blocks
+        // Skip lines inside inactive #if blocks (preserve line count with newlines)
         if !ifp.is_active() {
-            // Still need to push whitespace to keep line numbering
             result.push('\n');
             continue;
         }
-
         if trimmed.is_empty() || trimmed.starts_with("//") {
             result.push_str(line);
             result.push('\n');
@@ -273,38 +253,25 @@ pub fn preprocess_with_layout_tracked(
             continue;
         }
 
-        if cleaned.contains("uniform ")
-            || cleaned.starts_with("uniform ")
-            || cleaned.starts_with("sampler2D ")
-        {
+        if cleaned.starts_with("uniform ") || cleaned.starts_with("sampler2D ") {
             continue;
         }
 
         if cleaned.contains("attribute ") {
             let rest = cleaned.split("attribute ").nth(1).unwrap_or("").trim();
-            let name = layout::extract_variable_name(rest);
-            let location = name
-                .as_ref()
-                .and_then(|n| layout.attribute_locations.get(n))
-                .copied()
+            let loc = layout::extract_variable_name(rest)
+                .and_then(|n| layout.attribute_locations.get(&n).copied())
                 .unwrap_or(0);
-            result.push_str(&format!("layout(location={}) in {}\n", location, rest));
+            result.push_str(&format!("layout(location={}) in {}\n", loc, rest));
             continue;
         }
 
         if cleaned.starts_with("varying ") {
             let rest = cleaned["varying ".len()..].trim();
-            let keyword = match stage {
-                ShaderStage::Vertex => "out",
-                ShaderStage::Fragment => "in",
-                _ => "in",
-            };
+            let keyword = if matches!(stage, ShaderStage::Vertex) { "out" } else { "in" };
             let name = layout::extract_variable_name(rest);
 
-            // For fragment shaders, skip varyings not present in the vertex shader
-            // source at all (these are dead code / unused declarations).
-            // Conditional vertex varyings (inside #if blocks) are handled by
-            // the hoisting logic in preprocess_pair.
+            // Fragment: skip varyings not present in vertex shader source
             if stage == ShaderStage::Fragment {
                 if let Some(ref n) = name {
                     if !layout.vertex_varyings.iter().any(|v| v == n) {
@@ -313,25 +280,15 @@ pub fn preprocess_with_layout_tracked(
                 }
             }
 
-            let location = name
-                .as_ref()
+            let location = name.as_ref()
                 .and_then(|n| layout.varying_locations.get(n))
-                .copied()
-                .unwrap_or(0);
-            result.push_str(&format!(
-                "layout(location={}) {} {}\n",
-                location, keyword, rest
-            ));
-            // Track varyings that are emitted in the output.
-            // Note: #if/#endif lines are stripped from the output, so
-            // varyings inside active #if blocks appear unconditional to
-            // wgpu. Only skip varyings inside INACTIVE #if blocks.
-            if stage == ShaderStage::Vertex {
+                .copied().unwrap_or(0);
+            result.push_str(&format!("layout(location={}) {} {}\n", location, keyword, rest));
+
+            // Track emitted varyings for hoisting logic in preprocess_pair
+            if stage == ShaderStage::Vertex && ifp.is_active() {
                 if let Some(n) = name {
-                    let active = ifp.is_active();
-                    if active {
-                        emitted_varyings.push(n);
-                    }
+                    emitted_varyings.push(n);
                 }
             }
             continue;
@@ -340,7 +297,7 @@ pub fn preprocess_with_layout_tracked(
         let mut transformed = apply_shader_transforms(&cleaned, &sampler_set, &layout.varying_types);
         transformed = transformed.replace("ddx(", "dFdx(");
         transformed = transformed.replace("ddy(", "dFdy(");
-        transformed = replace::replace_atan2(&transformed);
+        transformed = transformed.replace("atan2(", "atan(");
         transformed = replace::replace_reserved_identifiers(&transformed);
 
         result.push_str(&transformed);
@@ -356,34 +313,23 @@ fn emit_declarations(
     layout: &EffectLayout,
     headers: &BTreeMap<String, String>,
 ) {
-    // Build a set of header names that are actually reachable from the
-    // shader (transitively, via #include) so we don't leak #define macros
-    // from unreferenced headers.
-    let reachable = collect_reachable_headers(headers);
-
-    // Only emit #define lines that are at the top level (not inside #if blocks)
-    // from reachable headers. This prevents leaking macros that are inside
-    // inactive #ifdef blocks (e.g. SHADOW_ATLAS_SAMPLER).
+    // Emit #define lines from all headers, skipping those inside #if blocks.
     let mut if_depth: u32 = 0;
-    for (name, content) in headers {
-        if !reachable.contains(name.as_str()) {
-            continue;
-        }
+    for content in headers.values() {
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#include") {
                 continue;
             }
-            // Track #if depth to skip defines inside conditional blocks
-            if trimmed == "#ifdef" || trimmed == "#ifndef" || trimmed.starts_with("#if") {
+            if trimmed.starts_with("#if") {
                 if_depth += 1;
                 continue;
             }
-            if trimmed == "#endif" {
+            if trimmed.starts_with("#endif") {
                 if_depth = if_depth.saturating_sub(1);
                 continue;
             }
-            if trimmed == "#else" || trimmed.starts_with("#elif") {
+            if trimmed.starts_with("#else") || trimmed.starts_with("#elif") {
                 continue;
             }
             if if_depth > 0 {
@@ -426,58 +372,16 @@ fn emit_declarations(
     }
 }
 
-/// Collect the set of header names that are transitively reachable via
-/// `#include` directives found in any header. Used to avoid emitting
-/// `#define` macros from headers that the shader never includes.
-fn collect_reachable_headers(headers: &BTreeMap<String, String>) -> HashSet<String> {
-    let mut reachable: HashSet<String> = HashSet::new();
-    let mut to_visit: Vec<String> = headers.keys().cloned().collect();
-
-    // Simple iterative DFS: any header in the map is considered potentially
-    // reachable since we can't know which ones the shader actually includes
-    // at this point (we emit declarations before processing the main body).
-    // We include all headers that aren't "orphaned" — i.e. we include all
-    // known headers since they're all loaded by shader_header.rs.
-    while let Some(name) = to_visit.pop() {
-        if !reachable.insert(name.clone()) {
-            continue;
-        }
-        if let Some(content) = headers.get(&name) {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("#include") {
-                    if let Some(start) = trimmed.find('"') {
-                        if let Some(end) = trimmed[start + 1..].find('"') {
-                            let include_file = &trimmed[start + 1..start + 1 + end];
-                            if headers.contains_key(include_file)
-                                && !reachable.contains(include_file)
-                            {
-                                to_visit.push(include_file.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    reachable
-}
-
 fn strip_material_comments(line: &str) -> String {
-    if let Some(comment_pos) = line.find("//") {
-        let before = &line[..comment_pos];
-        let after_comment = &line[comment_pos..];
-        if after_comment.contains("[COMBO]") {
-            return line.to_string();
-        }
-        let trimmed_before = before.trim_end();
-        if trimmed_before.is_empty() {
-            return String::new();
-        }
-        return trimmed_before.to_string();
+    let Some(comment_pos) = line.find("//") else {
+        return line.to_string();
+    };
+    // Preserve [COMBO] annotations even inside comments
+    if line[comment_pos..].contains("[COMBO]") {
+        return line.to_string();
     }
-    line.to_string()
+    let before = line[..comment_pos].trim_end();
+    if before.is_empty() { String::new() } else { before.to_string() }
 }
 
 /// Shared GLSL→Vulkan transformations applied to every non-preprocessor line.
@@ -496,13 +400,15 @@ fn apply_shader_transforms(line: &str, sampler_set: &HashSet<&str>,
     t = replace::replace_mul(&t);
     t = replace::replace_texture_calls(&t, sampler_set);
     t = replace::fix_implicit_truncation(&t, varying_types);
+    t = replace::replace_bool_arithmetic(&t);
+    t = replace::replace_float_as_bool(&t);
     t
 }
 
 /// Preprocess a vertex and fragment shader pair, returning the transformed
 /// source code and collected layout information.
-/// Inline a header's content into `result`, evaluating `#if`/`#ifdef` blocks
-/// using the given `defines` so only active branches are emitted.
+/// Recursively expand a header's content into `result`, evaluating
+/// `#if`/`#ifdef` blocks using `defines` so only active branches are emitted.
 fn include_header_lines(
     content: &str,
     defines: &BTreeMap<String, String>,
@@ -510,42 +416,10 @@ fn include_header_lines(
     result: &mut String,
     headers: &BTreeMap<String, String>,
 ) {
-    include_header_lines_impl(content, defines, sampler_set, result, headers);
-}
-
-/// Recursively expand a header's content, including nested `#include` directives.
-fn include_header_lines_impl(
-    content: &str,
-    defines: &BTreeMap<String, String>,
-    sampler_set: &HashSet<&str>,
-    result: &mut String,
-    headers: &BTreeMap<String, String>,
-) {
     let mut ifp = IfBlockProcessor::new();
-    // Tracks whether a `return` was emitted at the current brace depth.
-    // When true, subsequent lines at the same depth are dead code.
-    let mut seen_return: Vec<bool> = Vec::new();
-    // Brace depth inside the function body (0 = global, 1 = inside a function, etc.)
-    let mut brace_depth: usize = 0;
 
     for hline in content.lines() {
         let htrim = hline.trim();
-
-        // Track brace depth for all lines (including inactive #if blocks)
-        for ch in htrim.chars() {
-            match ch {
-                '{' => brace_depth += 1,
-                '}' => {
-                    if brace_depth > 0 {
-                        brace_depth -= 1;
-                        if seen_return.len() > brace_depth {
-                            seen_return.truncate(brace_depth);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
 
         // Handle nested #include (recursively expand)
         if htrim.starts_with("#include") {
@@ -553,14 +427,8 @@ fn include_header_lines_impl(
                 if let Some(start) = htrim.find('"') {
                     if let Some(end) = htrim[start + 1..].find('"') {
                         let include_file = &htrim[start + 1..start + 1 + end];
-                        if let Some(nested_content) = headers.get(include_file) {
-                            include_header_lines_impl(
-                                nested_content,
-                                defines,
-                                sampler_set,
-                                result,
-                                headers,
-                            );
+                        if let Some(nested) = headers.get(include_file) {
+                            include_header_lines(nested, defines, sampler_set, result, headers);
                         }
                     }
                 }
@@ -568,40 +436,19 @@ fn include_header_lines_impl(
             continue;
         }
 
-        // Handle all preprocessor directives via the shared processor
+        // Handle preprocessor directives
         if htrim.starts_with('#') {
             if ifp.process_line(hline, defines) == Some(true) {
                 continue;
             }
-            // Non-conditional # line (#define etc.) — skip, emitted by emit_declarations
+            continue; // skip #define etc. (already emitted by emit_declarations)
+        }
+
+        if htrim.is_empty() || htrim.starts_with("//") || !ifp.is_active() {
             continue;
         }
 
-        // Skip comment and empty lines
-        if htrim.is_empty() || htrim.starts_with("//") {
-            continue;
-        }
-
-        // Only emit lines from active blocks
-        if !ifp.is_active() {
-            continue;
-        }
-
-        // Skip dead code after a return at the same brace depth
-        if brace_depth > 0 && seen_return.get(brace_depth).copied().unwrap_or(false) {
-            continue;
-        }
-        let is_return_stmt = htrim.starts_with("return") && htrim.trim_end().ends_with(';');
-        if is_return_stmt {
-            while seen_return.len() <= brace_depth {
-                seen_return.push(false);
-            }
-            seen_return[brace_depth] = true;
-        }
-
-        // Apply transformations (same as main body)
-        // Skip uniform/sampler/varying declarations — already emitted
-        // by emit_declarations (samplers, EffectParams block).
+        // Skip declarations (already emitted by emit_declarations)
         let htrim_lower = htrim.to_lowercase();
         if htrim_lower.starts_with("uniform ")
             || htrim_lower.starts_with("sampler2d ")
@@ -623,10 +470,32 @@ pub fn preprocess_pair(
     headers: &BTreeMap<String, String>,
     defines: &BTreeMap<String, String>,
 ) -> (String, String, EffectLayout) {
+    // Merge source-level #define macros into the defines map.
+    // Combo values (from defines) take priority over source macros.
+    let mut merged_defines = BTreeMap::new();
+    // Collect macros from shader sources only (headers are already emitted as
+    // #define directives in the output; we only need shader-level macros for
+    // resolving conditional expressions like SHAPE == BOTTOM).
+    for (name, value) in collect_source_defines(vert) {
+        merged_defines.entry(name).or_insert(value);
+    }
+    for (name, value) in collect_source_defines(frag) {
+        merged_defines.entry(name).or_insert(value);
+    }
+    // Override with combo/pass defines (higher priority)
+    for (k, v) in defines {
+        merged_defines.insert(k.clone(), v.clone());
+    }
+
     let layout = collect_layout(vert, frag, headers);
     let (mut vert_out, vert_emitted) =
-        preprocess_with_layout_tracked(vert, ShaderStage::Vertex, &layout, headers, defines);
-    let frag_out = preprocess_with_layout(frag, ShaderStage::Fragment, &layout, headers, defines);
+        preprocess_with_layout_tracked(vert, ShaderStage::Vertex, &layout, headers, &merged_defines);
+    let (mut frag_out, _) = preprocess_with_layout_tracked(frag, ShaderStage::Fragment, &layout, headers, &merged_defines);
+
+    // Fix fragment shader varying writes: Vulkan GLSL `in` variables are read-only.
+    // If a varying is assigned to in the fragment shader, rename the input and
+    // add a local variable copy at the top of main().
+    frag_out = fix_fragment_varying_writes(&frag_out, &layout);
 
     // Ensure vertex always outputs all varyings unconditionally.
     // Some varyings are only declared inside #if blocks in the vertex source,
@@ -732,10 +601,52 @@ fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&S
             .get(var_name.as_str())
             .map(|s: &String| s.as_str())
             .unwrap_or("vec4");
-        result = add_varying_init(&result, var_name, ty);
+        insert_at_main(&mut result, &format!("{} = {}(0.0);", var_name, ty));
     }
 
     result
+}
+
+/// Fix fragment shader code that writes to varying inputs.
+/// Vulkan GLSL does not allow writing to `in` variables.
+fn fix_fragment_varying_writes(output: &str, layout: &EffectLayout) -> String {
+    let mut written_varyings: Vec<String> = Vec::new();
+    for var_name in layout.varying_locations.keys() {
+        if output.contains(&format!("{} =", var_name))
+            || output.contains(&format!("{}.x =", var_name))
+            || output.contains(&format!("{}.y =", var_name))
+            || output.contains(&format!("{}.z =", var_name))
+            || output.contains(&format!("{}.w =", var_name))
+            || output.contains(&format!("{}.xy =", var_name))
+            || output.contains(&format!("{}.xyz =", var_name))
+            || output.contains(&format!("{}.xyzw =", var_name))
+        {
+            written_varyings.push(var_name.clone());
+        }
+    }
+    if written_varyings.is_empty() {
+        return output.to_string();
+    }
+
+    let mut result = output.to_string();
+    for var_name in &written_varyings {
+        let ty = layout.varying_types.get(var_name.as_str()).map(|s| s.as_str()).unwrap_or("vec4");
+        let in_name = format!("_in_{}", var_name);
+        // Rename the declaration: `in TYPE VARNAME;` → `in TYPE _IN_VARNAME;`
+        result = result.replace(&format!(" in {} {};", ty, var_name), &format!(" in {} {};", ty, in_name));
+        // Insert local copy at top of main()
+        insert_at_main(&mut result, &format!("{} {} = {};", ty, var_name, in_name));
+    }
+    result
+}
+
+/// Insert a statement after the opening brace of main().
+fn insert_at_main(output: &mut String, stmt: &str) {
+    if let Some(main_pos) = output.find("void main()") {
+        if let Some(brace_pos) = output[main_pos..].find('{') {
+            output.insert_str(main_pos + brace_pos + 1, &format!("\n    {}", stmt));
+        }
+    }
 }
 
 /// Extract the variable name from a preprocessed varying line like
@@ -759,38 +670,13 @@ fn extract_pp_varying_name(line: &str) -> Option<String> {
     }
 }
 
-/// Find the insertion point for hoisted declarations: after #version and #define headers.
+/// Find the insertion point after #version and #define headers (for hoisted declarations).
 fn find_decl_insertion_point(output: &str) -> usize {
-    let mut pos = 0usize;
-    for line in output.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("#version") || trimmed.starts_with("#define") {
-            pos += line.len() + 1;
-        } else {
-            break;
-        }
-    }
-    pos
-}
-
-/// Insert a zero-initialization for a varying at the beginning of main().
-fn add_varying_init(output: &str, var_name: &str, ty: &str) -> String {
-    if let Some(main_pos) = output.find("void main()") {
-        // Find the opening brace of main
-        if let Some(brace_pos) = output[main_pos..].find('{') {
-            let insert_pos = main_pos + brace_pos + 1;
-            let init_line = match ty {
-                "vec2" => format!("\n    {} = vec2(0.0);", var_name),
-                "vec3" => format!("\n    {} = vec3(0.0);", var_name),
-                "vec4" => format!("\n    {} = vec4(0.0);", var_name),
-                "float" => format!("\n    {} = 0.0;", var_name),
-                "int" => format!("\n    {} = 0;", var_name),
-                _ => format!("\n    {} = {}(0.0);", var_name, ty),
-            };
-            let mut result = output.to_string();
-            result.insert_str(insert_pos, &init_line);
-            return result;
-        }
-    }
-    output.to_string()
+    output.lines()
+        .take_while(|l| {
+            let t = l.trim();
+            t.starts_with("#version") || t.starts_with("#define")
+        })
+        .map(|l| l.len() + 1)
+        .sum()
 }

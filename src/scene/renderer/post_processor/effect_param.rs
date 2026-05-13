@@ -199,22 +199,64 @@ fn align_up(val: u64, align: u64) -> u64 {
     (val + align - 1) & !(align - 1)
 }
 
+/// Parse a type string that may include array brackets, e.g. `"float [32]"`.
+/// Returns (base_type, array_size) where array_size is 1 for non-array types.
+fn parse_type(ty: &str) -> (&str, u64) {
+    let ty = ty.trim();
+    if let Some(bracket) = ty.find('[') {
+        let base = ty[..bracket].trim();
+        let array_part = &ty[bracket..];
+        // Parse the array size: [N] or [N][M] (multi-dimensional)
+        let mut total_size: u64 = 1;
+        let mut rest = array_part;
+        while let Some(inner_start) = rest.find('[') {
+            if let Some(inner_end) = rest[inner_start..].find(']') {
+                let num_str = &rest[inner_start + 1..inner_start + inner_end];
+                if let Ok(n) = num_str.parse::<u64>() {
+                    total_size *= n;
+                }
+                rest = &rest[inner_start + inner_end + 1..];
+            } else {
+                break;
+            }
+        }
+        (base, total_size)
+    } else {
+        (ty, 1)
+    }
+}
+
 fn type_align(ty: &str) -> u64 {
-    match ty {
+    let (base, array_size) = parse_type(ty);
+    let base_align = match base {
         "mat4" | "mat3" | "vec4" | "vec3" => 16,
         "vec2" => 8,
         _ => 4,
+    };
+    if array_size > 1 {
+        // std140: array alignment is the element alignment rounded up to vec4 (16)
+        align_up(base_align, 16)
+    } else {
+        base_align
     }
 }
 
 fn type_size(ty: &str) -> u64 {
-    match ty {
+    let (base, array_size) = parse_type(ty);
+    let base_size = match base {
         "mat4" => 64,
         "mat3" => 48,
         "vec4" => 16,
         "vec3" => 12,
         "vec2" => 8,
         _ => 4,
+    };
+    if array_size > 1 {
+        // std140: array element stride is the base alignment rounded up to vec4 (16)
+        let stride = align_up(base_size, 16);
+        stride * array_size
+    } else {
+        base_size
     }
 }
 
