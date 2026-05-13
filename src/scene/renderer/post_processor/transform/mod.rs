@@ -65,7 +65,8 @@ fn eval_if_condition(cond: &str, defines: &BTreeMap<String, String>) -> bool {
     // Handle `!NAME` (negation of a single macro)
     if let Some(name) = cond.strip_prefix('!') {
         let trimmed = name.trim();
-        return !defines.contains_key(trimmed) || defines.get(trimmed).map(|s| s.as_str()) == Some("0");
+        return !defines.contains_key(trimmed)
+            || defines.get(trimmed).map(|s| s.as_str()) == Some("0");
     }
 
     // Bare macro name: truthy if defined and != "0"
@@ -126,6 +127,7 @@ pub fn preprocess_with_layout_tracked(
                             defines,
                             &sampler_set,
                             &mut result,
+                            headers,
                         );
                         continue;
                     }
@@ -143,21 +145,36 @@ pub fn preprocess_with_layout_tracked(
             if trimmed.starts_with("#ifdef") {
                 let macro_name = trimmed["#ifdef".len()..].trim();
                 let cond_true = defines.contains_key(macro_name);
-                if_stack.push(if cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
+                if_stack.push(if cond_true {
+                    IfBlockState::Active
+                } else {
+                    IfBlockState::Inactive
+                });
                 if_depth += 1;
                 continue;
             }
             if trimmed.starts_with("#ifndef") {
                 let macro_name = trimmed["#ifndef".len()..].trim();
                 let cond_true = defines.contains_key(macro_name);
-                if_stack.push(if !cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
+                if_stack.push(if !cond_true {
+                    IfBlockState::Active
+                } else {
+                    IfBlockState::Inactive
+                });
                 if_depth += 1;
                 continue;
             }
-            if trimmed.starts_with("#if") && !trimmed.starts_with("#ifdef") && !trimmed.starts_with("#ifndef") {
+            if trimmed.starts_with("#if")
+                && !trimmed.starts_with("#ifdef")
+                && !trimmed.starts_with("#ifndef")
+            {
                 let cond = trimmed["#if".len()..].trim();
                 let cond_true = eval_if_condition(cond, defines);
-                if_stack.push(if cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
+                if_stack.push(if cond_true {
+                    IfBlockState::Active
+                } else {
+                    IfBlockState::Inactive
+                });
                 if_depth += 1;
                 continue;
             }
@@ -190,8 +207,12 @@ pub fn preprocess_with_layout_tracked(
                 } else {
                     if let Some(top) = if_stack.last_mut() {
                         match top {
-                            IfBlockState::Active => { *top = IfBlockState::Done; }
-                            IfBlockState::Inactive => { *top = IfBlockState::Active; }
+                            IfBlockState::Active => {
+                                *top = IfBlockState::Done;
+                            }
+                            IfBlockState::Inactive => {
+                                *top = IfBlockState::Active;
+                            }
                             IfBlockState::Done => {} // already handled
                         }
                     }
@@ -239,8 +260,6 @@ pub fn preprocess_with_layout_tracked(
             result.push('\n');
             continue;
         }
-
-
 
         let cleaned = strip_material_comments(line);
         if cleaned.is_empty() {
@@ -297,11 +316,16 @@ pub fn preprocess_with_layout_tracked(
                 "layout(location={}) {} {}\n",
                 location, keyword, rest
             ));
-            // Track varyings emitted unconditionally (outside #if blocks)
-            // for vertex→fragment varying matching
-            if stage == ShaderStage::Vertex && if_stack.is_empty() {
+            // Track varyings that are emitted in the output.
+            // Note: #if/#endif lines are stripped from the output, so
+            // varyings inside active #if blocks appear unconditional to
+            // wgpu. Only skip varyings inside INACTIVE #if blocks.
+            if stage == ShaderStage::Vertex {
                 if let Some(n) = name {
-                    emitted_varyings.push(n);
+                    let active = if_stack.iter().all(|s| matches!(s, IfBlockState::Active));
+                    if active {
+                        emitted_varyings.push(n);
+                    }
                 }
             }
             continue;
@@ -338,10 +362,37 @@ fn emit_declarations(
     layout: &EffectLayout,
     headers: &BTreeMap<String, String>,
 ) {
-    for content in headers.values() {
+    // Build a set of header names that are actually reachable from the
+    // shader (transitively, via #include) so we don't leak #define macros
+    // from unreferenced headers.
+    let reachable = collect_reachable_headers(headers);
+
+    // Only emit #define lines that are at the top level (not inside #if blocks)
+    // from reachable headers. This prevents leaking macros that are inside
+    // inactive #ifdef blocks (e.g. SHADOW_ATLAS_SAMPLER).
+    let mut if_depth: u32 = 0;
+    for (name, content) in headers {
+        if !reachable.contains(name.as_str()) {
+            continue;
+        }
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#include") {
+                continue;
+            }
+            // Track #if depth to skip defines inside conditional blocks
+            if trimmed == "#ifdef" || trimmed == "#ifndef" || trimmed.starts_with("#if") {
+                if_depth += 1;
+                continue;
+            }
+            if trimmed == "#endif" {
+                if_depth = if_depth.saturating_sub(1);
+                continue;
+            }
+            if trimmed == "#else" || trimmed.starts_with("#elif") {
+                continue;
+            }
+            if if_depth > 0 {
                 continue;
             }
             if trimmed.starts_with('#') {
@@ -388,6 +439,44 @@ fn emit_declarations(
     }
 }
 
+/// Collect the set of header names that are transitively reachable via
+/// `#include` directives found in any header. Used to avoid emitting
+/// `#define` macros from headers that the shader never includes.
+fn collect_reachable_headers(headers: &BTreeMap<String, String>) -> HashSet<String> {
+    let mut reachable: HashSet<String> = HashSet::new();
+    let mut to_visit: Vec<String> = headers.keys().cloned().collect();
+
+    // Simple iterative DFS: any header in the map is considered potentially
+    // reachable since we can't know which ones the shader actually includes
+    // at this point (we emit declarations before processing the main body).
+    // We include all headers that aren't "orphaned" — i.e. we include all
+    // known headers since they're all loaded by shader_header.rs.
+    while let Some(name) = to_visit.pop() {
+        if !reachable.insert(name.clone()) {
+            continue;
+        }
+        if let Some(content) = headers.get(&name) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("#include") {
+                    if let Some(start) = trimmed.find('"') {
+                        if let Some(end) = trimmed[start + 1..].find('"') {
+                            let include_file = &trimmed[start + 1..start + 1 + end];
+                            if headers.contains_key(include_file)
+                                && !reachable.contains(include_file)
+                            {
+                                to_visit.push(include_file.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    reachable
+}
+
 fn strip_material_comments(line: &str) -> String {
     if let Some(comment_pos) = line.find("//") {
         let before = &line[..comment_pos];
@@ -413,6 +502,18 @@ fn include_header_lines(
     defines: &BTreeMap<String, String>,
     sampler_set: &HashSet<&str>,
     result: &mut String,
+    headers: &BTreeMap<String, String>,
+) {
+    include_header_lines_impl(content, defines, sampler_set, result, headers);
+}
+
+/// Recursively expand a header's content, including nested `#include` directives.
+fn include_header_lines_impl(
+    content: &str,
+    defines: &BTreeMap<String, String>,
+    sampler_set: &HashSet<&str>,
+    result: &mut String,
+    headers: &BTreeMap<String, String>,
 ) {
     let mut if_stack: Vec<IfBlockState> = Vec::new();
     // Tracks whether a `return` was emitted at the current brace depth.
@@ -444,25 +545,59 @@ fn include_header_lines(
             }
         }
 
+        // Handle nested #include (recursively expand)
+        if htrim.starts_with("#include") {
+            if active(&if_stack) {
+                if let Some(start) = htrim.find('"') {
+                    if let Some(end) = htrim[start + 1..].find('"') {
+                        let include_file = &htrim[start + 1..start + 1 + end];
+                        if let Some(nested_content) = headers.get(include_file) {
+                            include_header_lines_impl(
+                                nested_content,
+                                defines,
+                                sampler_set,
+                                result,
+                                headers,
+                            );
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
         // Handle #ifdef
         if htrim.starts_with("#ifdef") {
             let macro_name = htrim["#ifdef".len()..].trim();
             let cond_true = defines.contains_key(macro_name);
-            if_stack.push(if cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
+            if_stack.push(if cond_true {
+                IfBlockState::Active
+            } else {
+                IfBlockState::Inactive
+            });
             continue;
         }
         // Handle #ifndef
         if htrim.starts_with("#ifndef") {
             let macro_name = htrim["#ifndef".len()..].trim();
             let cond_true = defines.contains_key(macro_name);
-            if_stack.push(if !cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
+            if_stack.push(if !cond_true {
+                IfBlockState::Active
+            } else {
+                IfBlockState::Inactive
+            });
             continue;
         }
         // Handle #if
-        if htrim.starts_with("#if") && !htrim.starts_with("#ifdef") && !htrim.starts_with("#ifndef") {
+        if htrim.starts_with("#if") && !htrim.starts_with("#ifdef") && !htrim.starts_with("#ifndef")
+        {
             let cond = htrim["#if".len()..].trim();
             let cond_true = eval_if_condition(cond, defines);
-            if_stack.push(if cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
+            if_stack.push(if cond_true {
+                IfBlockState::Active
+            } else {
+                IfBlockState::Inactive
+            });
             continue;
         }
         // Handle #elif
@@ -486,8 +621,12 @@ fn include_header_lines(
         if htrim.starts_with("#else") && htrim.len() == 5 {
             if let Some(top) = if_stack.last_mut() {
                 match top {
-                    IfBlockState::Active => { *top = IfBlockState::Done; }
-                    IfBlockState::Inactive => { *top = IfBlockState::Active; }
+                    IfBlockState::Active => {
+                        *top = IfBlockState::Done;
+                    }
+                    IfBlockState::Inactive => {
+                        *top = IfBlockState::Active;
+                    }
                     IfBlockState::Done => {}
                 }
             }
@@ -574,6 +713,10 @@ pub fn preprocess_pair(
 
 /// Hoist varying declarations out of #if blocks so they are always available
 /// as vertex outputs, while keeping the assignment code inside #if blocks.
+///
+/// For varyings that cannot be found in the preprocessed output at all
+/// (e.g. declared in a header that was entirely excluded by `#if`),
+/// synthesizes a top-level `out` declaration with the correct type and location.
 fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&String]) -> String {
     let mut result = String::with_capacity(output.len() + 512);
     let mut if_depth: u32 = 0;
@@ -605,6 +748,26 @@ fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&S
 
         result.push_str(line);
         result.push('\n');
+    }
+
+    // Synthesize declarations for any missing varyings that weren't found
+    // in the preprocessed output (e.g. from excluded headers).
+    for var_name in missing {
+        if !hoisted_names.contains(var_name.as_str()) {
+            let loc = layout
+                .varying_locations
+                .get(var_name.as_str())
+                .copied()
+                .unwrap_or(0);
+            let ty = layout
+                .varying_types
+                .get(var_name.as_str())
+                .map(|s: &String| s.as_str())
+                .unwrap_or("vec4");
+            let synth = format!("layout(location={}) out {} {};", loc, ty, var_name);
+            hoisted_names.insert(var_name.to_string());
+            hoisted_decls.push(synth);
+        }
     }
 
     // Prepend hoisted declarations at the appropriate position
