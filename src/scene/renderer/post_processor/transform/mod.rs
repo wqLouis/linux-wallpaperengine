@@ -337,19 +337,7 @@ pub fn preprocess_with_layout_tracked(
             continue;
         }
 
-        let mut transformed = cleaned;
-        transformed = transformed.replace("texSample2D(", "texture(");
-        transformed = transformed.replace("texSample2DLod(", "textureLod(");
-        transformed = transformed.replace("gl_FragColor", "_fragColor");
-        transformed = replace::fix_implicit_truncation(&transformed, &layout.varying_types);
-        transformed = replace::replace_mul(&transformed);
-        transformed = replace::replace_texture_calls(&transformed, &sampler_set);
-        transformed = transformed.replace("CAST2(", "vec2(");
-        transformed = transformed.replace("CAST3(", "vec3(");
-        transformed = transformed.replace("CAST4(", "vec4(");
-        transformed = transformed.replace("CAST3X3(", "mat3(");
-        transformed = replace::replace_saturate(&transformed);
-        transformed = replace::replace_frac(&transformed);
+        let mut transformed = apply_shader_transforms(&cleaned, &sampler_set, &layout.varying_types);
         transformed = transformed.replace("ddx(", "dFdx(");
         transformed = transformed.replace("ddy(", "dFdy(");
         transformed = replace::replace_atan2(&transformed);
@@ -402,14 +390,7 @@ fn emit_declarations(
                 continue;
             }
             if trimmed.starts_with('#') {
-                // Apply CAST transformations to #define macros
-                let mut transformed = trimmed.to_string();
-                transformed = transformed.replace("CAST2(", "vec2(");
-                transformed = transformed.replace("CAST3(", "vec3(");
-                transformed = transformed.replace("CAST4(", "vec4(");
-                transformed = transformed.replace("CAST3X3(", "mat3(");
-                transformed = replace::replace_saturate(&transformed);
-                transformed = replace::replace_frac(&transformed);
+                let transformed = apply_shader_transforms(trimmed, &HashSet::new(), &BTreeMap::new());
                 result.push_str(&transformed);
                 result.push('\n');
             }
@@ -497,6 +478,25 @@ fn strip_material_comments(line: &str) -> String {
         return trimmed_before.to_string();
     }
     line.to_string()
+}
+
+/// Shared GLSL→Vulkan transformations applied to every non-preprocessor line.
+fn apply_shader_transforms(line: &str, sampler_set: &HashSet<&str>,
+                           varying_types: &BTreeMap<String, String>) -> String {
+    let mut t = line.to_string();
+    t = t.replace("CAST2(", "vec2(");
+    t = t.replace("CAST3(", "vec3(");
+    t = t.replace("CAST4(", "vec4(");
+    t = t.replace("CAST3X3(", "mat3(");
+    t = replace::replace_saturate(&t);
+    t = replace::replace_frac(&t);
+    t = t.replace("texSample2D(", "texture(");
+    t = t.replace("texSample2DLod(", "textureLod(");
+    t = t.replace("gl_FragColor", "_fragColor");
+    t = replace::replace_mul(&t);
+    t = replace::replace_texture_calls(&t, sampler_set);
+    t = replace::fix_implicit_truncation(&t, varying_types);
+    t
 }
 
 /// Preprocess a vertex and fragment shader pair, returning the transformed
@@ -611,17 +611,7 @@ fn include_header_lines_impl(
             continue;
         }
 
-        let mut transformed = htrim.to_string();
-        transformed = transformed.replace("CAST2(", "vec2(");
-        transformed = transformed.replace("CAST3(", "vec3(");
-        transformed = transformed.replace("CAST4(", "vec4(");
-        transformed = transformed.replace("CAST3X3(", "mat3(");
-        transformed = replace::replace_saturate(&transformed);
-        transformed = replace::replace_frac(&transformed);
-        transformed = transformed.replace("texSample2D(", "texture(");
-        transformed = transformed.replace("texSample2DLod(", "textureLod(");
-        transformed = replace::replace_mul(&transformed);
-        transformed = replace::replace_texture_calls(&transformed, sampler_set);
+        let transformed = apply_shader_transforms(htrim, sampler_set, &BTreeMap::new());
         result.push_str(&transformed);
         result.push('\n');
     }

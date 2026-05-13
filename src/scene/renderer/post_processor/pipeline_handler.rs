@@ -24,6 +24,9 @@ pub struct EffectPipelineData {
     pub uniform_layout: UniformLayout,
 }
 
+// ── Public API ────────────────────────────────────────────────
+
+/// Get or create a pipeline for a single-pass effect.
 pub fn get_or_create_pipeline(
     device: &Device,
     effect_path: String,
@@ -33,178 +36,32 @@ pub fn get_or_create_pipeline(
     scene: &Scene,
     projection_bgl: &BindGroupLayout,
 ) -> Option<Rc<RenderPipeline>> {
-    let cache_key = compute_cache_key(&effect_path, pass_textures, pass_combos);
-
+    let cache_key = make_cache_key(&effect_path, pass_textures, pass_combos);
     if let Some(data) = pipelines.get(&cache_key) {
         return Some(Rc::clone(&data.pipeline));
     }
 
-    let data =
-        create_effect_pipeline(device, &effect_path, pass_textures, pass_combos, scene, projection_bgl)?;
-    let pipeline_rc = Rc::clone(&data.pipeline);
-    pipelines.insert(cache_key, data);
-    Some(pipeline_rc)
-}
-
-fn compute_cache_key(
-    effect_path: &str,
-    pass_textures: &[Option<String>],
-    pass_combos: Option<&BTreeMap<String, i64>>,
-) -> String {
-    let mut key = effect_path.to_string();
-    // textures[1] = g_Texture1 (MASK combo), textures[2] = g_Texture2 (TIMEOFFSET)
-    if pass_textures.get(1).and_then(|t| t.as_deref()).is_some() {
-        key.push_str("|M1");
-    }
-    if pass_textures.get(2).and_then(|t| t.as_deref()).is_some() {
-        key.push_str("|T1");
-    }
-    // Include combo values so different combos get different cached pipelines
-    if let Some(combos) = pass_combos {
-        for (k, v) in combos {
-            key.push_str(&format!("|{}={}", k, v));
-        }
-    }
-    key
-}
-
-fn create_effect_pipeline(
-    device: &Device,
-    effect_path: &str,
-    pass_textures: &[Option<String>],
-    pass_combos: Option<&BTreeMap<String, i64>>,
-    scene: &Scene,
-    projection_bgl: &BindGroupLayout,
-) -> Option<EffectPipelineData> {
-    let effect_json: Value = serde_json::from_str(&scene.jsons.get(effect_path)?[..]).ok()?;
-
+    let effect_json: Value = serde_json::from_str(&scene.jsons.get(&effect_path)?[..]).ok()?;
     let material_path = effect_json["passes"][0]["material"].as_str()?;
-
     let material_json: Value = serde_json::from_str(&scene.jsons.get(material_path)?[..]).ok()?;
-
     let shader_name = material_json["passes"][0]["shader"].as_str()?;
 
-    let frag_path = format!("shaders/{}.frag", shader_name);
-    let vert_path = format!("shaders/{}.vert", shader_name);
-
-    let frag_raw = scene.misc.get(&frag_path)?;
-    let vert_raw = scene.misc.get(&vert_path)?;
-
-    let frag_source = std::str::from_utf8(&frag_raw).ok()?;
-    let vert_source = std::str::from_utf8(&vert_raw).ok()?;
-
-    // Priority (lowest → highest): shader defaults → material.json → scene pass
-    let mut defines = pipeline_helpers::collect_default_defines(vert_source, frag_source);
-
-    // Read combos from material.json (e.g., {"VERTICAL": 1, "ENABLEMASK": 1})
-    if let Some(mat_combos) = material_json["passes"][0].get("combos").and_then(|c| c.as_object()) {
-        for (k, v) in mat_combos {
-            if let Some(n) = v.as_i64() {
-                defines.insert(k.clone(), n.to_string());
-            }
-        }
-    }
-
-    // Apply scene-pass combo overrides (highest priority)
-    if let Some(combos) = pass_combos {
-        for (k, v) in combos {
-            defines.insert(k.clone(), v.to_string());
-        }
-    }
-
-    pipeline_helpers::apply_texture_combos(&mut defines, pass_textures);
-
-    let define_refs: Vec<(&str, &str)> = defines
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-
-    let headers = shader_header::get_headers(&scene.misc);
-    let (vert_processed, frag_processed, layout) =
-        preprocess_pair(vert_source, frag_source, &headers, &defines);
-
-    let vert_module = device.create_shader_module(ShaderModuleDescriptor {
-        label: None,
-        source: ShaderSource::Glsl {
-            shader: Cow::Owned(vert_processed),
-            stage: naga::ShaderStage::Vertex,
-            defines: &define_refs,
-        },
-    });
-
-    let frag_module = device.create_shader_module(ShaderModuleDescriptor {
-        label: None,
-        source: ShaderSource::Glsl {
-            shader: Cow::Owned(frag_processed),
-            stage: naga::ShaderStage::Fragment,
-            defines: &define_refs,
-        },
-    });
-
-    let effect_bgl = pipeline_helpers::create_effect_bindgroup_layout(device, &layout);
-
-    let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &[&effect_bgl, projection_bgl],
-        immediate_size: 0,
-    });
-
-    let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-        label: None,
-        layout: Some(&pipeline_layout),
-        vertex: VertexState {
-            module: &vert_module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            buffers: &[Vertex::create_buffer_layout()],
-        },
-        primitive: PrimitiveState {
-            topology: PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: FrontFace::Ccw,
-            cull_mode: Some(Face::Back),
-            unclipped_depth: false,
-            polygon_mode: PolygonMode::Fill,
-            conservative: false,
-        },
-        depth_stencil: None,
-        multisample: MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        fragment: Some(FragmentState {
-            module: &frag_module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            targets: &[Some(ColorTargetState {
-                format: TextureFormat::Rgba8UnormSrgb,
-                blend: Some(BlendState {
-                    color: BlendComponent {
-                        src_factor: BlendFactor::SrcAlpha,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
-                    },
-                    alpha: BlendComponent::OVER,
-                }),
-                write_mask: ColorWrites::all(),
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
-
-    let uniform_layout = UniformLayout::new(&layout.uniform_decls);
-
-    Some(EffectPipelineData {
-        pipeline: Rc::new(pipeline),
-        layout,
-        bindgroup_layout: effect_bgl,
-        uniform_layout,
-    })
+    let data = compile_pipeline(
+        device,
+        &format!("shaders/{}.frag", shader_name),
+        &format!("shaders/{}.vert", shader_name),
+        material_json,
+        pass_textures,
+        pass_combos,
+        scene,
+        projection_bgl,
+    )?;
+    let rc = Rc::clone(&data.pipeline);
+    pipelines.insert(cache_key, data);
+    Some(rc)
 }
 
-/// Create a pipeline for a multi-pass effect step (given material + shader paths directly).
+/// Get or create a pipeline for a multi-pass effect step (given material + shader paths directly).
 pub fn create_effect_pipeline_for_multipass(
     device: &Device,
     frag_path: &str,
@@ -216,27 +73,29 @@ pub fn create_effect_pipeline_for_multipass(
     scene: &Scene,
     projection_bgl: &BindGroupLayout,
 ) -> Option<Rc<RenderPipeline>> {
-    let cache_key = compute_cache_key_for_multipass(material_path, pass_textures, pass_combos);
-
+    let cache_key = make_cache_key(material_path, pass_textures, pass_combos);
     if let Some(data) = pipelines.get(&cache_key) {
         return Some(Rc::clone(&data.pipeline));
     }
 
-    let data = create_effect_pipeline_direct(
-        device, frag_path, vert_path, material_path,
+    let material_json: Value = serde_json::from_str(&scene.jsons.get(material_path)?[..]).ok()?;
+    let data = compile_pipeline(
+        device, frag_path, vert_path, material_json,
         pass_textures, pass_combos, scene, projection_bgl,
     )?;
-    let pipeline_rc = Rc::clone(&data.pipeline);
+    let rc = Rc::clone(&data.pipeline);
     pipelines.insert(cache_key, data);
-    Some(pipeline_rc)
+    Some(rc)
 }
 
-fn compute_cache_key_for_multipass(
-    material_path: &str,
+// ── Internal ──────────────────────────────────────────────────
+
+fn make_cache_key(
+    base: &str,
     pass_textures: &[Option<String>],
     pass_combos: Option<&BTreeMap<String, i64>>,
 ) -> String {
-    let mut key = material_path.to_string();
+    let mut key = base.to_string();
     if pass_textures.get(1).and_then(|t| t.as_deref()).is_some() {
         key.push_str("|M1");
     }
@@ -251,25 +110,23 @@ fn compute_cache_key_for_multipass(
     key
 }
 
-/// Internal: compile a shader pipeline using direct material + shader paths.
-fn create_effect_pipeline_direct(
+/// Shared pipeline compilation: material_json already loaded, shader paths resolved.
+fn compile_pipeline(
     device: &Device,
     frag_path: &str,
     vert_path: &str,
-    material_path: &str,
+    material_json: Value,
     pass_textures: &[Option<String>],
     pass_combos: Option<&BTreeMap<String, i64>>,
     scene: &Scene,
     projection_bgl: &BindGroupLayout,
 ) -> Option<EffectPipelineData> {
-    let material_json: Value = serde_json::from_str(&scene.jsons.get(material_path)?[..]).ok()?;
+    let frag_raw = &*scene.misc.get(frag_path)?;
+    let vert_raw = &*scene.misc.get(vert_path)?;
+    let frag_source = std::str::from_utf8(frag_raw).ok()?;
+    let vert_source = std::str::from_utf8(vert_raw).ok()?;
 
-    let frag_raw = scene.misc.get(frag_path)?;
-    let vert_raw = scene.misc.get(vert_path)?;
-
-    let frag_source = std::str::from_utf8(&frag_raw).ok()?;
-    let vert_source = std::str::from_utf8(&vert_raw).ok()?;
-
+    // Priority: shader defaults → material.json → scene pass
     let mut defines = pipeline_helpers::collect_default_defines(vert_source, frag_source);
 
     if let Some(mat_combos) = material_json["passes"][0].get("combos").and_then(|c| c.as_object()) {
@@ -279,104 +136,60 @@ fn create_effect_pipeline_direct(
             }
         }
     }
-
     if let Some(combos) = pass_combos {
         for (k, v) in combos {
             defines.insert(k.clone(), v.to_string());
         }
     }
-
     pipeline_helpers::apply_texture_combos(&mut defines, pass_textures);
 
-    let define_refs: Vec<(&str, &str)> = defines
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-
+    let define_refs: Vec<(&str, &str)> = defines.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let headers = shader_header::get_headers(&scene.misc);
     let (vert_processed, frag_processed, layout) =
         preprocess_pair(vert_source, frag_source, &headers, &defines);
 
     let vert_module = device.create_shader_module(ShaderModuleDescriptor {
         label: None,
-        source: ShaderSource::Glsl {
-            shader: Cow::Owned(vert_processed),
-            stage: naga::ShaderStage::Vertex,
-            defines: &define_refs,
-        },
+        source: ShaderSource::Glsl { shader: Cow::Owned(vert_processed), stage: naga::ShaderStage::Vertex, defines: &define_refs },
     });
-
     let frag_module = device.create_shader_module(ShaderModuleDescriptor {
         label: None,
-        source: ShaderSource::Glsl {
-            shader: Cow::Owned(frag_processed),
-            stage: naga::ShaderStage::Fragment,
-            defines: &define_refs,
-        },
+        source: ShaderSource::Glsl { shader: Cow::Owned(frag_processed), stage: naga::ShaderStage::Fragment, defines: &define_refs },
     });
 
     let effect_bgl = pipeline_helpers::create_effect_bindgroup_layout(device, &layout);
-
     let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: None,
         bind_group_layouts: &[&effect_bgl, projection_bgl],
         immediate_size: 0,
     });
-
     let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
         label: None,
         layout: Some(&pipeline_layout),
-        vertex: VertexState {
-            module: &vert_module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            buffers: &[Vertex::create_buffer_layout()],
-        },
-        primitive: PrimitiveState {
-            topology: PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: FrontFace::Ccw,
-            cull_mode: Some(Face::Back),
-            unclipped_depth: false,
-            polygon_mode: PolygonMode::Fill,
-            conservative: false,
-        },
+        vertex: VertexState { module: &vert_module, entry_point: Some("main"), compilation_options: Default::default(), buffers: &[Vertex::create_buffer_layout()] },
+        primitive: PrimitiveState { topology: PrimitiveTopology::TriangleList, strip_index_format: None, front_face: FrontFace::Ccw, cull_mode: Some(Face::Back), unclipped_depth: false, polygon_mode: PolygonMode::Fill, conservative: false },
         depth_stencil: None,
-        multisample: MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
+        multisample: MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
         fragment: Some(FragmentState {
-            module: &frag_module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
+            module: &frag_module, entry_point: Some("main"), compilation_options: Default::default(),
             targets: &[Some(ColorTargetState {
                 format: TextureFormat::Rgba8UnormSrgb,
-                blend: Some(BlendState {
-                    color: BlendComponent {
-                        src_factor: BlendFactor::SrcAlpha,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
-                    },
-                    alpha: BlendComponent::OVER,
-                }),
+                blend: Some(BlendState { color: BlendComponent { src_factor: BlendFactor::SrcAlpha, dst_factor: BlendFactor::OneMinusSrcAlpha, operation: BlendOperation::Add }, alpha: BlendComponent::OVER }),
                 write_mask: ColorWrites::all(),
             })],
         }),
-        multiview_mask: None,
-        cache: None,
+        multiview_mask: None, cache: None,
     });
-
-    let uniform_layout = UniformLayout::new(&layout.uniform_decls);
 
     Some(EffectPipelineData {
         pipeline: Rc::new(pipeline),
-        layout,
+        uniform_layout: UniformLayout::new(&layout.uniform_decls),
         bindgroup_layout: effect_bgl,
-        uniform_layout,
+        layout,
     })
 }
+
+// ── Texture loader ────────────────────────────────────────────
 
 pub fn load_mask_texture(
     device: &Device,
@@ -384,16 +197,9 @@ pub fn load_mask_texture(
     scene: &Scene,
     path: &str,
 ) -> Option<(Texture, TextureView)> {
-    // All tex files live under "materials/".  JSON references (from
-    // material.passes[].textures / effect.passes[].textures) use relative
-    // paths like "workshop/.../masks/..." or "effects/...", so we
-    // prepend "materials/" and append ".tex".
     let tex_key = format!("materials/{}.tex", path);
     let tex = scene.textures.get(&tex_key)?;
 
-    // Select GPU format based on the texture's native encoding.
-    // R8/RG88 stay single/two-channel (not expanded to RGBA),
-    // PNG/JPG/DXT are already RGBA from parse_to_rgba.
     let (format, bpp) = match tex.extension.as_str() {
         "r8" => (TextureFormat::R8Unorm, 1u32),
         "rg88" => (TextureFormat::Rg8Unorm, 2u32),
@@ -402,39 +208,16 @@ pub fn load_mask_texture(
 
     let texture = device.create_texture(&TextureDescriptor {
         label: None,
-        size: Extent3d {
-            width: tex.dimension[0],
-            height: tex.dimension[1],
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: TextureDimension::D2,
-        format,
-        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-        view_formats: &[],
+        size: Extent3d { width: tex.dimension[0], height: tex.dimension[1], depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: TextureDimension::D2,
+        format, usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST, view_formats: &[],
     });
-
     queue.write_texture(
-        TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: Origin3d::ZERO,
-            aspect: TextureAspect::All,
-        },
+        TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
         &tex.payload,
-        TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(tex.dimension[0] * bpp),
-            rows_per_image: None,
-        },
-        Extent3d {
-            width: tex.dimension[0],
-            height: tex.dimension[1],
-            depth_or_array_layers: 1,
-        },
+        TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(tex.dimension[0] * bpp), rows_per_image: None },
+        Extent3d { width: tex.dimension[0], height: tex.dimension[1], depth_or_array_layers: 1 },
     );
-
     let view = texture.create_view(&Default::default());
     Some((texture, view))
 }
