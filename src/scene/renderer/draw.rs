@@ -20,14 +20,8 @@ use crate::scene::{
 };
 
 pub struct DrawObject {
-    // Owns the source TextureObject (kept alive for the struct's lifetime)
-    #[allow(dead_code)]
-    pub texture_object: TextureObject,
     pub index_range: [u32; 2],
     pub bindgroup: BindGroup,
-    // Rc handles keeping effect pipelines alive; pipelines accessed via effect_bindgroups
-    #[allow(dead_code)]
-    pub pipelines: Vec<Rc<RenderPipeline>>,
     pub effect_bindgroups: Vec<EffectBindGroup>,
     pub intermediates: Option<PingPongTextures>,
 }
@@ -169,10 +163,8 @@ impl DrawObject {
         );
 
         Self {
-            texture_object,
             index_range: [index_start, buffers.index_len],
             bindgroup,
-            pipelines: pipeline_rcs,
             effect_bindgroups,
             intermediates,
         }

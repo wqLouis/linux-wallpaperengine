@@ -3,9 +3,6 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone)]
 pub struct EffectLayout {
     pub sampler_names: Vec<String>,
-    // Pre-computed bindings (binding = index * 2); used by tests and for documentation
-    #[allow(dead_code)]
-    pub sampler_bindings: Vec<u32>,
     pub uniform_decls: Vec<(String, String)>,
     pub uniform_material_keys: BTreeMap<String, String>,
     pub uniform_binding: u32,
@@ -66,11 +63,6 @@ pub fn collect_layout(source1: &str, source2: &str, headers: &BTreeMap<String, S
     sampler_names.sort();
     sampler_names.dedup();
 
-    let sampler_bindings: Vec<u32> = sampler_names
-        .iter()
-        .enumerate()
-        .map(|(i, _)| i as u32 * 2)
-        .collect();
     let uniform_decls: Vec<(String, String)> = uniform_map.into_iter().collect();
     let uniform_binding = sampler_names.len() as u32 * 2 + 2;
 
@@ -95,7 +87,6 @@ pub fn collect_layout(source1: &str, source2: &str, headers: &BTreeMap<String, S
 
     EffectLayout {
         sampler_names,
-        sampler_bindings,
         uniform_decls,
         uniform_material_keys: material_keys,
         uniform_binding,

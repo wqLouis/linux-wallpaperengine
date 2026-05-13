@@ -24,9 +24,6 @@ pub use super::surface::InitAppSurface;
 pub struct UserParams {
     /// Normalized cursor position in [0, 1] range (0,0) = top-left, (1,1) = bottom-right
     pub cursor_position: [f32; 2],
-    /// Raw pixel cursor position
-    #[allow(dead_code)]
-    pub cursor_pixel: [u32; 2],
 }
 
 impl Default for UserParams {
@@ -35,7 +32,6 @@ impl Default for UserParams {
             // Center by default.  On Wayland (wlr adapter) cursor tracking
             // is unavailable, so staying at centre means no parallax shift.
             cursor_position: [0.5, 0.5],
-            cursor_pixel: [0, 0],
         }
     }
 }

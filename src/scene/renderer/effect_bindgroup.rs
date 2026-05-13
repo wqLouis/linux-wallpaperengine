@@ -73,10 +73,6 @@ pub fn make_effect_intermediate_bindgroup(
 
 pub struct EffectBindGroup {
     pub pipeline: Rc<RenderPipeline>,
-    // Bind group recreated per-frame via make_effect_intermediate_bindgroup;
-    // kept here for potential single-pass rendering path
-    #[allow(dead_code)]
-    pub bindgroup: BindGroup,
     pub uniform_buffer: Option<Buffer>,
     pub uniform_layout: effect_param::UniformLayout,
     pub material_keys: BTreeMap<String, String>,
@@ -141,19 +137,12 @@ impl EffectBindGroup {
             });
         }
 
-        let bindgroup = device.create_bind_group(&BindGroupDescriptor {
-            label: None,
-            layout: &pipedata.bindgroup_layout,
-            entries: &entries,
-        });
-
         // Clone views for storage (TextureView is just a handle, cheap to clone)
         let stored_mask_view = mask_view.map(|v| v.clone());
         let stored_noise_view = noise_view.map(|v| v.clone());
 
         Some(Self {
             pipeline,
-            bindgroup,
             uniform_buffer,
             uniform_layout: pipedata.uniform_layout.clone(),
             material_keys,

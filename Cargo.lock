@@ -1422,7 +1422,6 @@ name = "linux-wallpaper-engine"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "calloop 0.14.4",
  "clap",
  "env_logger",
  "glam",

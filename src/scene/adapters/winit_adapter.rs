@@ -96,7 +96,6 @@ impl ApplicationHandler for WinitApp {
                         let ny = position.y as f32 / size.height as f32;
                         app.user_params = crate::scene::renderer::app::UserParams {
                             cursor_position: [nx, ny],
-                            cursor_pixel: [position.x as u32, position.y as u32],
                         };
                     }
                 }
