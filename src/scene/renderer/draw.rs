@@ -142,12 +142,19 @@ impl DrawObject {
         );
 
         let intermediates = if !effect_bindgroups.is_empty() {
+            // Scale up intermediate targets to fit the max resolution
+            // (source texture vs screen). Fixes corruption when source is
+            // small (e.g. 1x1 solid layer) but mask is at screen resolution.
+            let max_w = texture_object.texture.dimension[0]
+                .max(post_process.blank_texture.width());
+            let max_h = texture_object.texture.dimension[1]
+                .max(post_process.blank_texture.height());
             Some(PingPongTextures::new(
                 device,
                 queue,
                 post_process,
-                texture_object.texture.dimension[0],
-                texture_object.texture.dimension[1],
+                max_w,
+                max_h,
             ))
         } else {
             None
