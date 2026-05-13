@@ -29,49 +29,8 @@ fn select_sampler_view<'a>(
     }
 }
 
-pub fn make_effect_intermediate_bindgroup(
-    device: &Device,
-    pipedata: &EffectPipelineData,
-    effect_bg: &EffectBindGroup,
-    source_view: &TextureView,
-    sampler: &Sampler,
-) -> BindGroup {
-    let mut entries = Vec::new();
-
-    for i in 0..pipedata.layout.sampler_count() {
-        let view = select_sampler_view(
-            i,
-            source_view,
-            effect_bg.mask_view.as_ref(),
-            effect_bg.noise_view.as_ref(),
-            &effect_bg.blank_view,
-        );
-        entries.push(BindGroupEntry {
-            binding: i as u32 * 2,
-            resource: BindingResource::TextureView(view),
-        });
-    }
-
-    entries.push(BindGroupEntry {
-        binding: WM_SAMPLER_BINDING,
-        resource: BindingResource::Sampler(sampler),
-    });
-
-    if let Some(ref buf) = effect_bg.uniform_buffer {
-        entries.push(BindGroupEntry {
-            binding: pipedata.layout.uniform_binding,
-            resource: buf.as_entire_binding(),
-        });
-    }
-
-    device.create_bind_group(&BindGroupDescriptor {
-        label: None,
-        layout: &pipedata.bindgroup_layout,
-        entries: &entries,
-    })
-}
-
 pub struct EffectBindGroup {
+    #[allow(dead_code)]
     pub pipeline: Rc<RenderPipeline>,
     pub uniform_buffer: Option<Buffer>,
     pub uniform_layout: effect_param::UniformLayout,

@@ -130,21 +130,21 @@ pub fn write_effect_uniforms(
     user_params: &UserParams,
 ) {
     for draw_object in objects {
-        for effect_bg in &draw_object.effect_bindgroups {
-            if let Some(ref buf) = effect_bg.uniform_buffer {
-                let buf_size = effect_bg.uniform_layout.total_size() as usize;
+        for step in &draw_object.effect_steps {
+            if let Some(ref buf) = step.bindgroup.uniform_buffer {
+                let buf_size = step.bindgroup.uniform_layout.total_size() as usize;
                 let mut staging = vec![0u8; buf_size];
 
                 let sys = SystemUniforms {
                     screen_resolution: screen_res,
-                    tex_resolutions: effect_bg.tex_resolutions.clone(),
+                    tex_resolutions: step.bindgroup.tex_resolutions.clone(),
                     cursor_position: user_params.cursor_position,
                 };
 
-                effect_bg.uniform_layout.populate_effect_params(
+                step.bindgroup.uniform_layout.populate_effect_params(
                     &mut staging,
-                    &effect_bg.constants,
-                    &effect_bg.material_keys,
+                    &step.bindgroup.constants,
+                    &step.bindgroup.material_keys,
                     elapsed,
                     projection,
                     &sys,

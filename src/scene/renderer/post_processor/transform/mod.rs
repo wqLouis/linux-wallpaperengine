@@ -600,6 +600,17 @@ fn include_header_lines_impl(
         }
 
         // Apply transformations (same as main body)
+        // Skip uniform/sampler/varying declarations — already emitted
+        // by emit_declarations (samplers, EffectParams block).
+        let htrim_lower = htrim.to_lowercase();
+        if htrim_lower.starts_with("uniform ")
+            || htrim_lower.starts_with("sampler2d ")
+            || htrim_lower.starts_with("varying ")
+            || htrim_lower.starts_with("attribute ")
+        {
+            continue;
+        }
+
         let mut transformed = htrim.to_string();
         transformed = transformed.replace("CAST2(", "vec2(");
         transformed = transformed.replace("CAST3(", "vec3(");
@@ -655,6 +666,10 @@ fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&S
     let mut if_depth: u32 = 0;
     let mut hoisted_decls: Vec<String> = Vec::new();
     let mut hoisted_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Track ALL varying names that appear anywhere in the output,
+    // including top-level ones from included headers that weren't
+    // in `emitted_varyings`.
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for line in output.lines() {
         let trimmed = line.trim();
@@ -664,6 +679,13 @@ fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&S
             if_depth += 1;
         } else if trimmed.starts_with("#endif") {
             if_depth = if_depth.saturating_sub(1);
+        }
+
+        // Track all varying declarations (top-level and conditional).
+        if trimmed.starts_with("layout(") && trimmed.contains(") out ") {
+            if let Some(n) = extract_pp_varying_name(trimmed) {
+                seen_names.insert(n);
+            }
         }
 
         // Check if this is a conditional varying declaration (vertex stage: "out")
@@ -686,7 +708,9 @@ fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&S
     // Synthesize declarations for any missing varyings that weren't found
     // in the preprocessed output (e.g. from excluded headers).
     for var_name in missing {
-        if !hoisted_names.contains(var_name.as_str()) {
+        if !hoisted_names.contains(var_name.as_str())
+            && !seen_names.contains(var_name.as_str())
+        {
             let loc = layout
                 .varying_locations
                 .get(var_name.as_str())
@@ -729,10 +753,17 @@ fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&S
 fn extract_pp_varying_name(line: &str) -> Option<String> {
     // Split on ") out " or ") in " to get "TYPE NAME;"
     let after_qualifier = line.split(") out ").nth(1)?;
-    // Split on whitespace: "vec2 v_TexCoordMask;" -> ["vec2", "v_TexCoordMask;"]
+    // Split on whitespace: "vec2 v_TexCoord[13];" -> ["vec2", "v_TexCoord[13];"]
     let parts: Vec<&str> = after_qualifier.split_whitespace().collect();
     if parts.len() >= 2 {
-        Some(parts[1].trim_end_matches(';').to_string())
+        // Strip array brackets: v_TexCoord[13] → v_TexCoord
+        let name = parts[1]
+            .trim_end_matches(';')
+            .split('[')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        Some(name)
     } else {
         None
     }

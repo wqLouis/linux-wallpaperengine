@@ -211,7 +211,13 @@ fn extract_material_key(line: &str) -> Option<String> {
 pub fn extract_variable_name(rest: &str) -> Option<String> {
     let parts: Vec<&str> = rest.splitn(2, ' ').collect();
     if parts.len() >= 2 {
-        let name = parts[1].trim().trim_end_matches(';').to_string();
+        let name = parts[1]
+            .trim()
+            .trim_end_matches(';')
+            .split('[')
+            .next()
+            .unwrap_or("")
+            .to_string();
         if !name.is_empty() {
             return Some(name);
         }

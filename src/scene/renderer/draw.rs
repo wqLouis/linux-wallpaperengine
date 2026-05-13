@@ -1,7 +1,8 @@
 //! Draw queue construction: batches scene objects into GPU draw calls.
 //!
 //! Each [`TextureObject`] from the scene loader is converted into a
-//! [`DrawObject`] with its texture bind group, effect bind groups, and
+//! [`DrawObject`] with its texture bind group, a flattened list of
+//! [`EffectStep`]s (unifying single-pass and multi-pass effects), and
 //! optional ping-pong intermediate textures for post-processing.
 
 use std::{collections::BTreeMap, rc::Rc};
@@ -12,22 +13,28 @@ use crate::scene::{
     loader::{object_loader::TextureObject, scene_loader::Scene},
     renderer::{
         buffer::Buffers,
-        effect_bindgroup::EffectBindGroup,
         ping_pong::PingPongTextures,
         post_process::PostProcess,
-        post_processor::pipeline_handler::{self, get_or_create_pipeline, load_mask_texture},
+        post_processor::{
+            effect_step::{self, EffectStep, FboTexture},
+            pipeline_handler::{self},
+        },
     },
 };
 
 pub struct DrawObject {
     pub index_range: [u32; 2],
     pub bindgroup: BindGroup,
-    pub effect_bindgroups: Vec<EffectBindGroup>,
+    /// All effect steps (single-pass and multi-pass flattened together).
+    pub effect_steps: Vec<EffectStep>,
+    /// Named FBOs allocated for multi-pass effect chains.
+    pub fbos: BTreeMap<String, FboTexture>,
     pub intermediates: Option<PingPongTextures>,
 }
 
 pub struct DrawQueue {
     pub queue: Rc<Vec<DrawObject>>,
+    #[allow(dead_code)]
     pub render_pipelines: BTreeMap<String, pipeline_handler::EffectPipelineData>,
     pub image_pipeline: RenderPipeline,
 }
@@ -85,27 +92,6 @@ impl DrawObject {
     ) -> Self {
         let index_start = buffers.index_len;
 
-        let pipeline_rcs: Vec<Rc<RenderPipeline>> = if no_effects {
-            Vec::new()
-        } else {
-            texture_object
-                .effects
-                .iter()
-                .filter_map(|effect| {
-                    let pass = effect.passes.first()?;
-                    get_or_create_pipeline(
-                        device,
-                        effect.file.clone(),
-                        &pass.textures,
-                        pass.combos.as_ref(),
-                        pipelines,
-                        scene,
-                        projection_bgl,
-                    )
-                })
-                .collect()
-        };
-
         let texture = Self::upload_texture(device, queue, &texture_object);
         let source_view = texture.create_view(&Default::default());
 
@@ -124,25 +110,26 @@ impl DrawObject {
             ],
         });
 
-        let effect_bindgroups = Self::build_effect_bindgroups(
+        let tex_w = texture_object.texture.dimension[0];
+        let tex_h = texture_object.texture.dimension[1];
+
+        let (effect_steps, fbos, has_steps) = effect_step::build_effect_steps(
             device,
             queue,
+            &texture_object.effects,
             scene,
             post_process,
             pipelines,
-            &texture_object,
-            &pipeline_rcs,
+            projection_bgl,
             &source_view,
+            tex_w,
+            tex_h,
+            no_effects,
         );
 
-        let intermediates = if !effect_bindgroups.is_empty() {
-            // Scale up intermediate targets to fit the max resolution
-            // (source texture vs screen). Fixes corruption when source is
-            // small (e.g. 1x1 solid layer) but mask is at screen resolution.
-            let max_w = texture_object.texture.dimension[0]
-                .max(post_process.blank_texture.width());
-            let max_h = texture_object.texture.dimension[1]
-                .max(post_process.blank_texture.height());
+        let intermediates = if has_steps {
+            let max_w = tex_w.max(post_process.blank_texture.width());
+            let max_h = tex_h.max(post_process.blank_texture.height());
             Some(PingPongTextures::new(
                 device,
                 queue,
@@ -165,7 +152,8 @@ impl DrawObject {
         Self {
             index_range: [index_start, buffers.index_len],
             bindgroup,
-            effect_bindgroups,
+            effect_steps,
+            fbos,
             intermediates,
         }
     }
@@ -213,83 +201,5 @@ impl DrawObject {
         );
 
         texture
-    }
-
-    fn build_effect_bindgroups(
-        device: &Device,
-        queue: &Queue,
-        scene: &Scene,
-        post_process: &PostProcess,
-        pipelines: &BTreeMap<String, pipeline_handler::EffectPipelineData>,
-        texture_object: &TextureObject,
-        pipeline_rcs: &[Rc<RenderPipeline>],
-        source_view: &TextureView,
-    ) -> Vec<EffectBindGroup> {
-        texture_object
-            .effects
-            .iter()
-            .zip(pipeline_rcs.iter())
-            .filter_map(|(effect, pipeline)| {
-                let pipedata = pipelines
-                    .values()
-                    .find(|d| Rc::ptr_eq(&d.pipeline, pipeline))?;
-                let pass = effect.passes.first()?;
-
-                // textures array index = GL texture unit: [0]=source, [1]=g_Texture1, [2]=g_Texture2
-                let mask_path = pass.textures.get(1).and_then(|t| t.as_deref());
-                let noise_path = pass.textures.get(2).and_then(|t| t.as_deref());
-
-                let load_tex = |p: &str| {
-                    load_mask_texture(device, queue, scene, p)
-                        .map(|(t, v)| (Some(t), Some(v)))
-                        .unwrap_or((None, None))
-                };
-
-                let (mask_tex, mask_view) = mask_path.map_or((None, None), load_tex);
-                let (noise_tex, noise_view) = noise_path.map_or((None, None), load_tex);
-
-                let constants = pass.constantshadervalues.clone().unwrap_or_default();
-                let material_keys = pipedata.layout.uniform_material_keys.clone();
-
-                let sw = texture_object.texture.dimension[0] as f32;
-                let sh = texture_object.texture.dimension[1] as f32;
-
-                // Build tex_resolutions for all sampler slots declared in the shader.
-                // Shaders reference g_TextureNResolution for N in sampler_names, and
-                // division by zero (unset = 0) causes NaN displacements.
-                let mut tex_resolutions = BTreeMap::new();
-                for (i, sampler_name) in pipedata.layout.sampler_names.iter().enumerate() {
-                    let res_key = format!("{}Resolution", sampler_name);
-                    let (w, h) = match i {
-                        0 => (sw, sh),
-                        1 => mask_tex
-                            .as_ref()
-                            .map(|t| (t.width() as f32, t.height() as f32))
-                            .unwrap_or((sw, sh)),
-                        2 => noise_tex
-                            .as_ref()
-                            .map(|t| (t.width() as f32, t.height() as f32))
-                            .unwrap_or((sw, sh)),
-                        _ => (sw, sh),
-                    };
-                    tex_resolutions.insert(res_key, [w, h, w, h]);
-                }
-
-                EffectBindGroup::new(
-                    device,
-                    post_process,
-                    pipedata,
-                    source_view,
-                    mask_view.as_ref(),
-                    noise_view.as_ref(),
-                    Rc::clone(pipeline),
-                    material_keys,
-                    constants,
-                    tex_resolutions,
-                    mask_tex,
-                    noise_tex,
-                )
-            })
-            .collect()
     }
 }
