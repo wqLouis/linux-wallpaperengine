@@ -103,8 +103,7 @@ impl ObjectMap {
                     }
                     texture.angles += parent.angles;
                     texture.scale *= parent.scale;
-                    texture.origin += parent.origin;
-                    texture.origin = parent.origin + texture.origin * parent.scale;
+                    texture.origin = parent.origin + (texture.origin + parent.origin) * parent.scale;
 
                     match parent.parent {
                         None => break,

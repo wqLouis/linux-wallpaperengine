@@ -1,5 +1,5 @@
 use indicatif::ProgressBar;
-use pkg_parser::pkg_parser::{mdl_parser::MdlFile, parser::Pkg, tex_parser::Tex};
+use pkg_parser::pkg_parser::{parser::Pkg, tex_parser::Tex};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -24,7 +24,6 @@ impl Scene {
         let pkg = Pkg::new(path);
 
         let texs: Arc<Mutex<BTreeMap<String, Tex>>> = Arc::new(Mutex::new(BTreeMap::new()));
-        let mdls: Arc<Mutex<BTreeMap<String, MdlFile>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let mut jsons: BTreeMap<String, String> = BTreeMap::new();
         let mut misc: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
@@ -52,21 +51,7 @@ impl Scene {
                     log::debug!("pkg: enqueued tex: {}", key);
                     handles.push(handle);
                 }
-                "mdl" => {
-                    let key = key.clone();
-                    let mdls = Arc::clone(&mdls);
 
-                    let handle = thread::spawn(move || {
-                        let Some(mdl) = MdlFile::new(&val) else {
-                            log::warn!("pkg: failed to parse mdl: {}", key);
-                            return;
-                        };
-                        log::debug!("pkg: loaded mdl: {}", key);
-                        mdls.lock().unwrap().insert(key, mdl);
-                    });
-
-                    handles.push(handle);
-                }
                 "json" => {
                     pb.inc(1);
                     log::debug!("pkg: loaded json: {}", key);
@@ -96,16 +81,10 @@ impl Scene {
             .map(|(k, v)| (k, Rc::new(v)))
             .collect::<BTreeMap<String, Rc<Tex>>>();
 
-        let mut mdls_locked = mdls.lock().unwrap();
-        let mdls = std::mem::take(&mut *mdls_locked)
-            .into_iter()
-            .map(|(k, v)| (k, Rc::new(v)))
-            .collect::<BTreeMap<String, Rc<MdlFile>>>();
-
         Self {
             root,
             textures: TextureBucket::new(texs, None),
-            mdls: MdlBucket::new(mdls, None),
+            mdls: MdlBucket::new(BTreeMap::new(), None),
             jsons: JsonBucket::new(jsons, None),
             misc: MiscBucket::new(misc, None),
         }

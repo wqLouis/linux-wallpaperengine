@@ -203,11 +203,13 @@ impl WlrState {
             return;
         };
 
+        // Snapshot scale state before any fallback computation so we can
+        // detect whether it changed and always apply when it does.
+        let old_scale_received = self.scale.scale_received;
+        let old_scale_num = self.scale.scale_num;
+
         // If the compositor hasn't sent a preferred_scale yet, try to compute
-        // one from the output info as a fallback.  This is done before the
-        // early-return check so that when output events arrive later
-        // (triggering a redundant reconfigure()), the scale can still be
-        // picked up even if nothing else changed.
+        // one from the output info as a fallback.
         if !self.scale.scale_received {
             let outputs: Vec<wl_output::WlOutput> = self.output_state.outputs().collect();
             for output in &outputs {
@@ -220,8 +222,12 @@ impl WlrState {
             }
         }
 
+        let scale_changed = self.scale.scale_received != old_scale_received
+            || self.scale.scale_num != old_scale_num;
+
         // Skip if nothing has changed since the last successful reconfigure.
-        if self.scale.scale_num == self.scale.last_applied_scale
+        if !scale_changed
+            && self.scale.scale_num == self.scale.last_applied_scale
             && self.last_applied_logical == self.last_logical
         {
             return;

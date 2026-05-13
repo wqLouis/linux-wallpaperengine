@@ -9,24 +9,18 @@ pub fn replace_texture_calls(line: &str, sampler_set: &HashSet<&str>) -> String 
             let abs_start = search_start + pos;
             let args_start = abs_start + func.len();
 
-            let mut depth = 1;
-            let mut arg1_end = args_start;
-            let mut found_comma = false;
-            for (i, ch) in result[args_start..].char_indices() {
-                if ch == '(' {
-                    depth += 1;
-                } else if ch == ')' {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                } else if ch == ',' && depth == 1 && !found_comma {
-                    arg1_end = args_start + i;
-                    found_comma = true;
-                }
-            }
+            let Some(args_end) = find_matching_paren(&result, args_start) else {
+                break;
+            };
 
-            if !found_comma || arg1_end <= args_start {
+            let args = &result[args_start..args_end];
+            let Some(comma_pos) = find_top_level_comma(args) else {
+                search_start = abs_start + 1;
+                continue;
+            };
+            let arg1_end = args_start + comma_pos;
+
+            if arg1_end <= args_start {
                 search_start = abs_start + 1;
                 continue;
             }
@@ -94,23 +88,9 @@ pub fn replace_mul(line: &str) -> String {
         let abs_start = search_start + mul_start;
         let args_start = abs_start + 4;
 
-        let mut depth = 1;
-        let mut args_end = args_start;
-        for (i, ch) in result[args_start..].char_indices() {
-            if ch == '(' {
-                depth += 1;
-            } else if ch == ')' {
-                depth -= 1;
-                if depth == 0 {
-                    args_end = args_start + i;
-                    break;
-                }
-            }
-        }
-
-        if depth != 0 {
+        let Some(args_end) = find_matching_paren(&result, args_start) else {
             break;
-        }
+        };
 
         let args = &result[args_start..args_end];
 
@@ -118,11 +98,10 @@ pub fn replace_mul(line: &str) -> String {
             let arg1 = args[..comma_pos].trim();
             let arg2 = args[comma_pos + 1..].trim();
             let mut replacement = format!("{} * {}", arg2, arg1);
-            let mul_end = args_end + 1;
-            if result.as_bytes().get(mul_end) == Some(&b'.') {
+            if result.as_bytes().get(args_end + 1) == Some(&b'.') {
                 replacement = format!("({})", replacement);
             }
-            result.replace_range(abs_start..mul_end, &replacement);
+            result.replace_range(abs_start..args_end + 1, &replacement);
             search_start = abs_start + replacement.len();
         } else {
             search_start = abs_start + 1;
@@ -151,28 +130,13 @@ pub fn replace_saturate(line: &str) -> String {
         }
         let args_start = abs_start + 9;
 
-        let mut depth = 1;
-        let mut args_end = args_start;
-        for (i, ch) in result[args_start..].char_indices() {
-            if ch == '(' {
-                depth += 1;
-            } else if ch == ')' {
-                depth -= 1;
-                if depth == 0 {
-                    args_end = args_start + i;
-                    break;
-                }
-            }
-        }
-
-        if depth != 0 {
+        let Some(args_end) = find_matching_paren(&result, args_start) else {
             break;
-        }
+        };
 
         let arg = &result[args_start..args_end].trim();
         let replacement = format!("clamp({}, 0.0, 1.0)", arg);
-        let sat_end = args_end + 1;
-        result.replace_range(abs_start..sat_end, &replacement);
+        result.replace_range(abs_start..args_end + 1, &replacement);
         search_start = abs_start + replacement.len();
     }
 
@@ -258,6 +222,25 @@ fn replace_keyword_identifier(line: &str, keyword: &str, replacement: &str) -> S
         }
     }
     result
+}
+
+/// Find the position of the matching closing parenthesis, starting from
+/// the character immediately after the opening `(`.
+fn find_matching_paren(s: &str, start: usize) -> Option<usize> {
+    let mut depth = 1;
+    for (i, ch) in s[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn find_top_level_comma(s: &str) -> Option<usize> {

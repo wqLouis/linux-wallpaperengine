@@ -136,7 +136,7 @@ fn collect_from_source(
             continue;
         }
 
-        let cleaned = strip_material_comments(line);
+        let cleaned = super::strip_material_comments(line);
         if cleaned.is_empty() {
             continue;
         }
@@ -193,21 +193,7 @@ fn collect_from_source(
     }
 }
 
-fn strip_material_comments(line: &str) -> String {
-    if let Some(comment_pos) = line.find("//") {
-        let before = &line[..comment_pos];
-        let after_comment = &line[comment_pos..];
-        if after_comment.contains("[COMBO]") {
-            return line.to_string();
-        }
-        let trimmed_before = before.trim_end();
-        if trimmed_before.is_empty() {
-            return String::new();
-        }
-        return trimmed_before.to_string();
-    }
-    line.to_string()
-}
+
 
 fn extract_material_key(line: &str) -> Option<String> {
     if let Some(comment_pos) = line.find("//") {

@@ -239,15 +239,14 @@ impl DrawObject {
                 let mask_path = pass.textures.get(1).and_then(|t| t.as_deref());
                 let noise_path = pass.textures.get(2).and_then(|t| t.as_deref());
 
-                let (mask_tex, mask_view) = mask_path
-                    .and_then(|p| load_mask_texture(device, queue, scene, p))
-                    .map(|(t, v)| (Some(t), Some(v)))
-                    .unwrap_or((None, None));
+                let load_tex = |p: &str| {
+                    load_mask_texture(device, queue, scene, p)
+                        .map(|(t, v)| (Some(t), Some(v)))
+                        .unwrap_or((None, None))
+                };
 
-                let (noise_tex, noise_view) = noise_path
-                    .and_then(|p| load_mask_texture(device, queue, scene, p))
-                    .map(|(t, v)| (Some(t), Some(v)))
-                    .unwrap_or((None, None));
+                let (mask_tex, mask_view) = mask_path.map_or((None, None), load_tex);
+                let (noise_tex, noise_view) = noise_path.map_or((None, None), load_tex);
 
                 let constants = pass.constantshadervalues.clone().unwrap_or_default();
                 let material_keys = pipedata.layout.uniform_material_keys.clone();

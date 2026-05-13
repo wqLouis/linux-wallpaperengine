@@ -86,6 +86,98 @@ enum IfBlockState {
     Done,
 }
 
+/// Tracks the state of `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif` blocks
+/// during shader preprocessing.
+struct IfBlockProcessor {
+    stack: Vec<IfBlockState>,
+    #[allow(dead_code)]
+    depth: u32,
+}
+
+impl IfBlockProcessor {
+    fn new() -> Self {
+        Self { stack: Vec::new(), depth: 0 }
+    }
+
+    fn is_active(&self) -> bool {
+        self.stack.iter().all(|s| matches!(s, IfBlockState::Active))
+    }
+
+    /// Process a conditional preprocessor directive.
+    /// Returns `Some(true)` if the line was handled (caller should `continue`).
+    /// Returns `None` if the line is not a conditional directive, or is
+    /// `#else` with trailing content (caller decides how to handle it).
+    fn process_line(&mut self, line: &str, defines: &BTreeMap<String, String>) -> Option<bool> {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("#ifdef") {
+            let macro_name = trimmed["#ifdef".len()..].trim();
+            let cond_true = defines.contains_key(macro_name);
+            self.stack.push(if cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
+            self.depth += 1;
+            return Some(true);
+        }
+        if trimmed.starts_with("#ifndef") {
+            let macro_name = trimmed["#ifndef".len()..].trim();
+            let cond_true = defines.contains_key(macro_name);
+            self.stack.push(if !cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
+            self.depth += 1;
+            return Some(true);
+        }
+        if trimmed.starts_with("#if")
+            && !trimmed.starts_with("#ifdef")
+            && !trimmed.starts_with("#ifndef")
+        {
+            let cond = trimmed["#if".len()..].trim();
+            let cond_true = eval_if_condition(cond, defines);
+            self.stack.push(if cond_true { IfBlockState::Active } else { IfBlockState::Inactive });
+            self.depth += 1;
+            return Some(true);
+        }
+
+        if trimmed.starts_with("#elif") {
+            if let Some(top) = self.stack.last_mut() {
+                match top {
+                    IfBlockState::Active | IfBlockState::Done => {
+                        *top = IfBlockState::Done;
+                    }
+                    IfBlockState::Inactive => {
+                        let cond = trimmed["#elif".len()..].trim();
+                        if eval_if_condition(cond, defines) {
+                            *top = IfBlockState::Active;
+                        }
+                    }
+                }
+            }
+            return Some(true);
+        }
+
+        if trimmed.starts_with("#else") {
+            if trimmed.len() == 5 {
+                // plain `#else`
+                if let Some(top) = self.stack.last_mut() {
+                    match top {
+                        IfBlockState::Active => *top = IfBlockState::Done,
+                        IfBlockState::Inactive => *top = IfBlockState::Active,
+                        IfBlockState::Done => {}
+                    }
+                }
+                return Some(true);
+            }
+            // `#else` with trailing content — let the caller decide
+            return None;
+        }
+
+        if trimmed == "#endif" {
+            self.stack.pop();
+            self.depth = self.depth.saturating_sub(1);
+            return Some(true);
+        }
+
+        None
+    }
+}
+
 /// Preprocess a shader and also track which varyings were emitted in the output.
 pub fn preprocess_with_layout_tracked(
     source: &str,
@@ -96,8 +188,7 @@ pub fn preprocess_with_layout_tracked(
 ) -> (String, Vec<String>) {
     let mut result = String::with_capacity(source.len() + 4096);
     let mut emitted_varyings: Vec<String> = Vec::new();
-    let mut if_depth: u32 = 0;
-    let mut if_stack: Vec<IfBlockState> = Vec::new();
+    let mut ifp = IfBlockProcessor::new();
 
     result.push_str("#version 450\n");
 
@@ -105,17 +196,12 @@ pub fn preprocess_with_layout_tracked(
 
     let sampler_set: HashSet<&str> = layout.sampler_names.iter().map(|s| s.as_str()).collect();
 
-    /// Returns true if we should emit the current line given the if-stack.
-    fn is_active(if_stack: &[IfBlockState]) -> bool {
-        if_stack.iter().all(|s| matches!(s, IfBlockState::Active))
-    }
-
     for line in source.lines() {
         let trimmed = line.trim();
 
         // --- #include handling (header inlining with #if evaluation) ---
         if trimmed.starts_with("#include") {
-            if !is_active(&if_stack) {
+            if !ifp.is_active() {
                 continue;
             }
             if let Some(start) = trimmed.find('"') {
@@ -139,96 +225,16 @@ pub fn preprocess_with_layout_tracked(
         // --- Preprocessor directive handling with #if evaluation ---
         if trimmed.starts_with('#') {
             // Track whether we are in an active block for varying-hoisting purposes
-            let was_active_before = is_active(&if_stack);
+            let was_active_before = ifp.is_active();
 
-            // Handle #if / #ifdef / #ifndef
-            if trimmed.starts_with("#ifdef") {
-                let macro_name = trimmed["#ifdef".len()..].trim();
-                let cond_true = defines.contains_key(macro_name);
-                if_stack.push(if cond_true {
-                    IfBlockState::Active
-                } else {
-                    IfBlockState::Inactive
-                });
-                if_depth += 1;
+            // Handle conditional directives via the shared processor
+            if ifp.process_line(line, defines) == Some(true) {
                 continue;
             }
-            if trimmed.starts_with("#ifndef") {
-                let macro_name = trimmed["#ifndef".len()..].trim();
-                let cond_true = defines.contains_key(macro_name);
-                if_stack.push(if !cond_true {
-                    IfBlockState::Active
-                } else {
-                    IfBlockState::Inactive
-                });
-                if_depth += 1;
-                continue;
-            }
-            if trimmed.starts_with("#if")
-                && !trimmed.starts_with("#ifdef")
-                && !trimmed.starts_with("#ifndef")
-            {
-                let cond = trimmed["#if".len()..].trim();
-                let cond_true = eval_if_condition(cond, defines);
-                if_stack.push(if cond_true {
-                    IfBlockState::Active
-                } else {
-                    IfBlockState::Inactive
-                });
-                if_depth += 1;
-                continue;
-            }
-
-            // Handle #elif
-            if trimmed.starts_with("#elif") {
-                if let Some(top) = if_stack.last_mut() {
-                    match top {
-                        IfBlockState::Active | IfBlockState::Done => {
-                            // Already had an active branch, skip this one
-                            *top = IfBlockState::Done;
-                        }
-                        IfBlockState::Inactive => {
-                            // Previous branch inactive — try this one
-                            let cond = trimmed["#elif".len()..].trim();
-                            if eval_if_condition(cond, defines) {
-                                *top = IfBlockState::Active;
-                            }
-                            // else stays Inactive
-                        }
-                    }
-                }
-                continue;
-            }
-
-            // Handle #else
-            if trimmed.starts_with("#else") {
-                if !trimmed.ends_with("#else") && trimmed.len() > 5 {
-                    // #else with something after it (not a plain #else) — skip, treat as line
-                } else {
-                    if let Some(top) = if_stack.last_mut() {
-                        match top {
-                            IfBlockState::Active => {
-                                *top = IfBlockState::Done;
-                            }
-                            IfBlockState::Inactive => {
-                                *top = IfBlockState::Active;
-                            }
-                            IfBlockState::Done => {} // already handled
-                        }
-                    }
-                    continue;
-                }
-            }
-
-            // Handle #endif
-            if trimmed == "#endif" {
-                if_stack.pop();
-                if_depth = if_depth.saturating_sub(1);
-                continue;
-            }
+            // `#else` with trailing content or other directives — fall through
 
             // Other preprocessor directives: only emit if in active block
-            if !was_active_before && !is_active(&if_stack) {
+            if !was_active_before && !ifp.is_active() {
                 continue;
             }
 
@@ -249,7 +255,7 @@ pub fn preprocess_with_layout_tracked(
         }
 
         // Skip lines inside inactive #if blocks
-        if !is_active(&if_stack) {
+        if !ifp.is_active() {
             // Still need to push whitespace to keep line numbering
             result.push('\n');
             continue;
@@ -322,7 +328,7 @@ pub fn preprocess_with_layout_tracked(
             // wgpu. Only skip varyings inside INACTIVE #if blocks.
             if stage == ShaderStage::Vertex {
                 if let Some(n) = name {
-                    let active = if_stack.iter().all(|s| matches!(s, IfBlockState::Active));
+                    let active = ifp.is_active();
                     if active {
                         emitted_varyings.push(n);
                     }
@@ -515,16 +521,12 @@ fn include_header_lines_impl(
     result: &mut String,
     headers: &BTreeMap<String, String>,
 ) {
-    let mut if_stack: Vec<IfBlockState> = Vec::new();
+    let mut ifp = IfBlockProcessor::new();
     // Tracks whether a `return` was emitted at the current brace depth.
     // When true, subsequent lines at the same depth are dead code.
     let mut seen_return: Vec<bool> = Vec::new();
     // Brace depth inside the function body (0 = global, 1 = inside a function, etc.)
     let mut brace_depth: usize = 0;
-
-    fn active(if_stack: &[IfBlockState]) -> bool {
-        if_stack.iter().all(|s| matches!(s, IfBlockState::Active))
-    }
 
     for hline in content.lines() {
         let htrim = hline.trim();
@@ -547,7 +549,7 @@ fn include_header_lines_impl(
 
         // Handle nested #include (recursively expand)
         if htrim.starts_with("#include") {
-            if active(&if_stack) {
+            if ifp.is_active() {
                 if let Some(start) = htrim.find('"') {
                     if let Some(end) = htrim[start + 1..].find('"') {
                         let include_file = &htrim[start + 1..start + 1 + end];
@@ -566,91 +568,22 @@ fn include_header_lines_impl(
             continue;
         }
 
-        // Handle #ifdef
-        if htrim.starts_with("#ifdef") {
-            let macro_name = htrim["#ifdef".len()..].trim();
-            let cond_true = defines.contains_key(macro_name);
-            if_stack.push(if cond_true {
-                IfBlockState::Active
-            } else {
-                IfBlockState::Inactive
-            });
-            continue;
-        }
-        // Handle #ifndef
-        if htrim.starts_with("#ifndef") {
-            let macro_name = htrim["#ifndef".len()..].trim();
-            let cond_true = defines.contains_key(macro_name);
-            if_stack.push(if !cond_true {
-                IfBlockState::Active
-            } else {
-                IfBlockState::Inactive
-            });
-            continue;
-        }
-        // Handle #if
-        if htrim.starts_with("#if") && !htrim.starts_with("#ifdef") && !htrim.starts_with("#ifndef")
-        {
-            let cond = htrim["#if".len()..].trim();
-            let cond_true = eval_if_condition(cond, defines);
-            if_stack.push(if cond_true {
-                IfBlockState::Active
-            } else {
-                IfBlockState::Inactive
-            });
-            continue;
-        }
-        // Handle #elif
-        if htrim.starts_with("#elif") {
-            if let Some(top) = if_stack.last_mut() {
-                match top {
-                    IfBlockState::Active | IfBlockState::Done => {
-                        *top = IfBlockState::Done;
-                    }
-                    IfBlockState::Inactive => {
-                        let cond = htrim["#elif".len()..].trim();
-                        if eval_if_condition(cond, defines) {
-                            *top = IfBlockState::Active;
-                        }
-                    }
-                }
+        // Handle all preprocessor directives via the shared processor
+        if htrim.starts_with('#') {
+            if ifp.process_line(hline, defines) == Some(true) {
+                continue;
             }
-            continue;
-        }
-        // Handle #else
-        if htrim.starts_with("#else") && htrim.len() == 5 {
-            if let Some(top) = if_stack.last_mut() {
-                match top {
-                    IfBlockState::Active => {
-                        *top = IfBlockState::Done;
-                    }
-                    IfBlockState::Inactive => {
-                        *top = IfBlockState::Active;
-                    }
-                    IfBlockState::Done => {}
-                }
-            }
-            continue;
-        }
-        // Handle #endif
-        if htrim == "#endif" {
-            if_stack.pop();
+            // Non-conditional # line (#define etc.) — skip, emitted by emit_declarations
             continue;
         }
 
         // Skip comment and empty lines
         if htrim.is_empty() || htrim.starts_with("//") {
-            // Track brace depth even in comments (simplification: brace depth tracking is best-effort)
-            continue;
-        }
-
-        // Skip other preprocessor directives (#define, etc.) — they're emitted by emit_declarations
-        if htrim.starts_with('#') {
             continue;
         }
 
         // Only emit lines from active blocks
-        if !active(&if_stack) {
+        if !ifp.is_active() {
             continue;
         }
 
