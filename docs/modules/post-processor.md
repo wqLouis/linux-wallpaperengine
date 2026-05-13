@@ -1,6 +1,18 @@
 # Post-Processor (`src/scene/renderer/post_processor/`)
 
-Shader effect compilation pipeline: parameter layout, GLSL preprocessing, and effect pipeline creation.
+Shader effect compilation pipeline: parameter layout, GLSL preprocessing, effect pipeline creation, and caching.
+
+---
+
+## `mod.rs` — Module Structure
+
+```rust
+pub mod effect_param;
+pub mod pipeline_handler;
+pub mod pipeline_helpers;
+pub mod shader_header;
+pub mod transform;
+```
 
 ---
 
@@ -23,8 +35,8 @@ pub struct UniformLayout {
 
 Builds a layout from `(name, type)` pairs. Types follow GLSL names: `float`, `vec2`, `vec3`, `vec4`, `mat3`, `mat4`.
 
-Layout algorithm:
-- Aligns each field according to its type alignment (vec4/mat4 → 16 bytes, vec2 → 8 bytes, float → 4 bytes)
+**Layout algorithm:**
+- Aligns each field according to its type alignment (vec4/mat4 → 16 bytes, vec3 → 16 bytes, vec2 → 8 bytes, float → 4 bytes)
 - Computes field offsets and total buffer size (padded to 16-byte alignment, minimum 16 bytes)
 
 #### `UniformLayout::total_size() -> u64`
@@ -41,7 +53,7 @@ All return `bool` (true if the named field exists and fits in the buffer).
 | `write_vec2(buf, name, [f32;2])` | `vec2` | 8 |
 | `write_vec3(buf, name, [f32;3])` | `vec3` | 12 |
 | `write_vec4(buf, name, [f32;4])` | `vec4` | 16 |
-| `write_mat4(buf, name, &[[f32;4];4])` | `mat4` | 64 |
+| `write_mat4(buf, name, &[[f32;4];4])` | `mat4` | 64 (column-major) |
 
 #### `UniformLayout::populate_effect_params(buf, constants, material_keys, time, projection, sys)`
 
@@ -54,9 +66,11 @@ Fills a uniform buffer with all system + material values:
 | `g_Screen` | `sys.screen_resolution` → `[w, h, aspect]` |
 | `g_EffectTextureProjectionMatrix` | `projection` |
 | `g_EffectTextureProjectionMatrixInverse` | Identity matrix |
-| `g_ParallaxPosition` | `[0.0, 0.0]` |
+| `g_ParallaxPosition` | `sys.cursor_position` (normalized `[0,1]`, top-left origin) |
 | `g_TextureNResolution` | From `sys.tex_resolutions` |
-| Material constants | From `constants` (resolved via `material_keys`) |
+| Material constants | From `constants` (resolved via `material_keys` key → uniform name mapping) |
+
+**Property binding resolution:** Values with `{"script": ..., "value": <inner>}` wrappers are automatically unwrapped to `<inner>` before writing.
 
 ### `SystemUniforms`
 
@@ -64,10 +78,12 @@ Fills a uniform buffer with all system + material values:
 pub struct SystemUniforms {
     pub screen_resolution: [u32; 2],
     pub tex_resolutions: BTreeMap<String, [f32; 4]>,
+    /// Normalized cursor position in [0, 1] range, (0,0) = top-left (UV space)
+    pub cursor_position: [f32; 2],
 }
 ```
 
-Passed to `populate_effect_params` to provide resolution data.
+Passed to `populate_effect_params` to provide resolution and cursor data.
 
 ---
 
@@ -88,32 +104,43 @@ pub struct EffectPipelineData {
 
 ### `get_or_create_pipeline(...) -> Option<Rc<RenderPipeline>>`
 
-Main entry point for creating effect pipelines. Uses a cache key derived from the effect path + texture presence.
+Main entry point for creating effect pipelines. Uses a cache key derived from the effect path + texture presence + combo values.
 
 **Cache key computation:**
 ```
-effect_path + "|M1" (if mask texture) + "|T1" (if noise texture)
+effect_path + "|M1" (if mask texture present) + "|T1" (if noise texture present) + "|COMBO_NAME=value" (for each combo)
 ```
 
 **Pipeline creation** (`create_effect_pipeline`):
 
-1. Parse effect JSON → get material path → get shader name
+1. Parse effect JSON → get `passes[0].material` path → get material JSON → get `passes[0].shader` name
 2. Read `.frag` and `.vert` shader sources from `scene.misc`
-3. Collect default defines via `pipeline_helpers::collect_default_defines`
-4. Apply texture combos (`ENABLEMASK`, `TIMEOFFSET`) via `pipeline_helpers::apply_texture_combos`
-5. Preprocess shaders via `shader_preprocessor::preprocess_pair`
-6. Create shader modules with GLSL-to-SPIR-V compilation (naga backend)
-7. Create bind group layout via `pipeline_helpers::create_effect_bindgroup_layout`
-8. Create render pipeline with alpha blending, back-face culling, `Rgba8UnormSrgb` format
-9. Build `UniformLayout` from the shader's uniform declarations
+3. Collect combo defines (priority: shader defaults < material.json combos < scene pass combos):
+   - `collect_default_defines()` — scans both shader sources for `// [COMBO] {"combo":"NAME","default":N}` annotations
+   - Merges material.json `passes[0].combos`
+   - Applies scene pass combos (highest priority)
+4. Apply automatic texture combos via `apply_texture_combos()` — sets `MASK=1` if textures[1] present, `TIMEOFFSET=1` if textures[2] present
+5. Load shader headers via `shader_header::get_headers()`
+6. Preprocess shaders via `transform::preprocess_pair(vert, frag, headers, defines)`
+7. Create shader modules with GLSL-to-SPIR-V compilation (naga backend with `ShaderSource::Glsl`)
+8. Create bind group layout via `create_effect_bindgroup_layout()`
+9. Create render pipeline with alpha blending (`SrcAlpha / OneMinusSrcAlpha`), back-face culling, `Rgba8UnormSrgb` format
+10. Build `UniformLayout` from the shader's uniform declarations
 
 ### `load_mask_texture(device, queue, scene, path) -> Option<(Texture, TextureView)>`
 
-Loads a mask/noise texture from `scene.textures` (`.tex` files), uploads as `Rgba8UnormSrgb`, `R8Unorm`, or `Rg8Unorm` based on file extension.
+Loads a mask or noise texture from `scene.textures`, uploaded with the correct GPU format:
 
-**Path resolution:** Tries multiple candidates:
-- `"{path}.tex"`
-- `"materials/{path}.tex"`
+| Extension | GPU Format |
+|-----------|-----------|
+| `.r8` | `R8Unorm` |
+| `.rg88` | `Rg8Unorm` |
+| other | `Rgba8Unorm` |
+
+**Path resolution:** Prepends `materials/` and appends `.tex`:
+```
+"materials/{path}.tex"
+```
 
 ---
 
@@ -128,35 +155,43 @@ Scans both shader sources for `// [COMBO] {"combo":"NAME","default":N}` JSON ann
 ### `apply_texture_combos(defines, pass_textures)`
 
 Adds combo defines based on additional textures:
-- `textures[1]` (mask) present → `ENABLEMASK=1`
+- `textures[1]` (mask) present → `MASK=1` (not `ENABLEMASK` — the old name)
 - `textures[2]` (noise) present → `TIMEOFFSET=1`
 
 ### `create_effect_bindgroup_layout(device, layout) -> BindGroupLayout`
 
 Creates a bind group layout from `EffectLayout`:
-- One `Texture2D` binding per sampler (binding = index × 2)
-- One `Sampler` at `WM_SAMPLER_BINDING` (binding = 1)
-- One `Uniform` buffer binding if uniforms present (binding = sampler_count × 2 + 2)
+- One `Texture2D<f32>` binding per sampler at `binding = index × 2` (`VertexFragment`)
+- One `Sampler` at `WM_SAMPLER_BINDING` (binding = 1, `Fragment`)
+- One `Uniform` buffer binding if uniforms present, at `binding = sampler_count × 2 + 2` (`VertexFragment`)
 
 ---
 
 ## Shader Preprocessing Pipeline
 
-**Files:** `shader_preprocessor.rs`, `shader_header.rs`, `transform/mod.rs`, `transform/layout.rs`, `transform/replace.rs`
+**Files:** `transform/mod.rs`, `transform/layout.rs`, `transform/replace.rs`
 
-### Public API (`shader_preprocessor.rs`)
+### Public API (`transform/mod.rs`)
 
-#### `preprocess_pair(vert: &str, frag: &str) -> (String, String, EffectLayout)`
+#### `preprocess_pair(vert: &str, frag: &str, headers, defines) -> (String, String, EffectLayout)`
 
 Preprocesses both vertex and fragment shaders for Vulkan/SPIR-V compatibility. Returns transformed sources and the combined shader interface layout.
 
 **Features:**
-- Hoists conditional varyings (inside `#if` blocks) to be always available as vertex outputs
-- Handles `texSample2D` → `texture(sampler2D(...))` transformation
+- Collects layout from both shaders (including transitively `#include`-d headers)
+- Evaluates `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif` using provided defines (supports `defined()`, `==`, `!=`, `!`, `||`, `&&`)
+- Strips or inlines header content based on active branches
+- Hoists conditional varyings: fragment varyings that only appear inside `#if` blocks in the vertex shader are hoisted to unconditional vertex outputs (wgpu requires all fragment inputs to have corresponding vertex outputs). Synthesizes declarations and zero-initializations in `main()` as needed.
+- Performs GLSL builtin replacements (see below)
+- Strips `uniform`/`sampler2D`/`attribute`/`varying` declarations, replacing them with proper `layout(binding=...)` / `layout(location=...)` declarations
 
-#### `preprocess(source: &str, stage: ShaderStage) -> String`
+#### `preprocess_with_layout(source, stage, layout, headers, defines) -> String`
 
-Preprocesses a single shader source.
+Preprocesses a single shader source with a given pre-computed layout.
+
+#### `preprocess_with_layout_tracked(...) -> (String, Vec<String>)`
+
+Returns both the transformed source and the list of varyings that were unconditionally emitted. Used for conditional varying hoisting.
 
 ---
 
@@ -170,36 +205,28 @@ pub struct EffectLayout {
     pub sampler_bindings: Vec<u32>,                   // Binding points (0, 2, 4, ...)
     pub uniform_decls: Vec<(String, String)>,          // (name, type) pairs
     pub uniform_material_keys: BTreeMap<String, String>, // material key → uniform name
-    pub uniform_binding: u32,                          // Offset after samplers
+    pub uniform_binding: u32,                          // Offset after samplers (= sampler_count * 2 + 2)
     pub varying_locations: BTreeMap<String, u32>,     // Varying → location mapping
     pub varying_types: BTreeMap<String, String>,       // e.g. "v_TexCoord" → "vec4"
-    pub vertex_varyings: Vec<String>,                  // Varyings in vertex shader source
+    pub vertex_varyings: Vec<String>,                  // Varyings found in vertex shader source
     pub attribute_locations: BTreeMap<String, u32>,    // Attribute → location mapping
 }
 ```
 
 #### `EffectLayout::sampler_count() -> usize`
 
----
+Returns the number of sampler declarations.
 
-## `transform/mod.rs` — GLSL → Vulkan Transform
+#### `collect_layout(source1, source2, headers) -> EffectLayout`
 
-### `preprocess_with_layout(source, stage, layout) -> String`
-
-The main transformation pass:
-
-1. **Adds `#version 450`**
-2. **Emits declarations** — samplers, uniform buffer, fragment output
-3. **Inlines headers** — `#include` files expanded (stripping duplicate `#define` macros)
-4. **Removes original declarations** — uniforms, samplers, attributes, varyings
-5. **Transforms statements**:
-   - `attribute name` → `layout(location=N) in type name`
-   - `varying name` → `layout(location=N) out/in type name` (vertex: out, fragment: in)
-6. **Replaces GLSL builtins** (see below)
-
-### `preprocess_with_layout_tracked(...) -> (String, Vec<String>)`
-
-Returns both transformed source and list of unconditionally-emitted varyings. Used for conditional varying hoisting.
+Introsects both vertex (source1) and fragment (source2) shaders, collecting:
+- `sampler2D` declarations → `sampler_names`
+- `uniform type name` declarations → `uniform_decls`
+- `varying type name` → `varying_locations`, `varying_types`
+- `attribute type name` → `attribute_locations`
+- `// {"material":"key"}` annotations → `uniform_material_keys`
+- Recursively processes `#include`-d headers
+- Sorts and deduplicates collected items
 
 ---
 
@@ -210,27 +237,33 @@ Returns both transformed source and list of unconditionally-emitted varyings. Us
 | `texSample2D(tex, uv)` | `texture(sampler2D(tex, _wm_sampler), uv)` |
 | `texSample2DLod(tex, uv, lod)` | `textureLod(sampler2D(tex, _wm_sampler), uv, lod)` |
 | `gl_FragColor` | `_fragColor` |
-| `mul(a, b)` | `b * a` |
-| `saturate(x)` | `clamp(x, 0.0, 1.0)` |
-| `frac(x)` | `fract(x)` (avoids naming collision with `frac` variable) |
+| `mul(a, b)` | `b * a` (with parentheses if followed by `.`) |
+| `saturate(x)` | `clamp(x, 0.0, 1.0)` (only standalone `saturate`, not `Desaturate`) |
+| `frac(x)` | `fract(x)` (only standalone `frac`, not word-internal) |
 | `ddx(x)` / `ddy(x)` | `dFdx(x)` / `dFdy(x)` |
 | `atan2(y, x)` | `atan(y, x)` |
 | `CAST2(x)` | `vec2(x)` |
 | `CAST3(x)` | `vec3(x)` |
 | `CAST4(x)` | `vec4(x)` |
 | `CAST3X3(x)` | `mat3(x)` |
-| `sample` (identifier) | `sampleColor` |
-| `packed` (identifier) | `packedValue` |
+| `sample` (reserved GLSL identifier) | `sampleColor` |
+| `packed` (reserved GLSL identifier) | `packedValue` |
 
-**Implicit truncation fix** (`fix_implicit_truncation`): When a `vec4` varying is assigned from a `vec2` varying, adds explicit swizzle (`.xy`).
+**Implicit truncation fix** (`fix_implicit_truncation`): When a `vec4` varying is assigned from a `vec2` varying, adds explicit swizzle (`.xy`). Detected by comparing LHS and RHS types from `varying_types`.
+
+**Texture call rewrites:** `texture()` and `textureLod()` calls with a first argument matching a sampler name are rewritten to include `sampler2D(name, _wm_sampler)`.
 
 ---
 
-## `shader_header.rs` — Built-in Headers
+## `shader_header.rs` — Built-in Headers Loading
 
-#### `get_headers() -> BTreeMap<&'static str, &'static str>`
+**File:** `shader_header.rs`
 
-Returns a map of header file names to their contents:
+#### `get_headers(misc: &MiscBucket) -> BTreeMap<String, String>`
+
+Loads shader header files from the Wallpaper Engine assets bucket. Headers are stored under `shaders/common*.h` paths.
+
+Returns a map of bare filename → header content for these headers:
 
 | Header | Description |
 |--------|-------------|
@@ -241,6 +274,11 @@ Returns a map of header file names to their contents:
 | `common_blur.h` | Blur functions |
 | `common_fragment.h` | Fragment utilities |
 | `common_vertex.h` | Vertex utilities |
+| `common_fog.h` | Fog effects |
+| `common_foliage.h` | Foliage/vegetation effects |
+| `common_particles.h` | Particle system utilities |
+| `common_pbr.h` | PBR shading |
+| `common_pbr_2.h` | PBR shading v2 |
 
 #### Constants
 
@@ -250,32 +288,29 @@ pub const WM_SAMPLER_BINDING: u32 = 1;
 
 ---
 
-## `shader_compiler.rs` — ShaderEffect Parser (Alternative)
+## Shader Preprocessor Condition Evaluation
 
-**File:** `shader_compiler.rs`
+The preprocessor handles these condition forms in `#if`/`#elif` directives:
 
-Alternative parsing approach (partially implemented, `#[allow(dead_code)]`).
+| Form | Example |
+|------|---------|
+| `defined(NAME)` | `#if defined(VERTICAL)` |
+| `!defined(NAME)` | `#if !defined(MASK)` |
+| `NAME == VALUE` | `#if BLENDMODE == 26` |
+| `NAME != VALUE` | `#if MODE != 3` |
+| `!NAME` | `#if !MASK` |
+| `NAME` (bare) | `#if VERTICAL` — truthy if defined and not `"0"` |
+| `\|\|` | `#if A \|\| B` (left-to-right, no precedence) |
+| `&&` | `#if A && B` (left-to-right, no precedence) |
 
-### `ShaderEffect`
+## Varying Hoisting
 
-```rust
-pub struct ShaderEffect {
-    pub vars: Vec<ShaderVariable>,
-    pub combos: Option<Vec<BTreeMap<String, Value>>>,
-    pub source: String,
-}
-```
+When fragment shader varyings are referenced unconditionally but the vertex shader only declares them inside `#if` blocks, the preprocessor:
 
-Parses shader source to extract variables and combo annotations.
+1. **Tracks** which varyings were emitted in the vertex output during preprocessing (`preprocess_with_layout_tracked`)
+2. **Computes missing** varyings from the vertex shader's full varying list (`layout.vertex_varyings`)
+3. **Hoists** declarations: moves `layout(location=N) out TYPE NAME;` to the top of the vertex shader (outside all `#if` blocks)
+4. **Synthesizes** declarations for varyings that were declared only in headers that were entirely excluded by `#if` conditions
+5. **Adds zero-initialization** in `main()` for all hoisted varyings
 
-### `load(device, shader, stage, defines) -> ShaderModule`
-
-Free function: preprocesses and compiles a GLSL shader to a wgpu `ShaderModule`.
-
----
-
-## `renderer.rs` — PostProcess WIP
-
-**File:** `renderer.rs`
-
-Contains a stub `PostProcess::process()` method — work in progress. The actual post-processing pipeline is handled by `intermediate_pass.rs`.
+This is required because wgpu/naga validates that all fragment inputs have corresponding vertex outputs at the SPIR-V level, regardless of preprocessor conditions.

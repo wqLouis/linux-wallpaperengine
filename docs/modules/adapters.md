@@ -4,30 +4,49 @@ Display backends that create a rendering surface and drive the render loop.
 
 ---
 
+## `mod.rs` — FitMode Enum
+
+**File:** `mod.rs`
+
+```rust
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FitMode {
+    Cover,    // Scale to fill output, crop if aspect ratios differ
+    Contain,  // Scale to fit output, letterbox if aspect ratios differ
+    Stretch,  // Stretch to exactly match output (ignores aspect ratio)
+}
+```
+
+Module-level documentation describes the two adapters:
+- **`winit_adapter`** — Creates an always-on-bottom window using winit. Works on both X11 and Wayland (via XWayland). Supports cursor tracking for depth-parallax effects.
+- **`wlr_app`** — Uses the wlr-layer-shell Wayland protocol to render on a `Layer::Background` surface behind all windows. No cursor tracking (Wayland's security model does not allow it for background surfaces).
+
+---
+
 ## `winit_adapter`
 
 **File:** `winit_adapter.rs`
 
-A standalone window adapter using the [winit](https://crates.io/crates/winit) crate. Useful for debugging or non-Wayland systems.
+A standalone window adapter using the [winit](https://crates.io/crates/winit) crate. Useful for debugging or non-Wayland systems. Supports cursor tracking for depth-parallax effects.
 
 ### Public API
 
 ```rust
-pub fn start(pkg_path: String, no_effects: bool)
+pub fn start(pkg_path: String, no_effects: bool, assets_path: Option<String>)
 ```
-
-Creates a borderless, fullscreen, always-on-bottom window and runs the render loop.
 
 | Parameter | Description |
 |-----------|-------------|
 | `pkg_path` | Path to the `.pkg` wallpaper file |
 | `no_effects` | Bypass post-process effects |
+| `assets_path` | Optional path to Wallpaper Engine assets/ dir for lazy-loading fallback |
 
 **Behavior:**
 - Creates a `WinitApp` that implements `ApplicationHandler`
 - On `resumed`: creates window, initializes `WgpuApp` with `InitAppSurface::Winit(window)`, calls `load()`
 - On `RedrawRequested`: calls `app.render()`, requests next frame
 - On `Resized`: calls `app.resize()`
+- On `CursorMoved`: updates `app.user_params.cursor_position` (normalized to `[0,1]`) and `cursor_pixel` for depth-parallax effects
 
 ### `WinitApp` struct
 
@@ -37,6 +56,7 @@ struct WinitApp {
     window: Option<Arc<Window>>,
     pkg_path: String,
     no_effects: bool,
+    assets_path: Option<String>,
 }
 ```
 
@@ -51,62 +71,58 @@ Window::default_attributes()
     .with_title("Linux wallpaper engine")
 ```
 
----
+### Cursor Tracking
 
-## `wlr_layer_shell_adapter`
-
-**File:** `wlr_layer_shell_adapter.rs`
-
-Wayland layer-shell adapter. Renders the wallpaper as a background layer in Wayland compositors (sway, Hyprland, river, etc.).
-
-### Public API
-
-```rust
-pub fn start(pkg_path: String, resolution: Option<[u32; 2]>, fit_mode: FitMode, no_effects: bool)
-```
-
-| Parameter | Description |
-|-----------|-------------|
-| `pkg_path` | Path to the `.pkg` wallpaper file |
-| `resolution` | Optional override `[width, height]`. If `None`, uses the scene's native resolution |
-| `fit_mode` | How to fit wallpaper to output (Cover, Contain, Stretch) |
-| `no_effects` | Bypass post-process effects |
-
-**Behavior:**
-1. Connects to the Wayland display
-2. Creates a `wlr_layer_surface` as `Background` layer with full anchor, exclusive zone `-1`
-3. Creates raw window/display handles for wgpu (`RawWindowHandle::Wayland`)
-4. Initializes `WgpuApp` with `InitAppSurface::Raw(...)`
-5. Enters a 16ms fixed-timestep render loop (`dispatch_pending` + `render` + sleep)
+The winit adapter receives `CursorMoved` events and normalizes the cursor position to the `[0, 1]` range (top-left origin), updating `WgpuApp.user_params.cursor_position`. This is used by the parallax system (`g_ParallaxPosition` uniform). On Wayland (wlr adapter), cursor tracking is unavailable, so `user_params` stays at the default center `[0.5, 0.5]`.
 
 ---
 
 ## `wlr_app`
 
-**File:** `wlr_app.rs`
+**File:** `wlr_app/mod.rs`
 
-Wayland protocol state container. Holds all smithay-client-toolkit state and implements the required handler traits.
+Wayland wlr-layer-shell adapter using the [smithay-client-toolkit](https://crates.io/crates/smithay-client-toolkit) crate. Renders the wallpaper as a `Layer::Background` surface behind all windows.
 
-### `FitMode` enum
+### Public API
 
 ```rust
-pub enum FitMode {
-    Cover,    // Scale to fill output, crop if aspect ratios differ
-    Contain,  // Scale to fit output, letterbox if aspect ratios differ
-    Stretch,  // Stretch to exactly match output
-}
+pub fn start(
+    pkg_path: String,
+    fit_mode: FitMode,
+    no_effects: bool,
+    assets_path: Option<String>,
+)
 ```
 
-### `Wgpu` struct
+| Parameter | Description |
+|-----------|-------------|
+| `pkg_path` | Path to the `.pkg` wallpaper file |
+| `fit_mode` | How to fit wallpaper to output (Cover, Contain, Stretch) |
+| `no_effects` | Bypass post-process effects |
+| `assets_path` | Optional path to Wallpaper Engine assets/ dir for lazy-loading fallback |
+
+**Behavior:**
+1. Connects to the Wayland display
+2. Binds required globals: compositor, wlr-layer-shell, `wp_fractional_scale_manager_v1`, `wp_viewporter`
+3. Creates a `wlr_layer_surface` as `Background` layer with full anchor, exclusive zone `-1`
+4. Creates raw window/display handles for wgpu (`RawWindowHandle::Wayland`)
+5. Initializes `WgpuApp` with `InitAppSurface::Raw(...)`
+6. Enters an event-loop-driven render loop (`dispatch_pending` + `render`)
+
+### `WlrState` struct
 
 ```rust
-pub struct Wgpu {
+pub struct WlrState {
     pub registry_state: RegistryState,
     pub seat_state: SeatState,
     pub output_state: OutputState,
     pub app: WgpuApp,
     pub fit_mode: FitMode,
     pub wp_resolution: [u32; 2],
+    pub scale: ScaleState,
+    last_logical: Option<(u32, u32)>,
+    last_layer: Option<LayerSurface>,
+    last_applied_logical: Option<(u32, u32)>,
 }
 ```
 
@@ -114,67 +130,111 @@ pub struct Wgpu {
 
 | Trait | Purpose |
 |-------|---------|
-| `CompositorHandler` | Surface lifecycle (scale, transform, frame, enter/leave) — all no-ops |
-| `OutputHandler` | Output discovery & state — all no-ops |
-| `LayerShellHandler` | Layer surface configure — handles aspect-ratio-correct resizing |
+| `CompositorHandler` | Surface lifecycle — all no-ops |
+| `OutputHandler` | Output discovery — triggers `reconfigure()` for scale fallback |
+| `LayerShellHandler` | Layer surface `configure` — handles fit-mode-aware resizing, fractional scale, viewport |
 | `SeatHandler` | Input device state — all no-ops |
+| `Dispatch<WpFractionalScaleV1, ...>` | Handles `preferred_scale` events |
+| `Dispatch<WpViewporter, ...>` / `Dispatch<WpViewport, ...>` | Placeholder dispatch handlers |
 | `ProvidesRegistryState` | Registry state access for macro delegation |
 
 ### `LayerShellHandler::configure`
 
-Handles compositor resize requests with fit-mode-aware calculations:
+Handles compositor resize requests with fit-mode-aware calculations and fractional-scale:
 
 ```rust
-impl LayerShellHandler for Wgpu {
-    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, configure: LayerSurfaceConfigure, _: u32) {
-        let (new_width, new_height) = configure.new_size;
-        
-        // Ignore initial (0, 0) configure from some compositors
-        if new_width == 0 && new_height == 0 {
-            return;
-        }
-        
-        // Calculate layer size based on fit mode
-        let (layer_w, layer_h) = match self.fit_mode {
-            FitMode::Stretch => (new_width, new_height),
-            _ => {
-                let scale = match self.fit_mode {
-                    FitMode::Cover => f32::max(new_width / wp_w, new_height / wp_h),
-                    FitMode::Contain => f32::min(new_width / wp_w, new_height / wp_h),
-                    _ => unreachable!(),
-                };
-                ((wp_w * scale).round() as u32, (wp_h * scale).round() as u32)
-            }
-        };
-        
-        layer.set_size(layer_w, layer_h);
-        self.app.resize([layer_w, layer_h]);
-        self.app.render().unwrap();
+impl LayerShellHandler for WlrState {
+    fn configure(&mut self, conn, qh, layer, configure, _serial) {
+        let (w, h) = configure.new_size;
+        if w == 0 && h == 0 { return; }
+        self.last_logical = Some((w, h));
+        self.last_layer = Some(layer.clone());
+        self.reconfigure();  // Computes layer size, applies viewport, resizes swapchain
     }
 }
 ```
 
+### `reconfigure()` method
+
+Recomputes the layer-surface size and WGPU swapchain dimensions:
+
+1. Computes layer-surface size from fit mode + logical size + wallpaper resolution
+2. Converts to physical pixels using fractional scale (×120 numerator)
+3. Applies viewport destination via `wp_viewport::set_destination()`
+4. Calls `app.resize([phys_w, phys_h])`
+5. Skips redundant reapplies when nothing changed (`last_applied_scale`, `last_applied_logical`)
+
 ### Delegates
 
 ```rust
-delegate_compositor!(Wgpu);
-delegate_output!(Wgpu);
-delegate_seat!(Wgpu);
-delegate_layer!(Wgpu);
-delegate_registry!(Wgpu);
+delegate_compositor!(WlrState);
+delegate_output!(WlrState);
+delegate_seat!(WlrState);
+delegate_layer!(WlrState);
+delegate_registry!(WlrState);
 ```
+
+---
+
+## `wlr_app/scale.rs` — ScaleState
+
+**File:** `scale.rs`
+
+Manages the `wp_fractional_scale_v1` and `wp_viewporter` protocol objects for HiDPI support.
+
+### `FractionalScaleData`
+
+```rust
+#[derive(Debug)]
+pub struct FractionalScaleData;  // Opaque data tag for dispatch
+```
+
+### `ScaleState`
+
+```rust
+pub struct ScaleState {
+    pub mgr: Option<WpFractionalScaleManagerV1>,
+    pub fractional: Option<WpFractionalScaleV1>,
+    pub viewporter: Option<WpViewporter>,
+    pub viewport: Option<WpViewport>,
+    pub scale_num: u32,           // Preferred scale numerator (×1/120). Default 120 = 1.0×
+    pub scale_received: bool,     // True once a scale has been received or computed
+    pub last_applied_scale: u32,
+}
+```
+
+#### `ScaleState::new(mgr, fractional, viewporter, viewport) -> Self`
+
+Creates a new state with scale starting at 120 (1.0×).
+
+#### `handle_preferred_scale(&mut self, scale: u32)`
+
+Handles a `preferred_scale` event from the compositor (numerator ×120).
+
+#### `compute_from_output(&mut self, output_state, output, fallback_logical) -> bool`
+
+Fallback: computes a scale factor from output mode vs. logical size when the compositor doesn't advertise `wp_fractional_scale_manager_v1`. Returns `true` if a scale was set.
 
 ---
 
 ## Surface Initialization
 
-Both adapters use `InitAppSurface` from the renderer's `app` module:
+Both adapters use `InitAppSurface` from the renderer's `surface` module:
 
 ```rust
 pub enum InitAppSurface {
-    Raw((RawDisplayHandle, RawWindowHandle)),  // Wayland
-    Winit(Arc<winit::window::Window>),          // Winit
+    Raw((RawDisplayHandle, RawWindowHandle)),  // Wayland (wlr adapter)
+    Winit(Arc<winit::window::Window>),          // Winit (standalone window)
 }
 ```
 
 Re-exported from `crate::scene::renderer::app::InitAppSurface`.
+
+## Surface Configuration (AppSurface)
+
+The WGPU surface is created with:
+- `RENDER_ATTACHMENT` usage
+- `PresentMode::Fifo` (vsync)
+- `CompositeAlphaMode::Auto`
+- First available capability format
+- `desired_maximum_frame_latency: 2`
