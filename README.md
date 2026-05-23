@@ -1,5 +1,9 @@
 # Linux Wallpaper Engine
 
+[English](README.md) | [中文繁體](README_zh_TW.md) | [中文简体](README_zh_CN.md)
+
+---
+
 [![Rust](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Wgpu](https://img.shields.io/badge/Wgpu-FF5A03?style=for-the-badge&logoColor=white)](https://github.com/gfx-rs/wgpu)
 [![Vulkan](https://img.shields.io/badge/Vulkan-AC162C?style=for-the-badge&logo=vulkan&logoColor=white)](https://www.vulkan.org/)
@@ -11,9 +15,17 @@ This project is an attempt to bring [Wallpaper Engine](https://www.wallpaperengi
 
 https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
 
-## Features
+---
 
-### Rendering
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wqLouis/linux-wallpaper-engine&type=Timeline)](https://star-history.com/#wqLouis/linux-wallpaper-engine&Timeline)
+
+---
+
+## Features | 功能特色
+
+### Rendering | 渲染
 - **Hardware-accelerated rendering** via `wgpu` (Vulkan/Metal backends)
 - **GLSL shader support** — Wallpaper Engine `.frag`/`.vert` shaders are translated (via a GLSL→WGSL preprocessor) and compiled at runtime for post-processing effects
 - **Orthographic camera** from scene.json parameters (look-at + orthographic projection)
@@ -23,34 +35,34 @@ https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
 - **Mask and noise texture support** in post-processing effects
 - **No-effect mode** (`--no-effects`) to render a static wallpaper image for debugging
 
-### Display Adapters
+### Display Adapters | 顯示適配器
 - **wlr-layer-shell (Wayland):** Renders as a `Layer::Background` surface behind all windows using the `wlr_layer_shell` protocol. Supports fractional scaling via `wp-fractional-scale-v1` and `wp-viewporter`.
 - **Winit (X11/Wayland):** Creates an always-on-bottom window with cursor tracking for depth-parallax effects.
 
-### Package Parsing (`pkg_parser`)
+### Package Parsing (`pkg_parser`) | 套件解析
 - **`.pkg` file extraction and parsing** — reads packaged wallpaper files
 - **`.tex` texture parsing** — supports DXT1, DXT5, R8, RG88, PNG, JPEG formats with automatic format detection and LZ4 decompression. Can export to PNG or convert to RGBA for rendering
 - **`.mdl` puppet model parsing** — reads MDLV0023 format with control points, triangles, bones (MDLS), and animation (MDLA) sections. Serializes to JSON
 - **Video/GIF metadata parsing** — detects MP4, WebM, GIF formats and can extract GIF frames
 - **Dry-run mode** (`--dry-run`) to preview extraction without writing files
 
-### Audio
+### Audio | 音頻
 - **Audio playback** via `rodio` with looping support for scene audio tracks
 
-### CLI Features
+### CLI Features | 命令列功能
 - Two display modes: `wlr` (default, Wayland background) and `winit` (X11/Wayland window)
 - Wallpaper fit modes: `cover`, `contain`, `stretch`
 - Extract/parse mode (`-x`): extract and optionally convert `.tex`→PNG, parse videos, parse `.mdl` models to JSON
 - Configurable log levels: `verbose`, `debug`, `warning` (default), `errors`
 
-## Requirements
+## Requirements | 系統需求
 
 * **Rust** (Latest stable version; edition 2024)
 * **Vulkan Drivers:** Ensure your GPU drivers support Vulkan (Mesa for AMD/Intel, proprietary drivers for Nvidia)
 * **macOS Support:** Not tested (no access to a Mac), but Metal backend is included
 * **Wallpaper Engine Assets:** You must have legal access to the `.pkg` files (e.g., via a purchased copy of Wallpaper Engine on Steam)
 
-### Dependencies
+### Dependencies | 依賴項
 - `wgpu` 28.0 with `glsl` feature (Naga GLSL frontend)
 - `winit` 0.30 for the windowed adapter
 - `smithay-client-toolkit` 0.20 + `wayland-client` 0.31 for wlr-layer-shell
@@ -59,9 +71,9 @@ https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
 - `rodio` 0.21 for audio playback
 - `serde` / `serde_json` for scene JSON parsing
 
-## Installation
+## Installation | 安裝
 
-### From source
+### From source | 原始碼編譯
 
 1.  Clone the repository:
     ```bash
@@ -79,13 +91,13 @@ https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
     cargo install --path . --profile=release
     ```
 
-### For Arch users
+### For Arch users | Arch Linux 用戶
 
 ```bash
 paru -S linux-wallpaper-engine-git
 ```
 
-## Usage
+## Usage | 使用方式
 
 ```bash
 # Run a wallpaper (default wlr mode)
@@ -119,7 +131,7 @@ linux-wallpaper-engine -p path/to/wallpaper.pkg --fit-mode contain
 linux-wallpaper-engine -p path/to/wallpaper.pkg -l verbose
 ```
 
-### CLI Arguments
+### CLI Arguments | 命令列參數
 | Argument | Description | Default |
 |----------|-------------|--------|
 | `-p` / `<path>` | Path to `.pkg` file | `./scene.pkg` |
@@ -133,7 +145,7 @@ linux-wallpaper-engine -p path/to/wallpaper.pkg -l verbose
 | `--parse-mdl` | Parse `.mdl` puppet models to JSON (extract mode) | `false` |
 | `--dry-run` | Show extracted files without writing | `false` |
 
-## Project Structure
+## Project Structure | 專案結構
 
 ```
 src/
@@ -183,7 +195,7 @@ src/
             └── scale.rs         # Fractional scale state management
 ```
 
-## Known Issues & Limitations
+## Known Issues & Limitations | 已知問題與限制
 
 * **Video playback:** Video textures (mp4/webm inside .tex files) are detected but not decoded at runtime. They will display as a static frame. GIF textures may work partially.
 * **Animation:** Bone animation from `.mdl` puppet models is parsed but not played back.
@@ -191,7 +203,7 @@ src/
 * **Cursor tracking on Wayland:** The wlr-layer-shell adapter cannot receive pointer events on `Layer::Background` surfaces due to Wayland's security model. Depth-parallax effects that depend on cursor position are unavailable in wlr mode.
 * **macOS:** Untested.
 
-## Roadmap
+## Roadmap | 開發路線圖
 
 - [x] Improve stability and error handling
 - [x] Implement audio support
@@ -207,14 +219,14 @@ src/
 - [ ] Config file support
 - [ ] Multi-monitor support
 
-## Contributing
+## Contributing | 貢獻
 
 Contributions are welcome!
 
-## License
+## License | 授權
 
 This project is licensed under the GPLv3 License - see the LICENSE file for details.
 
-## Disclaimer
+## Disclaimer | 免責聲明
 
 This project is not affiliated with or endorsed by Wallpaper Engine. Please support the original software by purchasing it on Steam.
