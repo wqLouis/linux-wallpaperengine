@@ -4,7 +4,10 @@
 //! wayland winit). Cursor tracking works because winit windows receive
 //! pointer events even when stacked behind other windows.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use log;
 use pollster::block_on;
@@ -15,6 +18,7 @@ use winit::{
     window::{Fullscreen, Window},
 };
 
+use crate::scene::adapters::RenderMethod;
 use crate::scene::renderer::app::WgpuApp;
 
 struct WinitApp {
@@ -24,6 +28,10 @@ struct WinitApp {
     pkg_path: String,
     no_effects: bool,
     assets_path: Option<String>,
+    render_method: RenderMethod,
+    target_fps: Option<u32>,
+    /// Track last frame time for FPS limiting.
+    last_frame: Option<Instant>,
 }
 
 impl ApplicationHandler for WinitApp {
@@ -67,6 +75,24 @@ impl ApplicationHandler for WinitApp {
 
         match event {
             WindowEvent::RedrawRequested => {
+                // In wait mode, only render if we actually requested a redraw.
+                // In pull mode, throttle to target_fps if set.
+                if self.render_method == RenderMethod::Pull {
+                    if let Some(target_fps) = self.target_fps {
+                        if let Some(last) = self.last_frame {
+                            let min_delta = std::time::Duration::from_secs_f64(
+                                1.0 / target_fps as f64,
+                            );
+                            let elapsed = last.elapsed();
+                            if elapsed < min_delta {
+                                // Too soon — skip this frame but request next.
+                                self.window.as_ref().unwrap().request_redraw();
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 let app = app.as_mut().unwrap();
                 self.window.as_ref().unwrap().pre_present_notify();
 
@@ -75,7 +101,13 @@ impl ApplicationHandler for WinitApp {
                 if render_result.is_none() {
                     log::warn!("render returned None");
                 }
-                self.window.as_ref().unwrap().request_redraw();
+                self.last_frame = Some(Instant::now());
+
+                // In pull mode, chain the next redraw to keep frames flowing.
+                // In wait mode, only redraw when something actually changes.
+                if self.render_method == RenderMethod::Pull {
+                    self.window.as_ref().unwrap().request_redraw();
+                }
                 log::trace!("requested next redraw");
             }
             WindowEvent::Resized(physical_size) => {
@@ -97,6 +129,10 @@ impl ApplicationHandler for WinitApp {
                         app.user_params = crate::scene::renderer::app::UserParams {
                             cursor_position: [nx, ny],
                         };
+                        // In wait mode, request redraw on cursor movement.
+                        if self.render_method == RenderMethod::Wait {
+                            self.window.as_ref().unwrap().request_redraw();
+                        }
                     }
                 }
             }
@@ -105,12 +141,21 @@ impl ApplicationHandler for WinitApp {
     }
 }
 
-pub fn start(pkg_path: String, no_effects: bool, assets_path: Option<String>) {
+pub fn start(
+    pkg_path: String,
+    no_effects: bool,
+    assets_path: Option<String>,
+    render_method: RenderMethod,
+    target_fps: Option<u32>,
+) {
     let event_loop = EventLoop::new().unwrap();
     let mut app = WinitApp {
         pkg_path,
         no_effects,
         assets_path,
+        render_method,
+        target_fps,
+        last_frame: None,
         app: Arc::new(Mutex::new(None)),
         window: None,
     };
