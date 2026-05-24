@@ -50,7 +50,6 @@ use wayland_protocols::wp::{
     viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
 
-use crate::scene::adapters::RenderMethod;
 use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
 
 /// Main state for the wlr-layer-shell adapter.
@@ -74,8 +73,6 @@ pub struct WlrState {
     /// Track last applied logical size to skip redundant reconfigures.
     last_applied_logical: Option<(u32, u32)>,
 
-    /// Rendering method.
-    pub render_method: RenderMethod,
     pub target_fps: Option<u32>,
     /// Track last frame time for FPS limiting.
     last_frame: Option<Instant>,
@@ -364,7 +361,6 @@ pub fn start(
     fit_mode: super::FitMode,
     no_effects: bool,
     assets_path: Option<String>,
-    render_method: RenderMethod,
     target_fps: Option<u32>,
 ) {
     let conn = Connection::connect_to_env().unwrap();
@@ -442,46 +438,24 @@ pub fn start(
         last_logical: None,
         last_layer: None,
         last_applied_logical: None,
-        render_method,
         target_fps,
         last_frame: None,
     };
 
-    log::info!(
-        "wlr render loop: method={:?}, target_fps={:?}",
-        state.render_method,
-        state.target_fps
-    );
-
     let mut frame_count: u64 = 0;
     loop {
         log::trace!("frame {}: dispatching events...", frame_count);
+        event_queue.dispatch_pending(&mut state).unwrap();
 
-        match state.render_method {
-            RenderMethod::Wait => {
-                // Block until at least one Wayland event arrives.
-                // This naturally paces the loop with compositor activity,
-                // saving CPU when the wallpaper is static.
-                event_queue.blocking_dispatch(&mut state).unwrap();
-            }
-            RenderMethod::Pull => {
-                // Dispatch pending events without blocking.
-                event_queue.dispatch_pending(&mut state).unwrap();
-            }
-        }
-
-        // --- FPS limiting for pull mode ---
-        if state.render_method == RenderMethod::Pull {
-            if let Some(target_fps) = state.target_fps {
-                if let Some(last) = state.last_frame {
-                    let min_delta =
-                        std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
-                    let elapsed = last.elapsed();
-                    if elapsed < min_delta {
-                        // Too soon — spin/sleep the remainder.
-                        let remaining = min_delta - elapsed;
-                        std::thread::sleep(remaining);
-                    }
+        // --- FPS limiting ---
+        if let Some(target_fps) = state.target_fps {
+            if let Some(last) = state.last_frame {
+                let min_delta =
+                    std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+                let elapsed = last.elapsed();
+                if elapsed < min_delta {
+                    let remaining = min_delta - elapsed;
+                    std::thread::sleep(remaining);
                 }
             }
         }
