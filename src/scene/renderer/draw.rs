@@ -113,7 +113,7 @@ impl DrawObject {
         let tex_w = texture_object.texture.dimension[0];
         let tex_h = texture_object.texture.dimension[1];
 
-        let (effect_steps, fbos, has_steps) = effect_step::build_effect_steps(
+        let (mut effect_steps, fbos, has_steps) = effect_step::build_effect_steps(
             device,
             queue,
             &texture_object.effects,
@@ -127,7 +127,7 @@ impl DrawObject {
             no_effects,
         );
 
-        let intermediates = if has_steps {
+        let mut intermediates = if has_steps {
             let max_w = tex_w.max(post_process.blank_texture.width());
             let max_h = tex_h.max(post_process.blank_texture.height());
             Some(PingPongTextures::new(
@@ -140,6 +140,20 @@ impl DrawObject {
         } else {
             None
         };
+
+        // Pre-cache intermediate and final-pass bind groups.
+        if let Some(ref mut pp) = intermediates {
+            for step in &mut effect_steps {
+                step.cache_intermediate_bindgroups(
+                    device,
+                    &pp.view_a,
+                    &pp.view_b,
+                    &fbos,
+                    &post_process.sampler,
+                );
+            }
+            pp.cache_final_bindgroup(device, &post_process.layout, &post_process.sampler);
+        }
 
         buffers.draw_texture(
             queue,
@@ -159,17 +173,25 @@ impl DrawObject {
     }
 
     fn upload_texture(device: &Device, queue: &Queue, tex_obj: &TextureObject) -> Texture {
-        let (format, bpp) = match tex_obj.texture.extension.as_str() {
-            "r8" => (TextureFormat::R8Unorm, 1u32),
-            "rg88" => (TextureFormat::Rg8Unorm, 2u32),
-            _ => (TextureFormat::Rgba8UnormSrgb, 4u32),
+        let ext = tex_obj.texture.extension.as_str();
+        let (format, bytes_per_row) = match ext {
+            "r8" => (TextureFormat::R8Unorm, tex_obj.texture.dimension[0] * 1),
+            "rg88" => (TextureFormat::Rg8Unorm, tex_obj.texture.dimension[0] * 2),
+            // BCn compressed: raw DXT payload goes directly to GPU, no CPU decode.
+            // Block size: 8 bytes (BC1) or 16 bytes (BC3) per 4×4 texel block.
+            "dxt1" => (TextureFormat::Bc1RgbaUnormSrgb, tex_obj.texture.dimension[0].div_ceil(4) * 8),
+            "dxt5" => (TextureFormat::Bc3RgbaUnormSrgb, tex_obj.texture.dimension[0].div_ceil(4) * 16),
+            _ => (TextureFormat::Rgba8UnormSrgb, tex_obj.texture.dimension[0] * 4),
         };
+
+        let w = tex_obj.texture.dimension[0];
+        let h = tex_obj.texture.dimension[1];
 
         let texture = device.create_texture(&TextureDescriptor {
             label: None,
             size: Extent3d {
-                width: tex_obj.texture.dimension[0],
-                height: tex_obj.texture.dimension[1],
+                width: w,
+                height: h,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -190,12 +212,12 @@ impl DrawObject {
             &tex_obj.texture.payload,
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(tex_obj.texture.dimension[0] * bpp),
+                bytes_per_row: Some(bytes_per_row),
                 rows_per_image: None,
             },
             Extent3d {
-                width: tex_obj.texture.dimension[0],
-                height: tex_obj.texture.dimension[1],
+                width: w,
+                height: h,
                 depth_or_array_layers: 1,
             },
         );

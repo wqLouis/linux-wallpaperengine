@@ -200,10 +200,12 @@ pub fn load_mask_texture(
     let tex_key = format!("materials/{}.tex", path);
     let tex = scene.textures.get(&tex_key)?;
 
-    let (format, bpp) = match tex.extension.as_str() {
-        "r8" => (TextureFormat::R8Unorm, 1u32),
-        "rg88" => (TextureFormat::Rg8Unorm, 2u32),
-        _ => (TextureFormat::Rgba8Unorm, 4u32),
+    let (format, bytes_per_row) = match tex.extension.as_str() {
+        "r8" => (TextureFormat::R8Unorm, tex.dimension[0] * 1),
+        "rg88" => (TextureFormat::Rg8Unorm, tex.dimension[0] * 2),
+        "dxt1" => (TextureFormat::Bc1RgbaUnormSrgb, tex.dimension[0].div_ceil(4) * 8),
+        "dxt5" => (TextureFormat::Bc3RgbaUnormSrgb, tex.dimension[0].div_ceil(4) * 16),
+        _ => (TextureFormat::Rgba8Unorm, tex.dimension[0] * 4),
     };
 
     let texture = device.create_texture(&TextureDescriptor {
@@ -215,7 +217,7 @@ pub fn load_mask_texture(
     queue.write_texture(
         TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
         &tex.payload,
-        TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(tex.dimension[0] * bpp), rows_per_image: None },
+        TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bytes_per_row), rows_per_image: None },
         Extent3d { width: tex.dimension[0], height: tex.dimension[1], depth_or_array_layers: 1 },
     );
     let view = texture.create_view(&Default::default());

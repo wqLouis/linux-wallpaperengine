@@ -25,6 +25,7 @@ pub fn collect_layout(source1: &str, source2: &str, headers: &BTreeMap<String, S
     let mut uniform_map: BTreeMap<String, String> = BTreeMap::new();
     let mut varying_set: BTreeMap<String, u32> = BTreeMap::new();
     let mut varying_types: BTreeMap<String, String> = BTreeMap::new();
+    let mut varying_array_sizes: BTreeMap<String, u32> = BTreeMap::new();
     let mut attribute_set: BTreeMap<String, u32> = BTreeMap::new();
     let mut material_keys: BTreeMap<String, String> = BTreeMap::new();
 
@@ -40,6 +41,7 @@ pub fn collect_layout(source1: &str, source2: &str, headers: &BTreeMap<String, S
         &mut uniform_map,
         &mut varying_set,
         &mut varying_types,
+        &mut varying_array_sizes,
         &mut attribute_set,
         &mut material_keys,
     );
@@ -56,6 +58,7 @@ pub fn collect_layout(source1: &str, source2: &str, headers: &BTreeMap<String, S
         &mut uniform_map,
         &mut varying_set,
         &mut varying_types,
+        &mut varying_array_sizes,
         &mut attribute_set,
         &mut material_keys,
     );
@@ -68,11 +71,13 @@ pub fn collect_layout(source1: &str, source2: &str, headers: &BTreeMap<String, S
 
     let mut varying_names: Vec<String> = varying_set.keys().cloned().collect();
     varying_names.sort();
-    let varying_locations: BTreeMap<String, u32> = varying_names
-        .iter()
-        .enumerate()
-        .map(|(i, name)| (name.clone(), i as u32))
-        .collect();
+    let mut varying_locations: BTreeMap<String, u32> = BTreeMap::new();
+    let mut next_location: u32 = 0;
+    for name in &varying_names {
+        let array_size = varying_array_sizes.get(name).copied().unwrap_or(1);
+        varying_locations.insert(name.clone(), next_location);
+        next_location += array_size;
+    }
 
     let mut attribute_names: Vec<String> = attribute_set.keys().cloned().collect();
     attribute_names.sort();
@@ -104,6 +109,7 @@ fn collect_from_source(
     uniform_map: &mut BTreeMap<String, String>,
     varying_set: &mut BTreeMap<String, u32>,
     varying_types: &mut BTreeMap<String, String>,
+    varying_array_sizes: &mut BTreeMap<String, u32>,
     attribute_set: &mut BTreeMap<String, u32>,
     material_keys: &mut BTreeMap<String, String>,
 ) {
@@ -123,6 +129,7 @@ fn collect_from_source(
                             uniform_map,
                             varying_set,
                             varying_types,
+                            varying_array_sizes,
                             attribute_set,
                             material_keys,
                         );
@@ -146,8 +153,11 @@ fn collect_from_source(
             if let Some(name) = extract_variable_name(rest) {
                 varying_set.entry(name.clone()).or_insert(0);
                 if let Some(ty) = extract_type(rest) {
-                    varying_types.entry(name).or_insert(ty);
+                    varying_types.entry(name.clone()).or_insert(ty);
                 }
+                // Extract array size if present, e.g. vec2 v_TexCoord[4]
+                let array_size = extract_array_size(rest);
+                varying_array_sizes.entry(name).or_insert(array_size);
             }
             continue;
         }
@@ -171,18 +181,28 @@ fn collect_from_source(
                 let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                 if parts.len() == 2 {
                     let ty = parts[0].trim().to_string();
-                    let name = parts[1]
+                    let full_decl = parts[1]
                         .trim()
                         .trim_end_matches(';')
                         .split('=')
                         .next()
                         .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    // Extract base name (strip array brackets) for lookup
+                    let name = full_decl
                         .split('[')
                         .next()
                         .unwrap_or("")
                         .to_string();
                     if !name.is_empty() {
-                        uniform_map.entry(name.clone()).or_insert(ty);
+                        // Store full declaration including array brackets for proper emission
+                        let full_ty = if full_decl.contains('[') {
+                            format!("{} {}", ty, &full_decl[name.len()..])
+                        } else {
+                            ty
+                        };
+                        uniform_map.entry(name.clone()).or_insert(full_ty);
                         if let Some(mk) = extract_material_key(line) {
                             material_keys.entry(mk).or_insert(name);
                         }
@@ -231,4 +251,19 @@ pub fn extract_type(rest: &str) -> Option<String> {
         return Some(parts[0].to_string());
     }
     None
+}
+
+/// Extract array size from a variable declaration like `vec2 v_TexCoord[4]`.
+/// Returns the array size, or 1 if not an array.
+pub fn extract_array_size(decl: &str) -> u32 {
+    // Look for `[N]` after the variable name
+    if let Some(bracket_start) = decl.find('[') {
+        if let Some(bracket_end) = decl[bracket_start..].find(']') {
+            let num_str = &decl[bracket_start + 1..bracket_start + bracket_end];
+            if let Ok(n) = num_str.parse::<u32>() {
+                return n;
+            }
+        }
+    }
+    1
 }

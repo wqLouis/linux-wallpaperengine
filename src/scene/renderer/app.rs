@@ -55,6 +55,9 @@ pub struct WgpuApp {
     pub projection_matrix: [[f32; 4]; 4],
     pub no_effects: bool,
     pub user_params: UserParams,
+    /// Reusable staging buffer for per-frame uniform writes.
+    /// Allocated once and grown on demand to avoid per-frame heap allocations.
+    pub uniform_staging: Vec<u8>,
 }
 
 impl WgpuApp {
@@ -90,7 +93,8 @@ impl WgpuApp {
             .request_device(&DeviceDescriptor {
                 label: None,
                 required_features: Features::TEXTURE_BINDING_ARRAY
-                    | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
+                    | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+                    | Features::TEXTURE_COMPRESSION_BC,
                 required_limits: Limits {
                     max_binding_array_elements_per_shader_stage: MAX_TEXTURE,
                     ..Default::default()
@@ -125,10 +129,14 @@ impl WgpuApp {
             projection_matrix: [[1.0; 4]; 4],
             no_effects: no_effects,
             user_params: UserParams::default(),
+            uniform_staging: Vec::new(),
         }
     }
 
     /// Advance one frame: update time, write uniforms, run effects, render to screen.
+    ///
+    /// All GPU work (uniform copies, intermediate passes, final pass) is
+    /// batched into a single command encoder and submitted once.
     pub fn render(&mut self) -> Option<()> {
         // --- Time tracking ---
         let now = Instant::now();
@@ -166,53 +174,65 @@ impl WgpuApp {
         params.cursor_position = self.compute_parallax_cursor();
 
         // --- Upload per-frame uniforms to all effect bind groups ---
+        // Effect uniforms are written once with identity projection (effect
+        // pipelines always operate in NDC/texture space).
         log::trace!("writing effect uniforms...");
         render_pass::write_effect_uniforms(
             &self.queue,
+            &mut self.uniform_staging,
             draw_queue.queue.as_ref(),
             elapsed,
-            &self.projection_matrix,
             screen_res,
             &params,
         );
 
-        // --- Run intermediate post-process passes (effects) ---
         let has_intermediates = draw_queue.queue.iter().any(|o| o.intermediates.is_some());
         log::trace!("has_intermediates={}", has_intermediates);
+
+        // --- Single command encoder for all GPU work ---
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor::default());
+
         if has_intermediates {
             intermediate_pass::render_intermediate_passes(
+                &mut encoder,
                 &self.device,
-                &self.queue,
-                &self.buffers,
                 &self.projection_bindgroup,
-                &self.projection_matrix,
                 draw_queue,
                 post_process,
-                elapsed,
-                screen_res,
-                &params,
             );
             log::trace!("intermediate passes done");
         }
 
         // --- Final render pass to swapchain ---
         log::trace!("starting final render pass...");
-        let result = render_pass::render_final_pass(
+        let output = render_pass::render_final_pass(
+            &mut encoder,
             &self.device,
-            &self.queue,
             &self.surface,
             &self.buffers,
             &self.projection_bindgroup,
             draw_queue,
-            post_process,
             self.clear_color,
         );
-        if result.is_some() {
-            log::trace!("final render pass OK");
-        } else {
-            log::warn!("final render pass FAILED");
+
+        // --- Submit once ---
+        log::trace!("submitting to queue...");
+        self.queue.submit(Some(encoder.finish()));
+
+        match output {
+            Some(frame) => {
+                log::trace!("presenting...");
+                frame.present();
+                log::trace!("frame done");
+                Some(())
+            }
+            None => {
+                log::warn!("final render pass FAILED");
+                None
+            }
         }
-        result
     }
 
     pub fn resize(&mut self, size: [u32; 2]) {

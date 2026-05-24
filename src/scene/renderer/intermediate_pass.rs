@@ -5,48 +5,41 @@
 //! FBO target write to that FBO instead of ping-pong; steps without a
 //! target (including single-pass effects and the final step of multi-pass
 //! chains) write to the current ping-pong destination.
+//!
+//! Uses pre-cached bind groups (see [`EffectStep::cache_intermediate_bindgroups`])
+//! and an identity projection bind group to avoid per-frame allocations and
+//! projection-buffer round-trips.
 
-use bytemuck::bytes_of;
 use log;
 use wgpu::*;
 
 use super::{
-    app::UserParams,
     draw::DrawQueue,
     post_process::PostProcess,
-    post_processor::effect_step,
     projection::ProjectionBindGroups,
-    render_pass,
 };
 
+/// Run intermediate post-process passes for all objects with effects.
+///
+/// Writes into the shared `encoder` so the caller can batch intermediate
+/// and final passes into a single submission.
 pub fn render_intermediate_passes(
+    encoder: &mut CommandEncoder,
     device: &Device,
-    queue: &Queue,
-    buffers: &super::buffer::Buffers,
     projection_bindgroup: &ProjectionBindGroups,
-    projection_matrix: &[[f32; 4]; 4],
     draw_queue: &DrawQueue,
     post_process: &PostProcess,
-    elapsed: f32,
-    screen_res: [u32; 2],
-    user_params: &UserParams,
 ) {
     log::trace!(
         "starting intermediate passes, {} objects",
         draw_queue.queue.len()
     );
-    queue.write_buffer(&buffers.projection, 0, bytes_of(&identity_matrix()));
-    render_pass::write_effect_uniforms(
-        queue,
-        draw_queue.queue.as_ref(),
-        elapsed,
-        &identity_matrix(),
-        screen_res,
-        user_params,
-    );
 
-    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
-    let proj_bg = projection_bindgroup.projection.as_ref().unwrap();
+    // Use the identity projection bind group for NDC-space rendering.
+    let proj_bg = projection_bindgroup
+        .identity
+        .as_ref()
+        .expect("identity projection bindgroup not initialized");
 
     for (obj_idx, draw_object) in draw_queue.queue.iter().enumerate() {
         let Some(ref pp) = draw_object.intermediates else {
@@ -61,7 +54,7 @@ pub fn render_intermediate_passes(
 
         // Step 1: copy source texture → view_a
         copy_texture(
-            &mut encoder,
+            encoder,
             &draw_queue.image_pipeline,
             pp,
             &draw_object.bindgroup,
@@ -74,18 +67,22 @@ pub fn render_intermediate_passes(
         let mut cur_is_a = true;
 
         for step in &draw_object.effect_steps {
-            // Determine source: always the current ping-pong result.
-            let source_view = if cur_is_a { &pp.view_a } else { &pp.view_b };
-
-            // Build intermediate bindgroup, resolving texture views
-            // per step.bind_inputs (ping-pong source / named FBOs).
-            let inter_bg = effect_step::make_step_bindgroup(
-                device,
-                step,
-                source_view,
-                &draw_object.fbos,
-                &post_process.sampler,
-            );
+            // Select the correct pre-cached intermediate bind group.
+            let inter_bg = if cur_is_a {
+                step.cached_bg_a
+                    .as_ref()
+                    .unwrap_or_else(|| {
+                        log::error!("cached_bg_a missing for step, recreating");
+                        panic!("cached_bg_a missing")
+                    })
+            } else {
+                step.cached_bg_b
+                    .as_ref()
+                    .unwrap_or_else(|| {
+                        log::error!("cached_bg_b missing for step, recreating");
+                        panic!("cached_bg_b missing")
+                    })
+            };
 
             let target_view = match &step.target {
                 Some(fbo_name) => match draw_object.fbos.get(fbo_name) {
@@ -128,7 +125,7 @@ pub fn render_intermediate_passes(
             pass.set_pipeline(&step.pipeline);
             pass.set_vertex_buffer(0, pp.ndc_vbuf.slice(..));
             pass.set_index_buffer(pp.ndc_ibuf.slice(..), IndexFormat::Uint32);
-            pass.set_bind_group(0, &inter_bg, &[]);
+            pass.set_bind_group(0, inter_bg, &[]);
             pass.set_bind_group(1, proj_bg, &[]);
             pass.draw_indexed(0..6, 0, 0..1);
         }
@@ -142,7 +139,7 @@ pub fn render_intermediate_passes(
                 &pp.view_b,
             );
             copy_texture(
-                &mut encoder,
+                encoder,
                 &draw_queue.image_pipeline,
                 pp,
                 &bg,
@@ -152,17 +149,6 @@ pub fn render_intermediate_passes(
         }
     }
 
-    log::trace!("submitting intermediate encoder...");
-    queue.submit(Some(encoder.finish()));
-    queue.write_buffer(&buffers.projection, 0, bytes_of(projection_matrix));
-    render_pass::write_effect_uniforms(
-        queue,
-        draw_queue.queue.as_ref(),
-        elapsed,
-        projection_matrix,
-        screen_res,
-        user_params,
-    );
     log::trace!("intermediate passes done");
 }
 
@@ -198,13 +184,4 @@ fn copy_texture(
     pass.set_bind_group(0, bindgroup, &[]);
     pass.set_bind_group(1, proj_bg, &[]);
     pass.draw_indexed(0..6, 0, 0..1);
-}
-
-fn identity_matrix() -> [[f32; 4]; 4] {
-    [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ]
 }

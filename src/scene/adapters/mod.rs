@@ -20,5 +20,16 @@ pub enum FitMode {
     Stretch,
 }
 
+/// Rendering method: how the render loop is driven.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RenderMethod {
+    /// Continuously render as fast as possible (or up to `target_fps`).
+    /// The application drives the render loop.
+    Pull,
+    /// Render only when the compositor/system requests a new frame.
+    /// Saves power for static wallpapers.
+    Wait,
+}
+
 pub mod winit_adapter;
 pub mod wlr_app;

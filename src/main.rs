@@ -1,12 +1,56 @@
 mod scene;
 
+use std::io::Read;
 use std::path::Path;
 
 use clap::Parser;
 use log::LevelFilter;
+use serde::Deserialize;
 
 use crate::scene::adapters::FitMode;
+use crate::scene::adapters::RenderMethod;
 use crate::scene::adapters::{winit_adapter, wlr_app};
+
+// ── JSON Config ──────────────────────────────────────────────────────────────
+
+/// Top-level configuration that can be passed via CLI args or stdin JSON.
+#[derive(Deserialize, Debug, Clone)]
+pub struct Config {
+    /// Path to Wallpaper Engine assets directory.
+    /// Typically: Steam/steamapps/common/wallpaper_engine/assets
+    pub assets_path: String,
+
+    #[serde(default = "default_path")]
+    pub path: String,
+    #[serde(default = "default_modes")]
+    pub modes: String,
+    #[serde(default = "default_fit_mode")]
+    pub fit_mode: String,
+    #[serde(default)]
+    pub no_effects: bool,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    #[serde(default = "default_render_method")]
+    pub render_method: String,
+    #[serde(default)]
+    pub target_fps: Option<u32>,
+}
+
+fn default_path() -> String {
+    "./scene.pkg".to_string()
+}
+fn default_modes() -> String {
+    "wlr".to_string()
+}
+fn default_fit_mode() -> String {
+    "cover".to_string()
+}
+fn default_log_level() -> String {
+    "warning".to_string()
+}
+fn default_render_method() -> String {
+    "pull".to_string()
+}
 
 // ── Root CLI ─────────────────────────────────────────────────────────────────
 
@@ -40,6 +84,20 @@ struct Cli {
     /// fallback (e.g. Steam/steamapps/common/wallpaper_engine/assets).
     #[arg(long)]
     assets_path: Option<String>,
+
+    /// Rendering method: 'pull' (continuous) or 'wait' (on-demand).
+    #[arg(long, default_value = "pull")]
+    render_method: String,
+
+    /// Target frames per second when render-method is 'pull'.
+    /// If unset, renders as fast as possible.
+    #[arg(long)]
+    target_fps: Option<u32>,
+
+    /// Read JSON configuration from stdin instead of CLI arguments.
+    /// All other CLI arguments are ignored when this is set.
+    #[arg(long, default_value_t = false)]
+    stdin: bool,
 }
 
 // ── Subcommands ──────────────────────────────────────────────────────────────
@@ -207,7 +265,7 @@ fn run_parser(args: ParserArgs) {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     // If a subcommand was given, dispatch to it.
     if let Some(cmd) = cli.command {
@@ -217,6 +275,26 @@ fn main() {
                 return;
             }
         }
+    }
+
+    // If --stdin is set, read JSON config from stdin and merge with CLI.
+    if cli.stdin {
+        let mut input = String::new();
+        std::io::stdin()
+            .read_to_string(&mut input)
+            .expect("failed to read JSON config from stdin");
+        let config: Config = serde_json::from_str(&input)
+            .expect("failed to parse JSON config from stdin");
+
+        // Override CLI values with JSON config (JSON takes precedence).
+        cli.path = config.path;
+        cli.modes = config.modes;
+        cli.fit_mode = config.fit_mode;
+        cli.no_effects = config.no_effects;
+        cli.log_level = config.log_level;
+        cli.assets_path = Some(config.assets_path);
+        cli.render_method = config.render_method;
+        cli.target_fps = config.target_fps;
     }
 
     // No subcommand → run the wallpaper engine.
@@ -237,9 +315,36 @@ fn main() {
         }
     };
 
+    let render_method = match cli.render_method.as_str() {
+        "pull" => RenderMethod::Pull,
+        "wait" => RenderMethod::Wait,
+        _ => {
+            eprintln!(
+                "Unknown render-method '{}'. Valid: pull, wait",
+                cli.render_method
+            );
+            return;
+        }
+    };
+
+    let target_fps = cli.target_fps;
+
     match cli.modes.as_str() {
-        "winit" => winit_adapter::start(cli.path, cli.no_effects, cli.assets_path),
-        "wlr" => wlr_app::start(cli.path, fit_mode, cli.no_effects, cli.assets_path),
+        "winit" => winit_adapter::start(
+            cli.path,
+            cli.no_effects,
+            cli.assets_path,
+            render_method,
+            target_fps,
+        ),
+        "wlr" => wlr_app::start(
+            cli.path,
+            fit_mode,
+            cli.no_effects,
+            cli.assets_path,
+            render_method,
+            target_fps,
+        ),
         _ => {
             eprintln!("Unknown display mode '{}'. Valid: wlr, winit", cli.modes);
         }

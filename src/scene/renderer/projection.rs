@@ -28,6 +28,11 @@ pub struct Projection {
 pub struct ProjectionBindGroups {
     pub projection_layout: BindGroupLayout,
     pub projection: Option<BindGroup>,
+    /// Identity matrix bind group for intermediate (NDC-space) passes.
+    pub identity: Option<BindGroup>,
+    /// Separate buffer holding identity matrix, so intermediate passes
+    /// don't need to overwrite the main projection buffer.
+    pub identity_buffer: Buffer,
 }
 
 impl ProjectionBindGroups {
@@ -46,9 +51,18 @@ impl ProjectionBindGroups {
             }],
         });
 
+        let identity_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("identity projection buffer"),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+            size: std::mem::size_of::<CameraUniform>() as u64,
+        });
+
         Self {
             projection_layout: layout,
             projection: None,
+            identity: None,
+            identity_buffer,
         }
     }
 
@@ -69,6 +83,26 @@ impl ProjectionBindGroups {
         }));
 
         queue.write_buffer(&buffers.projection, 0, bytes_of(camera_uniform));
+
+        // Upload identity to the identity buffer (done once, never changes)
+        let identity = CameraUniform {
+            projection: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        };
+        queue.write_buffer(&self.identity_buffer, 0, bytes_of(&identity));
+
+        self.identity = Some(device.create_bind_group(&BindGroupDescriptor {
+            label: Some("identity projection bindgroup"),
+            layout: &self.projection_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: self.identity_buffer.as_entire_binding(),
+            }],
+        }));
     }
 }
 

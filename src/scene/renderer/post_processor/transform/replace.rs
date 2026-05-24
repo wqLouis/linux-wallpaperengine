@@ -40,40 +40,29 @@ pub fn replace_texture_calls(line: &str, sampler_set: &HashSet<&str>) -> String 
 }
 
 pub fn fix_implicit_truncation(line: &str, varying_types: &BTreeMap<String, String>) -> String {
-    if !line.contains('=') || line.contains('*') || line.contains('+') || line.contains('-') {
+    // Only handle simple assignments: `varying = expression;`
+    if !line.ends_with(';') || line.contains(|c: char| matches!(c, '*' | '+' | '-')) {
         return line.to_string();
     }
-    if !line.ends_with(';') {
+    let Some((lhs, rhs)) = line.trim_end_matches(';').split_once('=') else {
         return line.to_string();
-    }
-
-    let parts: Vec<&str> = line.splitn(2, '=').collect();
-    if parts.len() != 2 {
-        return line.to_string();
-    }
-
-    let lhs = parts[0].trim();
-    let rhs = parts[1].trim().trim_end_matches(';').trim();
-    let lhs_base = lhs.split('.').next().unwrap_or(lhs).trim();
-
+    };
+    let (lhs, rhs) = (lhs.trim(), rhs.trim());
     if lhs.contains('.') {
         return line.to_string();
     }
-
-    let rhs_base = rhs.split('.').next().unwrap_or(rhs).trim();
-    let rhs_swizzled = rhs.contains('.');
-
-    match (varying_types.get(lhs_base), varying_types.get(rhs_base)) {
-        (Some(l), Some(r)) if l != r && !rhs_swizzled => {
-            let swizzle = match (r.as_str(), l.as_str()) {
-                ("vec4", "vec2") | ("vec3", "vec2") => ".xy",
-                ("vec4", "vec3") => ".xyz",
-                _ => return line.to_string(),
-            };
-            format!("{} = {}{};", lhs, rhs, swizzle)
-        }
-        _ => line.to_string(),
+    let (Some(l_ty), Some(r_ty)) = (varying_types.get(lhs), varying_types.get(rhs.split('.').next().unwrap_or(rhs))) else {
+        return line.to_string();
+    };
+    if l_ty == r_ty || rhs.contains('.') {
+        return line.to_string();
     }
+    let swizzle = match (r_ty.as_str(), l_ty.as_str()) {
+        ("vec4", "vec2") | ("vec3", "vec2") => ".xy",
+        ("vec4", "vec3") => ".xyz",
+        _ => return line.to_string(),
+    };
+    format!("{} = {}{};", lhs, rhs, swizzle)
 }
 
 pub fn replace_mul(line: &str) -> String {
@@ -149,29 +138,17 @@ pub fn replace_frac(line: &str) -> String {
     }
     let mut result = line.to_string();
     let mut search_start = 0;
-    while let Some(frac_start) = result[search_start..].find("frac(") {
-        let abs_start = search_start + frac_start;
-        if abs_start > 0
-            && result[..abs_start]
-                .chars()
-                .last()
-                .map_or(false, |c| c.is_alphanumeric() || c == '_')
-        {
-            search_start = abs_start + 1;
+    while let Some(pos) = result[search_start..].find("frac(") {
+        let abs = search_start + pos;
+        // Only replace standalone `frac(`, not `Desaturate` or already `fract`
+        if abs > 0 && result.as_bytes()[abs - 1].is_ascii_alphanumeric() {
+            search_start = abs + 1;
             continue;
         }
-        result.replace_range(abs_start..abs_start + 4, "fract");
-        search_start = abs_start + 5;
+        result.replace_range(abs..abs + 4, "fract");
+        search_start = abs + 5;
     }
     result
-}
-
-pub fn replace_atan2(line: &str) -> String {
-    if !line.contains("atan2(") {
-        line.to_string()
-    } else {
-        line.replace("atan2(", "atan(")
-    }
 }
 
 /// Replace GLSL reserved keywords used as identifiers.
@@ -222,6 +199,180 @@ fn replace_keyword_identifier(line: &str, keyword: &str, replacement: &str) -> S
         }
     }
     result
+}
+
+/// Wrap boolean parenthesized expressions used in arithmetic with `float()`.
+/// Example: `(depth < limit) * 6.0` → `float(depth < limit) * 6.0`
+pub fn replace_bool_arithmetic(line: &str) -> String {
+    if !line.contains('<') && !line.contains('>') && !line.contains('=') {
+        return line.to_string();
+    }
+    let mut result = line.to_string();
+    let mut search_start = 0;
+
+    // Find `)` that is followed (maybe with whitespace) by *, /, +, -
+    while let Some(paren_close) = result[search_start..].find(')') {
+        let close_pos = search_start + paren_close;
+        let after_paren = result[close_pos + 1..].trim_start();
+
+        // Skip if `)` is followed by ternary `?` or `:` — it's a condition, not arithmetic
+        if after_paren.starts_with('?') || after_paren.starts_with(':') {
+            search_start = close_pos + 1;
+            continue;
+        }
+
+        // Check if this `)` is followed by an arithmetic operator
+        let followed_by_arith = after_paren.starts_with('*')
+            || after_paren.starts_with('/')
+            || after_paren.starts_with('+')
+            || after_paren.starts_with('-');
+
+        let Some(open_pos) = find_matching_open_paren(&result, close_pos) else {
+            search_start = close_pos + 1;
+            continue;
+        };
+
+        // Check if the matching `(` is preceded by an arithmetic/assignment operator
+        let preceded_by_arith = if open_pos > 0 {
+            let before_paren = result[..open_pos].trim_end();
+            before_paren.ends_with('*')
+                || before_paren.ends_with('/')
+                || before_paren.ends_with('+')
+                || before_paren.ends_with('-')
+                || before_paren.ends_with('=')
+        } else {
+            false
+        };
+
+        if !followed_by_arith && !preceded_by_arith {
+            search_start = close_pos + 1;
+            continue;
+        }
+
+        // Check if the expression inside contains comparison operators
+        let inside = &result[open_pos + 1..close_pos];
+        let has_comparison = inside.contains('<') || inside.contains('>')
+            || inside.contains("==") || inside.contains("!=")
+            || inside.contains("<=") || inside.contains(">=");
+
+        if !has_comparison {
+            search_start = close_pos + 1;
+            continue;
+        }
+
+        // Skip if this is a function call like float(…), clamp(…), if(…), etc.
+        if open_pos > 0 {
+            let before = result[..open_pos].trim_end();
+            if let Some(last_char) = before.chars().last() {
+                if last_char.is_alphanumeric() || last_char == '_' {
+                    search_start = close_pos + 1;
+                    continue;
+                }
+            }
+        }
+
+        // Replace '(' with 'float(' — the existing ')' becomes the closing of float()
+        result.replace_range(open_pos..open_pos + 1, "float(");
+        search_start = close_pos + 5; // account for extra chars from "float("
+    }
+
+    result
+}
+
+/// Convert float variables used as boolean conditions in ternary operators.
+/// Example: `outside ? a : b` → `outside != 0.0 ? a : b`
+pub fn replace_float_as_bool(line: &str) -> String {
+    if !line.contains('?') {
+        return line.to_string();
+    }
+    let mut result = line.to_string();
+    let mut search_start = 0;
+
+    while let Some(q_pos) = result[search_start..].find('?') {
+        let abs_q = search_start + q_pos;
+
+        // Get the text before the `?`, trim trailing whitespace
+        let before = result[..abs_q].trim_end();
+        if before.is_empty() {
+            search_start = abs_q + 1;
+            continue;
+        }
+
+        // Check if the condition is a parenthesized expression
+        if before.ends_with(')') {
+            if let Some(open_pos) = find_matching_open_paren(&result, before.len() - 1) {
+                let inside = &result[open_pos + 1..before.len() - 1];
+                // If inside contains comparison operators, it's already a bool — skip
+                if inside.contains('<') || inside.contains('>')
+                    || inside.contains("==") || inside.contains("!=")
+                    || inside.contains("<=") || inside.contains(">=")
+                    || inside.contains("&&") || inside.contains("||")
+                {
+                    search_start = abs_q + 1;
+                    continue;
+                }
+                // Check if already wrapped with bool()
+                if open_pos >= 5 && &result[open_pos - 5..open_pos] == "bool(" {
+                    search_start = abs_q + 1;
+                    continue;
+                }
+                // Wrap the parenthesized expression with bool()
+                result.replace_range(open_pos..open_pos + 1, "bool(");
+                search_start = abs_q + 5; // account for extra chars
+                continue;
+            }
+        }
+
+        // Check if the condition is a simple identifier (potential float variable)
+        if let Some(last_word) = before.rsplit(|c: char| !c.is_alphanumeric() && c != '_').next() {
+            if !last_word.is_empty()
+                && !last_word.starts_with(|c: char| c.is_ascii_digit())
+                && last_word != "true"
+                && last_word != "false"
+            {
+                // Check this is a standalone identifier (not preceded by a comparison op)
+                let before_word = before[..before.len() - last_word.len()].trim_end();
+                let preceded_by_cmp = before_word.ends_with('<') || before_word.ends_with('>')
+                    || before_word.ends_with("==") || before_word.ends_with("!=")
+                    || before_word.ends_with("<=") || before_word.ends_with(">=")
+                    || before_word.ends_with("&&") || before_word.ends_with("||");
+
+                if !preceded_by_cmp {
+                    // Replace `identifier?` with `identifier != 0.0 ?`
+                    let word_start = before.len() - last_word.len();
+                    // Only add conversion if it's not already bool()
+                    if word_start < 5 || &result[word_start - 5..word_start] != "bool(" {
+                        let replacement = format!("{} != 0.0 ", last_word);
+                        result.replace_range(word_start..abs_q, &replacement);
+                        search_start = word_start + replacement.len() + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        search_start = abs_q + 1;
+    }
+
+    result
+}
+
+/// Find the position of the matching opening parenthesis for a given close paren.
+fn find_matching_open_paren(s: &str, close_pos: usize) -> Option<usize> {
+    let mut depth = 1;
+    for (i, ch) in s[..close_pos].char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Find the position of the matching closing parenthesis, starting from

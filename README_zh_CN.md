@@ -1,6 +1,6 @@
 # Linux Wallpaper Engine
 
-[English](README.md) | [中文繁体](README_zh_TW.md) | [中文简体](README_zh_CN.md) | [文言](README_wenyan.md)
+[English](README.md) | [中文繁体](README_zh_TW.md) | [中文简体](README_zh_CN.md)
 
 ---
 
