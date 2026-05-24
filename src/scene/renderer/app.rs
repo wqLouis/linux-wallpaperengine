@@ -93,7 +93,8 @@ impl WgpuApp {
             .request_device(&DeviceDescriptor {
                 label: None,
                 required_features: Features::TEXTURE_BINDING_ARRAY
-                    | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
+                    | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+                    | Features::TEXTURE_COMPRESSION_BC,
                 required_limits: Limits {
                     max_binding_array_elements_per_shader_stage: MAX_TEXTURE,
                     ..Default::default()

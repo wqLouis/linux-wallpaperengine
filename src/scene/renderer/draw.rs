@@ -173,17 +173,25 @@ impl DrawObject {
     }
 
     fn upload_texture(device: &Device, queue: &Queue, tex_obj: &TextureObject) -> Texture {
-        let (format, bpp) = match tex_obj.texture.extension.as_str() {
-            "r8" => (TextureFormat::R8Unorm, 1u32),
-            "rg88" => (TextureFormat::Rg8Unorm, 2u32),
-            _ => (TextureFormat::Rgba8UnormSrgb, 4u32),
+        let ext = tex_obj.texture.extension.as_str();
+        let (format, bytes_per_row) = match ext {
+            "r8" => (TextureFormat::R8Unorm, tex_obj.texture.dimension[0] * 1),
+            "rg88" => (TextureFormat::Rg8Unorm, tex_obj.texture.dimension[0] * 2),
+            // BCn compressed: raw DXT payload goes directly to GPU, no CPU decode.
+            // Block size: 8 bytes (BC1) or 16 bytes (BC3) per 4×4 texel block.
+            "dxt1" => (TextureFormat::Bc1RgbaUnormSrgb, tex_obj.texture.dimension[0].div_ceil(4) * 8),
+            "dxt5" => (TextureFormat::Bc3RgbaUnormSrgb, tex_obj.texture.dimension[0].div_ceil(4) * 16),
+            _ => (TextureFormat::Rgba8UnormSrgb, tex_obj.texture.dimension[0] * 4),
         };
+
+        let w = tex_obj.texture.dimension[0];
+        let h = tex_obj.texture.dimension[1];
 
         let texture = device.create_texture(&TextureDescriptor {
             label: None,
             size: Extent3d {
-                width: tex_obj.texture.dimension[0],
-                height: tex_obj.texture.dimension[1],
+                width: w,
+                height: h,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -204,12 +212,12 @@ impl DrawObject {
             &tex_obj.texture.payload,
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(tex_obj.texture.dimension[0] * bpp),
+                bytes_per_row: Some(bytes_per_row),
                 rows_per_image: None,
             },
             Extent3d {
-                width: tex_obj.texture.dimension[0],
-                height: tex_obj.texture.dimension[1],
+                width: w,
+                height: h,
                 depth_or_array_layers: 1,
             },
         );
