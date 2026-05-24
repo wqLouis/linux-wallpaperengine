@@ -29,6 +29,10 @@ pub struct EffectStep {
     pub pipedata: EffectPipelineData,
     pub bind_inputs: Vec<(String, u32)>,
     pub target: Option<String>,
+    /// Cached intermediate bind groups for ping-pong rendering.
+    /// `bg_a` has source_view = view_a, `bg_b` has source_view = view_b.
+    pub cached_bg_a: Option<BindGroup>,
+    pub cached_bg_b: Option<BindGroup>,
 }
 
 pub struct FboTexture {
@@ -139,7 +143,7 @@ fn build_step(
         mask_tex, noise_tex,
     )?;
 
-    Some(EffectStep { pipeline, bindgroup, pipedata, bind_inputs, target })
+    Some(EffectStep { pipeline, bindgroup, pipedata, bind_inputs, target, cached_bg_a: None, cached_bg_b: None })
 }
 
 fn load_mask_and_noise(device: &Device, queue: &Queue, scene: &Scene,
@@ -165,9 +169,31 @@ fn build_tex_resolutions(pipedata: &EffectPipelineData, sw: u32, sh: u32,
     }).collect()
 }
 
+impl EffectStep {
+    /// Create cached intermediate bind groups for both ping-pong views.
+    /// Called once during scene loading after ping-pong textures are allocated.
+    pub fn cache_intermediate_bindgroups(
+        &mut self,
+        device: &Device,
+        view_a: &TextureView,
+        view_b: &TextureView,
+        fbos: &BTreeMap<String, FboTexture>,
+        sampler: &Sampler,
+    ) {
+        self.cached_bg_a = Some(build_step_bindgroup(
+            device, self, view_a, fbos, sampler,
+        ));
+        self.cached_bg_b = Some(build_step_bindgroup(
+            device, self, view_b, fbos, sampler,
+        ));
+    }
+}
+
 // ── Bindgroup builder ─────────────────────────────────────────
 
-pub fn make_step_bindgroup(
+/// Build a bind group for one step with a specific source view.
+/// Used both for one-off creation (legacy) and cached pre-creation.
+fn build_step_bindgroup(
     device: &Device, step: &EffectStep, source_view: &TextureView,
     fbos: &BTreeMap<String, FboTexture>, sampler: &Sampler,
 ) -> BindGroup {
@@ -182,6 +208,15 @@ pub fn make_step_bindgroup(
         entries.push(BindGroupEntry { binding: step.pipedata.layout.uniform_binding, resource: buf.as_entire_binding() });
     }
     device.create_bind_group(&BindGroupDescriptor { label: None, layout: &step.pipedata.bindgroup_layout, entries: &entries })
+}
+
+/// Build a bind group on-the-fly (legacy path; kept for debugging / future use).
+#[allow(dead_code)]
+pub fn make_step_bindgroup(
+    device: &Device, step: &EffectStep, source_view: &TextureView,
+    fbos: &BTreeMap<String, FboTexture>, sampler: &Sampler,
+) -> BindGroup {
+    build_step_bindgroup(device, step, source_view, fbos, sampler)
 }
 
 fn resolve_texture<'a>(slot: u32, step: &'a EffectStep, source_view: &'a TextureView,

@@ -113,7 +113,7 @@ impl DrawObject {
         let tex_w = texture_object.texture.dimension[0];
         let tex_h = texture_object.texture.dimension[1];
 
-        let (effect_steps, fbos, has_steps) = effect_step::build_effect_steps(
+        let (mut effect_steps, fbos, has_steps) = effect_step::build_effect_steps(
             device,
             queue,
             &texture_object.effects,
@@ -127,7 +127,7 @@ impl DrawObject {
             no_effects,
         );
 
-        let intermediates = if has_steps {
+        let mut intermediates = if has_steps {
             let max_w = tex_w.max(post_process.blank_texture.width());
             let max_h = tex_h.max(post_process.blank_texture.height());
             Some(PingPongTextures::new(
@@ -140,6 +140,20 @@ impl DrawObject {
         } else {
             None
         };
+
+        // Pre-cache intermediate and final-pass bind groups.
+        if let Some(ref mut pp) = intermediates {
+            for step in &mut effect_steps {
+                step.cache_intermediate_bindgroups(
+                    device,
+                    &pp.view_a,
+                    &pp.view_b,
+                    &fbos,
+                    &post_process.sampler,
+                );
+            }
+            pp.cache_final_bindgroup(device, &post_process.layout, &post_process.sampler);
+        }
 
         buffers.draw_texture(
             queue,

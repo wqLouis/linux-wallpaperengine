@@ -18,6 +18,9 @@ pub struct PingPongTextures {
     pub view_b: TextureView,
     pub ndc_vbuf: Buffer,
     pub ndc_ibuf: Buffer,
+    /// Cached bind group for the final render pass (source = view_a).
+    /// Created once during setup to avoid per-frame bind group allocation.
+    pub cached_final_bg_a: Option<BindGroup>,
 }
 
 impl PingPongTextures {
@@ -73,7 +76,19 @@ impl PingPongTextures {
             view_b,
             ndc_vbuf,
             ndc_ibuf,
+            cached_final_bg_a: None,
         }
+    }
+
+    /// Populate the cached final-pass bind group (source = view_a).
+    /// Must be called after construction and before the first frame.
+    pub fn cache_final_bindgroup(
+        &mut self,
+        device: &Device,
+        layout: &BindGroupLayout,
+        sampler: &Sampler,
+    ) {
+        self.cached_final_bg_a = Some(self.make_bindgroup(device, layout, sampler, &self.view_a));
     }
 
     /// Create a bind group from the given view (used for both final and intermediate passes).

@@ -2,7 +2,7 @@
 //!
 //! This module handles the final render pass that draws objects to the
 //! swapchain surface, and writes per-frame uniforms (time, cursor, etc.)
-//! into effect bind group buffers.
+//! into effect bind group buffers using a reusable staging buffer.
 
 use glam::Vec3;
 use log;
@@ -12,26 +12,27 @@ use super::{
     app::UserParams,
     buffer::Buffers,
     draw::{DrawObject, DrawQueue},
-    post_process::PostProcess,
     post_processor::effect_param::SystemUniforms,
     projection::ProjectionBindGroups,
     surface::AppSurface,
 };
 
-/// Render all draw objects to the swapchain surface.
+/// Render all draw objects to the swapchain surface using the provided encoder.
 ///
 /// Each object is drawn with either its direct bind group (no post-processing)
 /// or the intermediate ping-pong texture (after applying effects).
-pub fn render_final_pass(
+///
+/// Returns the swapchain output texture (caller must call `present()` after
+/// submitting the encoder).  Returns `None` on surface error.
+pub fn render_final_pass<'a>(
+    encoder: &'a mut CommandEncoder,
     device: &Device,
-    queue: &Queue,
-    surface: &AppSurface,
-    buffers: &Buffers,
-    projection_bindgroup: &ProjectionBindGroups,
-    draw_queue: &DrawQueue,
-    post_process: &PostProcess,
+    surface: &'a AppSurface,
+    buffers: &'a Buffers,
+    projection_bindgroup: &'a ProjectionBindGroups,
+    draw_queue: &'a DrawQueue,
     clear_color: Vec3,
-) -> Option<()> {
+) -> Option<SurfaceTexture> {
     // Acquire the next swapchain frame
     let output = match surface.surface.get_current_texture() {
         Ok(frame) => {
@@ -57,7 +58,6 @@ pub fn render_final_pass(
     let view = output
         .texture
         .create_view(&TextureViewDescriptor::default());
-    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
 
     log::trace!("drawing {} objects...", draw_queue.queue.len());
     {
@@ -90,16 +90,12 @@ pub fn render_final_pass(
             // Use the intermediate result (post-effects) if available,
             // otherwise use the original texture bind group
             let bg = if let Some(ref pp) = draw_object.intermediates {
-                pp.make_bindgroup(
-                    device,
-                    &post_process.layout,
-                    &post_process.sampler,
-                    &pp.view_a,
-                )
+                // Use cached final-pass bind group to avoid per-frame allocation.
+                pp.cached_final_bg_a.as_ref().unwrap_or(&draw_object.bindgroup)
             } else {
-                draw_object.bindgroup.clone()
+                &draw_object.bindgroup
             };
-            render_pass.set_bind_group(0, &bg, &[]);
+            render_pass.set_bind_group(0, bg, &[]);
             render_pass.draw_indexed(
                 draw_object.index_range[0]..draw_object.index_range[1],
                 0,
@@ -108,32 +104,44 @@ pub fn render_final_pass(
         }
     }
 
-    log::trace!("submitting to queue...");
-    queue.submit(Some(encoder.finish()));
-    log::trace!("presenting...");
-    output.present();
-    log::trace!("frame done");
-    Some(())
+    Some(output)
 }
 
 /// Write per-frame uniform data into effect bind group buffers.
 ///
-/// Each effect bind group has a uniform buffer containing system values
-/// (time, projection, screen resolution, cursor position) and material
-/// constants. This function populates and uploads that data every frame.
+/// Uses a caller-provided reusable staging buffer to avoid per-frame
+/// heap allocations. The staging buffer is resized as needed for the
+/// largest uniform block.
+///
+/// Effect uniforms always use the identity projection matrix since
+/// effect pipelines operate in NDC/texture space.
 pub fn write_effect_uniforms(
     queue: &Queue,
+    staging: &mut Vec<u8>,
     objects: &[DrawObject],
     elapsed: f32,
-    projection: &[[f32; 4]; 4],
     screen_res: [u32; 2],
     user_params: &UserParams,
 ) {
+    // Identity matrix — effect pipelines always work in NDC space.
+    let identity: [[f32; 4]; 4] = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+
     for draw_object in objects {
         for step in &draw_object.effect_steps {
             if let Some(ref buf) = step.bindgroup.uniform_buffer {
                 let buf_size = step.bindgroup.uniform_layout.total_size() as usize;
-                let mut staging = vec![0u8; buf_size];
+                // Reuse the caller's staging buffer; grow if needed (amortized).
+                if staging.len() < buf_size {
+                    staging.resize(buf_size, 0);
+                }
+                // Zero out the slice we'll use (populate_effect_params calls
+                // write_all_defaults first, but being explicit is safe).
+                staging[..buf_size].fill(0);
 
                 let sys = SystemUniforms {
                     screen_resolution: screen_res,
@@ -142,15 +150,15 @@ pub fn write_effect_uniforms(
                 };
 
                 step.bindgroup.uniform_layout.populate_effect_params(
-                    &mut staging,
+                    &mut staging[..buf_size],
                     &step.bindgroup.constants,
                     &step.bindgroup.material_keys,
                     elapsed,
-                    projection,
+                    &identity,
                     &sys,
                 );
 
-                queue.write_buffer(buf, 0, &staging);
+                queue.write_buffer(buf, 0, &staging[..buf_size]);
             }
         }
     }
