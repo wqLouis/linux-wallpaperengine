@@ -17,6 +17,8 @@ use super::{
     draw::DrawQueue,
     post_process::PostProcess,
     projection::ProjectionBindGroups,
+    render_pass,
+    app::UserParams,
 };
 
 /// Run intermediate post-process passes for all objects with effects.
@@ -29,6 +31,10 @@ pub fn render_intermediate_passes(
     projection_bindgroup: &ProjectionBindGroups,
     draw_queue: &DrawQueue,
     post_process: &PostProcess,
+    elapsed: f32,
+    screen_res: [u32; 2],
+    user_params: &UserParams,
+    staging: &mut Vec<u8>,
 ) {
     log::trace!(
         "starting intermediate passes, {} objects",
@@ -52,7 +58,20 @@ pub fn render_intermediate_passes(
             draw_object.effect_steps.len(),
         );
 
-        // Step 1: copy source texture → view_a
+        // Step 1: clear ping-pong textures using GPU-side clear if available,
+        // then copy source texture → view_a.
+        if post_process.has_clear_texture {
+            // Use CLEAR_TEXTURE feature for zero-cost GPU clears.
+            let subresource = ImageSubresourceRange {
+                aspect: TextureAspect::All,
+                base_mip_level: 0,
+                mip_level_count: None,
+                base_array_layer: 0,
+                array_layer_count: None,
+            };
+            encoder.clear_texture(&pp.tex_a, &subresource);
+            encoder.clear_texture(&pp.tex_b, &subresource);
+        }
         copy_texture(
             encoder,
             &draw_queue.image_pipeline,
@@ -122,12 +141,49 @@ pub fn render_intermediate_passes(
                 ..Default::default()
             });
 
-            pass.set_pipeline(&step.pipeline);
-            pass.set_vertex_buffer(0, pp.ndc_vbuf.slice(..));
-            pass.set_index_buffer(pp.ndc_ibuf.slice(..), IndexFormat::Uint32);
-            pass.set_bind_group(0, inter_bg, &[]);
-            pass.set_bind_group(1, proj_bg, &[]);
-            pass.draw_indexed(0..6, 0, 0..1);
+            // Use compute dispatch when a compute pipeline is available.
+            // Compute shaders can be faster for data-parallel effects like blur/bloom.
+            if let Some(ref compute_pipeline) = step.compute_pipeline {
+                drop(pass); // End the render pass before starting a compute pass.
+
+                // Determine target dimensions for workgroup dispatch.
+                let (target_w, target_h) = match &step.target {
+                    Some(fbo_name) => {
+                        let fbo = draw_object.fbos.get(fbo_name).unwrap();
+                        (fbo.width, fbo.height)
+                    }
+                    None => (pp.width, pp.height),
+                };
+
+                let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+                cpass.set_pipeline(compute_pipeline);
+                cpass.set_bind_group(0, inter_bg, &[]);
+                // Immediates must come after set_pipeline.
+                if step.pipedata.layout.use_immediates {
+                    let data = render_pass::build_immediates_data(
+                        staging, step, elapsed, screen_res, user_params,
+                    );
+                    cpass.set_immediates(0, data);
+                }
+                // Dispatch one thread group per 8x8 tile; compute shader declares its workgroup size.
+                let groups_x = target_w.div_ceil(8);
+                let groups_y = target_h.div_ceil(8);
+                cpass.dispatch_workgroups(groups_x, groups_y, 1);
+            } else {
+                pass.set_pipeline(&step.pipeline);
+                // Immediates must come AFTER set_pipeline (wgpu validation).
+                if step.pipedata.layout.use_immediates {
+                    let data = render_pass::build_immediates_data(
+                        staging, step, elapsed, screen_res, user_params,
+                    );
+                    pass.set_immediates(0, data);
+                }
+                pass.set_vertex_buffer(0, pp.ndc_vbuf.slice(..));
+                pass.set_index_buffer(pp.ndc_ibuf.slice(..), IndexFormat::Uint32);
+                pass.set_bind_group(0, inter_bg, &[]);
+                pass.set_bind_group(1, proj_bg, &[]);
+                pass.draw_indexed(0..6, 0, 0..1);
+            }
         }
 
         // Step 3: ensure final result is in view_a.

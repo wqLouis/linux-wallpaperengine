@@ -221,6 +221,7 @@ impl ObjectMap {
                     decompressed_size: 4,
                     extension: "solid".into(),
                     payload: vec![r, g, b, a],
+                    mip_levels: Vec::new(),
                 })
             };
 

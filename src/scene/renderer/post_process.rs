@@ -4,10 +4,17 @@ pub struct PostProcess {
     pub sampler: Sampler,
     pub layout: BindGroupLayout,
     pub blank_texture: Texture,
+    /// Whether CLEAR_TEXTURE feature is available (GPU-side texture clear).
+    pub has_clear_texture: bool,
 }
 
 impl PostProcess {
-    pub fn new(device: &Device, queue: &Queue, res: [u32; 2]) -> Self {
+    pub fn new(
+        device: &Device,
+        queue: &Queue,
+        res: [u32; 2],
+        has_clear_texture: bool,
+    ) -> Self {
         let sampler = device.create_sampler(&SamplerDescriptor {
             label: None,
             address_mode_u: AddressMode::ClampToEdge,
@@ -15,7 +22,7 @@ impl PostProcess {
             address_mode_w: AddressMode::ClampToEdge,
             mag_filter: FilterMode::Linear,
             min_filter: FilterMode::Linear,
-            mipmap_filter: MipmapFilterMode::Nearest,
+            mipmap_filter: MipmapFilterMode::Linear,
             ..Default::default()
         });
 
@@ -84,6 +91,7 @@ impl PostProcess {
             sampler,
             layout,
             blank_texture,
+            has_clear_texture,
         }
     }
 }

@@ -78,7 +78,10 @@ pub fn create_effect_bindgroup_layout(device: &Device, layout: &EffectLayout) ->
         count: None,
     });
 
-    if !layout.uniform_decls.is_empty() {
+    // When using immediates (push constants), uniforms are supplied via
+    // set_immediates() rather than a buffer binding. Skip the UBO entry
+    // so the bind group layout matches the bind group (which also omits it).
+    if !layout.uniform_decls.is_empty() && !layout.use_immediates {
         entries.push(BindGroupLayoutEntry {
             binding: layout.uniform_binding,
             visibility: ShaderStages::VERTEX_FRAGMENT,

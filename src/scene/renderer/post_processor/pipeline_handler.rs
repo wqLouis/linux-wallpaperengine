@@ -10,7 +10,7 @@ use crate::scene::{
             effect_param::UniformLayout,
             pipeline_helpers,
             shader_header,
-            transform::{EffectLayout, preprocess_pair},
+            transform::{EffectLayout, collect_layout, preprocess_pair},
         },
         vertex::Vertex,
     },
@@ -19,6 +19,10 @@ use crate::scene::{
 #[derive(Debug, Clone)]
 pub struct EffectPipelineData {
     pub pipeline: Rc<RenderPipeline>,
+    /// Optional compute pipeline for effects that can run as compute shaders
+    /// (e.g., blur, bloom downsampling). None for traditional fragment-shader effects.
+    #[allow(dead_code)]
+    pub compute_pipeline: Option<Rc<ComputePipeline>>,
     pub layout: EffectLayout,
     pub bindgroup_layout: BindGroupLayout,
     pub uniform_layout: UniformLayout,
@@ -35,6 +39,8 @@ pub fn get_or_create_pipeline(
     pipelines: &mut BTreeMap<String, EffectPipelineData>,
     scene: &Scene,
     projection_bgl: &BindGroupLayout,
+    has_immediates: bool,
+    has_subgroup: bool,
 ) -> Option<Rc<RenderPipeline>> {
     let cache_key = make_cache_key(&effect_path, pass_textures, pass_combos);
     if let Some(data) = pipelines.get(&cache_key) {
@@ -55,6 +61,8 @@ pub fn get_or_create_pipeline(
         pass_combos,
         scene,
         projection_bgl,
+        has_immediates,
+        has_subgroup,
     )?;
     let rc = Rc::clone(&data.pipeline);
     pipelines.insert(cache_key, data);
@@ -72,6 +80,8 @@ pub fn create_effect_pipeline_for_multipass(
     pipelines: &mut BTreeMap<String, EffectPipelineData>,
     scene: &Scene,
     projection_bgl: &BindGroupLayout,
+    has_immediates: bool,
+    has_subgroup: bool,
 ) -> Option<Rc<RenderPipeline>> {
     let cache_key = make_cache_key(material_path, pass_textures, pass_combos);
     if let Some(data) = pipelines.get(&cache_key) {
@@ -82,6 +92,7 @@ pub fn create_effect_pipeline_for_multipass(
     let data = compile_pipeline(
         device, frag_path, vert_path, material_json,
         pass_textures, pass_combos, scene, projection_bgl,
+        has_immediates, has_subgroup,
     )?;
     let rc = Rc::clone(&data.pipeline);
     pipelines.insert(cache_key, data);
@@ -120,6 +131,8 @@ fn compile_pipeline(
     pass_combos: Option<&BTreeMap<String, i64>>,
     scene: &Scene,
     projection_bgl: &BindGroupLayout,
+    has_immediates: bool,
+    has_subgroup: bool,
 ) -> Option<EffectPipelineData> {
     let frag_raw = &*scene.misc.get(frag_path)?;
     let vert_raw = &*scene.misc.get(vert_path)?;
@@ -145,8 +158,23 @@ fn compile_pipeline(
 
     let define_refs: Vec<(&str, &str)> = defines.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let headers = shader_header::get_headers(&scene.misc);
+
+    // First pass: collect layout to know uniform sizes.
+    let layout_pre = collect_layout(vert_source, frag_source, &headers);
+    let total_uniform_size = layout_pre.total_uniform_size();
+    // Use immediates if available AND uniform block fits within immediate size limit.
+    // Vulkan push constants are typically 128–256 bytes; wgpu reports via Limits::max_immediate_size.
+    let max_immediate = if has_immediates { device.limits().max_immediate_size } else { 0 };
+    let use_immediates = has_immediates && total_uniform_size > 0 && total_uniform_size <= max_immediate as u64;
+    if use_immediates {
+        log::info!(
+            "Shader {}: using immediates for {} bytes of uniforms (limit={})",
+            frag_path, total_uniform_size, max_immediate
+        );
+    }
+
     let (vert_processed, frag_processed, layout) =
-        preprocess_pair(vert_source, frag_source, &headers, &defines);
+        preprocess_pair(vert_source, frag_source, &headers, &defines, has_subgroup, use_immediates);
 
     let vert_module = device.create_shader_module(ShaderModuleDescriptor {
         label: None,
@@ -158,10 +186,14 @@ fn compile_pipeline(
     });
 
     let effect_bgl = pipeline_helpers::create_effect_bindgroup_layout(device, &layout);
+    // immediate_size must exactly match the data passed to set_immediates().
+    // Use the UniformLayout computed here (shared with EffectPipelineData below).
+    let uniform_layout = UniformLayout::new(&layout.uniform_decls);
+    let immediate_size = if use_immediates { uniform_layout.total_size() as u32 } else { 0 };
     let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: None,
         bind_group_layouts: &[&effect_bgl, projection_bgl],
-        immediate_size: 0,
+        immediate_size,
     });
     let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
         label: None,
@@ -183,7 +215,8 @@ fn compile_pipeline(
 
     Some(EffectPipelineData {
         pipeline: Rc::new(pipeline),
-        uniform_layout: UniformLayout::new(&layout.uniform_decls),
+        compute_pipeline: None,
+        uniform_layout,
         bindgroup_layout: effect_bgl,
         layout,
     })

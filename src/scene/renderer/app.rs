@@ -58,6 +58,14 @@ pub struct WgpuApp {
     /// Reusable staging buffer for per-frame uniform writes.
     /// Allocated once and grown on demand to avoid per-frame heap allocations.
     pub uniform_staging: Vec<u8>,
+    /// Whether IMMEDIATES (push-constants) feature is available.
+    pub has_immediates: bool,
+    /// Whether CLEAR_TEXTURE feature is available.
+    pub has_clear_texture: bool,
+    /// Whether PARTIALLY_BOUND_BINDING_ARRAY feature is available.
+    pub has_partially_bound: bool,
+    /// Whether SUBGROUP feature is available.
+    pub has_subgroup: bool,
 }
 
 impl WgpuApp {
@@ -89,14 +97,52 @@ impl WgpuApp {
             .await
             .unwrap();
 
+        // Build the feature set: start with required features, add optional
+        // performance features that the adapter supports.
+        let required = Features::TEXTURE_BINDING_ARRAY
+            | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+            | Features::TEXTURE_COMPRESSION_BC;
+
+        // Optional performance-enhancing Vulkan features.
+        // IMMEDIATES (push-constants): skip write_buffer for small per-frame uniforms.
+        // PARTIALLY_BOUND_BINDING_ARRAY: skip placeholder bindings for unused texture slots.
+        // SUBGROUP: wave/warp-level operations in shaders for faster reductions.
+        // CLEAR_TEXTURE: GPU-side texture clear without a render pass.
+        let optional = Features::IMMEDIATES
+            | Features::PARTIALLY_BOUND_BINDING_ARRAY
+            | Features::SUBGROUP
+            | Features::CLEAR_TEXTURE;
+
+        let supported = adapter.features();
+        let enabled_features = required | (optional & supported);
+
+        // Log which optional features were enabled / missed
+        let check = |f: Features, name: &str| {
+            if enabled_features.contains(f) {
+                log::info!("feature '{}' enabled", name);
+            } else {
+                log::warn!("feature '{}' not supported by adapter", name);
+            }
+        };
+        check(Features::IMMEDIATES, "IMMEDIATES (push constants)");
+        check(Features::PARTIALLY_BOUND_BINDING_ARRAY, "PARTIALLY_BOUND_BINDING_ARRAY");
+        check(Features::SUBGROUP, "SUBGROUP");
+        check(Features::CLEAR_TEXTURE, "CLEAR_TEXTURE");
+
+        let max_immediate_size = if enabled_features.contains(Features::IMMEDIATES) {
+            adapter.limits().max_immediate_size
+        } else {
+            0
+        };
+        log::info!("max_immediate_size: {} bytes", max_immediate_size);
+
         let (device, queue) = adapter
             .request_device(&DeviceDescriptor {
                 label: None,
-                required_features: Features::TEXTURE_BINDING_ARRAY
-                    | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
-                    | Features::TEXTURE_COMPRESSION_BC,
+                required_features: enabled_features,
                 required_limits: Limits {
                     max_binding_array_elements_per_shader_stage: MAX_TEXTURE,
+                    max_immediate_size,
                     ..Default::default()
                 },
                 experimental_features: ExperimentalFeatures::disabled(),
@@ -105,6 +151,11 @@ impl WgpuApp {
             })
             .await
             .unwrap();
+
+        let has_immediates = enabled_features.contains(Features::IMMEDIATES);
+        let has_clear_texture = enabled_features.contains(Features::CLEAR_TEXTURE);
+        let has_partially_bound = enabled_features.contains(Features::PARTIALLY_BOUND_BINDING_ARRAY);
+        let has_subgroup = enabled_features.contains(Features::SUBGROUP);
 
         let surface = AppSurface::new(surface, &instance, &adapter, size);
         let buffers = Buffers::new(&device, MAX_INDEX as u64, MAX_VERTEX as u64);
@@ -130,6 +181,10 @@ impl WgpuApp {
             no_effects: no_effects,
             user_params: UserParams::default(),
             uniform_staging: Vec::new(),
+            has_immediates,
+            has_clear_texture,
+            has_partially_bound,
+            has_subgroup,
         }
     }
 
@@ -201,6 +256,10 @@ impl WgpuApp {
                 &self.projection_bindgroup,
                 draw_queue,
                 post_process,
+                elapsed,
+                screen_res,
+                &params,
+                &mut self.uniform_staging,
             );
             log::trace!("intermediate passes done");
         }

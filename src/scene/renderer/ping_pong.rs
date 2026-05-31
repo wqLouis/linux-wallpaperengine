@@ -10,14 +10,14 @@ use super::post_process::PostProcess;
 use super::vertex::{NDC_VERTICES, Vertex};
 
 pub struct PingPongTextures {
-    #[allow(dead_code)]
-    tex_a: Texture,
-    #[allow(dead_code)]
-    tex_b: Texture,
+    pub tex_a: Texture,
+    pub tex_b: Texture,
     pub view_a: TextureView,
     pub view_b: TextureView,
     pub ndc_vbuf: Buffer,
     pub ndc_ibuf: Buffer,
+    pub width: u32,
+    pub height: u32,
     /// Cached bind group for the final render pass (source = view_a).
     /// Created once during setup to avoid per-frame bind group allocation.
     pub cached_final_bg_a: Option<BindGroup>,
@@ -76,6 +76,8 @@ impl PingPongTextures {
             view_b,
             ndc_vbuf,
             ndc_ibuf,
+            width,
+            height,
             cached_final_bg_a: None,
         }
     }
