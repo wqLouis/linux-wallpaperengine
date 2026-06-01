@@ -303,6 +303,12 @@ fn main() {
         }
     };
 
+    // --no-effects implies a static image: render once and stop,
+    // unless the user explicitly set a different target_fps.
+    if cli.no_effects && cli.target_fps.is_none() {
+        cli.target_fps = Some(0);
+    }
+
     let target_fps = cli.target_fps;
 
     match cli.modes.as_str() {

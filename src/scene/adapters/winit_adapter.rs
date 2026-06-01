@@ -77,11 +77,13 @@ impl ApplicationHandler for WinitApp {
                 // Sleep for the remaining interval rather than busy-skipping
                 // frames, which would spin the CPU at 100%.
                 if let Some(target_fps) = self.target_fps {
-                    if let Some(last) = self.last_frame {
-                        let min_delta =
-                            std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
-                        if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
-                            std::thread::sleep(remaining);
+                    if target_fps > 0 {
+                        if let Some(last) = self.last_frame {
+                            let min_delta =
+                                std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+                            if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
+                                std::thread::sleep(remaining);
+                            }
                         }
                     }
                 }
@@ -99,8 +101,12 @@ impl ApplicationHandler for WinitApp {
                 if render_result.is_none() {
                     log::warn!("render returned None");
                 }
-                self.window.as_ref().unwrap().request_redraw();
-                log::trace!("requested next redraw");
+                // Don't request the next redraw when target_fps is 0 (static image mode),
+                // so the wallpaper renders one frame and then stays idle.
+                if self.target_fps != Some(0) {
+                    self.window.as_ref().unwrap().request_redraw();
+                    log::trace!("requested next redraw");
+                }
             }
             WindowEvent::Resized(physical_size) => {
                 let app = app.as_mut().unwrap();

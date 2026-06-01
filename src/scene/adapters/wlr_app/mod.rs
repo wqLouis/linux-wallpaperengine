@@ -76,6 +76,9 @@ pub struct WlrState {
     pub target_fps: Option<u32>,
     /// Track last frame time for FPS limiting.
     last_frame: Option<Instant>,
+    /// Set to true when reconfigure changes the swapchain (so we re-render once
+    /// in static-image mode) and initially true for the first frame.
+    needs_render: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +274,8 @@ impl WlrState {
 
         self.app.resize([phys_w, phys_h]);
 
+        self.needs_render = true;
+
         self.scale.last_applied_scale = self.scale.scale_num;
         self.last_applied_logical = self.last_logical;
     }
@@ -440,20 +445,53 @@ pub fn start(
         last_applied_logical: None,
         target_fps,
         last_frame: None,
+        needs_render: true,
     };
 
     let mut frame_count: u64 = 0;
     loop {
+        // ── Static image mode (target_fps == 0) ──────────────────────
+        // Only render when the compositor asks for a reconfigure; otherwise
+        // block the thread until a Wayland event arrives (zero CPU while idle).
+        if state.target_fps == Some(0) {
+            // Always drain pending events first — the initial configure
+            // (and any other queued events) must be handled before we
+            // can safely render.
+            event_queue.dispatch_pending(&mut state).unwrap();
+
+            if state.needs_render {
+                state.needs_render = false;
+                state.last_frame = Some(Instant::now());
+
+                log::trace!("frame {}: calling render (static)...", frame_count);
+                let render_result = state.app.render();
+                if render_result.is_none() {
+                    log::warn!("frame {}: render returned None", frame_count);
+                }
+                frame_count = frame_count.wrapping_add(1);
+            }
+            // Block until the compositor sends us an event (configure,
+            // output scale, etc.).  If reconfigure() fires it will set
+            // needs_render = true and we will re-render on the next
+            // iteration.
+            log::trace!("static mode: blocking for events...");
+            event_queue.blocking_dispatch(&mut state).unwrap();
+            continue;
+        }
+
+        // ── Normal / animated mode ───────────────────────────────────
         log::trace!("frame {}: dispatching events...", frame_count);
         event_queue.dispatch_pending(&mut state).unwrap();
 
         // --- FPS limiting ---
         if let Some(target_fps) = state.target_fps {
-            if let Some(last) = state.last_frame {
-                let min_delta =
-                    std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
-                if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
-                    std::thread::sleep(remaining);
+            if target_fps > 0 {
+                if let Some(last) = state.last_frame {
+                    let min_delta =
+                        std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+                    if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
+                        std::thread::sleep(remaining);
+                    }
                 }
             }
         }
