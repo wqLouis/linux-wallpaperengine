@@ -1,50 +1,12 @@
 mod scene;
 
-use std::io::Read;
 use std::path::Path;
 
 use clap::Parser;
 use log::LevelFilter;
-use serde::Deserialize;
 
 use crate::scene::adapters::FitMode;
 use crate::scene::adapters::{winit_adapter, wlr_app};
-
-// ── JSON Config ──────────────────────────────────────────────────────────────
-
-/// Top-level configuration that can be passed via CLI args or stdin JSON.
-#[derive(Deserialize, Debug, Clone)]
-pub struct Config {
-    /// Path to Wallpaper Engine assets directory.
-    /// Typically: Steam/steamapps/common/wallpaper_engine/assets
-    pub assets_path: String,
-
-    #[serde(default = "default_path")]
-    pub path: String,
-    #[serde(default = "default_modes")]
-    pub modes: String,
-    #[serde(default = "default_fit_mode")]
-    pub fit_mode: String,
-    #[serde(default)]
-    pub no_effects: bool,
-    #[serde(default = "default_log_level")]
-    pub log_level: String,
-    #[serde(default)]
-    pub target_fps: Option<u32>,
-}
-
-fn default_path() -> String {
-    "./scene.pkg".to_string()
-}
-fn default_modes() -> String {
-    "wlr".to_string()
-}
-fn default_fit_mode() -> String {
-    "cover".to_string()
-}
-fn default_log_level() -> String {
-    "warning".to_string()
-}
 
 // ── Root CLI ─────────────────────────────────────────────────────────────────
 
@@ -82,11 +44,6 @@ struct Cli {
     /// Target frames per second. If unset, renders as fast as possible.
     #[arg(long)]
     target_fps: Option<u32>,
-
-    /// Read JSON configuration from stdin instead of CLI arguments.
-    /// All other CLI arguments are ignored when this is set.
-    #[arg(long, default_value_t = false)]
-    stdin: bool,
 }
 
 // ── Subcommands ──────────────────────────────────────────────────────────────
@@ -264,25 +221,6 @@ fn main() {
                 return;
             }
         }
-    }
-
-    // If --stdin is set, read JSON config from stdin and merge with CLI.
-    if cli.stdin {
-        let mut input = String::new();
-        std::io::stdin()
-            .read_to_string(&mut input)
-            .expect("failed to read JSON config from stdin");
-        let config: Config = serde_json::from_str(&input)
-            .expect("failed to parse JSON config from stdin");
-
-        // Override CLI values with JSON config (JSON takes precedence).
-        cli.path = config.path;
-        cli.modes = config.modes;
-        cli.fit_mode = config.fit_mode;
-        cli.no_effects = config.no_effects;
-        cli.log_level = config.log_level;
-        cli.assets_path = Some(config.assets_path);
-        cli.target_fps = config.target_fps;
     }
 
     // No subcommand → run the wallpaper engine.
