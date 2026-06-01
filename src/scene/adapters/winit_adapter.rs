@@ -28,7 +28,6 @@ struct WinitApp {
     no_effects: bool,
     assets_path: Option<String>,
     target_fps: Option<u32>,
-    /// Track last frame time for FPS limiting.
     last_frame: Option<Instant>,
 }
 
@@ -74,8 +73,6 @@ impl ApplicationHandler for WinitApp {
         match event {
             WindowEvent::RedrawRequested => {
                 // Throttle to target_fps if set.
-                // Sleep for the remaining interval rather than busy-skipping
-                // frames, which would spin the CPU at 100%.
                 if let Some(target_fps) = self.target_fps {
                     if target_fps > 0 {
                         if let Some(last) = self.last_frame {
@@ -88,9 +85,6 @@ impl ApplicationHandler for WinitApp {
                     }
                 }
 
-                // Record frame start so the next throttle check measures
-                // from here, not from after render (which would cause the
-                // render time to eat into the frame budget).
                 self.last_frame = Some(Instant::now());
 
                 let app = app.as_mut().unwrap();
@@ -101,8 +95,8 @@ impl ApplicationHandler for WinitApp {
                 if render_result.is_none() {
                     log::warn!("render returned None");
                 }
-                // Don't request the next redraw when target_fps is 0 (static image mode),
-                // so the wallpaper renders one frame and then stays idle.
+                // Don't request the next redraw when target_fps is 0
+                // (static image mode).
                 if self.target_fps != Some(0) {
                     self.window.as_ref().unwrap().request_redraw();
                     log::trace!("requested next redraw");
@@ -121,12 +115,12 @@ impl ApplicationHandler for WinitApp {
                 if let Some(app) = app.as_mut() {
                     let size = self.window.as_ref().map(|w| w.inner_size());
                     if let Some(size) = size {
-                        // Normalize cursor to [0, 1] range, (0,0) = top-left, as expected by g_ParallaxPosition
                         let nx = position.x as f32 / size.width as f32;
                         let ny = position.y as f32 / size.height as f32;
-                        app.user_params = crate::scene::renderer::app::UserParams {
-                            cursor_position: [nx, ny],
-                        };
+                        app.user_params =
+                            crate::scene::renderer::app::UserParams {
+                                cursor_position: [nx, ny],
+                            };
                     }
                 }
             }

@@ -1,8 +1,8 @@
-//! Main WGPU application struct and rendering orchestration.
+//! Top-level WGPU application state and render loop.
 //!
-//! [`WgpuApp`] owns all GPU resources and drives the per-frame
-//! render loop: time tracking, parallax computation, uniform upload,
-//! intermediate effect passes, and the final swapchain render pass.
+//! [`WgpuApp`] owns the GPU device, swapchain, and all rendering
+//! resources.  It is created once by an adapter, loaded with a
+//! wallpaper scene, then drives the per-frame render loop.
 
 use std::time::Instant;
 
@@ -13,17 +13,16 @@ use wgpu::*;
 use crate::{MAX_INDEX, MAX_TEXTURE, MAX_VERTEX};
 
 use super::{
-    buffer::Buffers, draw::DrawQueue,
-    intermediate_pass, post_process::PostProcess, projection::ProjectionBindGroups,
+    buffer::Buffers, draw::DrawQueue, intermediate_pass,
+    post_process::PostProcess, projection::ProjectionBindGroups,
     render_pass, surface::AppSurface,
 };
 
 pub use super::surface::InitAppSurface;
 
-/// User interaction parameters that adapters can update (cursor position, etc.)
+/// Cursor / user-interaction state updated by adapters.
 #[derive(Debug, Clone)]
 pub struct UserParams {
-    /// Normalized cursor position in [0, 1] range (0,0) = top-left, (1,1) = bottom-right
     pub cursor_position: [f32; 2],
 }
 
@@ -35,7 +34,7 @@ impl Default for UserParams {
     }
 }
 
-/// Top-level application state owning all WGPU resources.
+/// Application state owning all WGPU resources.
 pub struct WgpuApp {
     pub surface: AppSurface,
     pub buffers: Buffers,
@@ -54,18 +53,7 @@ pub struct WgpuApp {
     pub projection_matrix: [[f32; 4]; 4],
     pub no_effects: bool,
     pub user_params: UserParams,
-    /// Reusable staging buffer for per-frame uniform writes.
     pub uniform_staging: Vec<u8>,
-    // ── Cached / static resources (allocated once, reused every frame) ──
-
-    /// Already-uploaded source textures stay in GPU memory for the
-    /// lifetime of the app.  Textures bound via bind groups created
-    /// during load().
-    ///
-    /// Effect pipelines, intermediate bind groups, ping-pong render
-    /// targets, NDC geometry, and projection matrices are likewise
-    /// created once and never re-allocated.
-
     pub has_immediates: bool,
     pub has_clear_texture: bool,
     pub has_partially_bound: bool,
@@ -118,7 +106,7 @@ impl WgpuApp {
             }
         };
         check(Features::IMMEDIATES, "IMMEDIATES (push constants)");
-        check(Features::PARTIALLY_BOUND_BINDING_ARRAY, "PARTIALLY_BOUND_BINDING_ARRAY");
+        check(Features::PARTIALLY_BOUND_BINDING_ARRAY, "PARTIALLY_BOUND");
         check(Features::SUBGROUP, "SUBGROUP");
         check(Features::CLEAR_TEXTURE, "CLEAR_TEXTURE");
 
@@ -146,7 +134,8 @@ impl WgpuApp {
 
         let has_immediates = enabled_features.contains(Features::IMMEDIATES);
         let has_clear_texture = enabled_features.contains(Features::CLEAR_TEXTURE);
-        let has_partially_bound = enabled_features.contains(Features::PARTIALLY_BOUND_BINDING_ARRAY);
+        let has_partially_bound =
+            enabled_features.contains(Features::PARTIALLY_BOUND_BINDING_ARRAY);
         let has_subgroup = enabled_features.contains(Features::SUBGROUP);
 
         let surface = AppSurface::new(surface, &instance, &adapter, size);
@@ -185,24 +174,10 @@ impl WgpuApp {
         let delta = now.saturating_duration_since(self.start_time);
         self.start_time = now;
         self.elapsed_ms = self.elapsed_ms.wrapping_add(delta.as_millis() as u64);
-        let elapsed = ((self.elapsed_ms % 3_600_000) as f32) / 1000.0;
+        let elapsed = (self.elapsed_ms % 3_600_000) as f32 / 1000.0;
 
-        log::trace!("frame start: elapsed={:.2}s", elapsed);
-
-        let draw_queue = match self.draw_queue.as_ref() {
-            Some(dq) => dq,
-            None => {
-                log::error!("ABORT: draw_queue is None");
-                return None;
-            }
-        };
-        let post_process = match self.post_process.as_ref() {
-            Some(pp) => pp,
-            None => {
-                log::error!("ABORT: post_process is None");
-                return None;
-            }
-        };
+        let draw_queue = self.draw_queue.as_ref()?;
+        let post_process = self.post_process.as_ref()?;
         let screen_res = [self.surface.config.width, self.surface.config.height];
 
         let mut params = self.user_params.clone();
@@ -217,7 +192,8 @@ impl WgpuApp {
             &params,
         );
 
-        let has_intermediates = draw_queue.queue.iter().any(|o| o.intermediates.is_some());
+        let has_intermediates =
+            draw_queue.queue.iter().any(|o| o.intermediates.is_some());
 
         let mut encoder = self
             .device
@@ -237,7 +213,6 @@ impl WgpuApp {
             );
         }
 
-        // Final render to swapchain
         let output = render_pass::render_final_pass(
             &mut encoder,
             &self.device,
