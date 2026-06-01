@@ -74,18 +74,22 @@ impl ApplicationHandler for WinitApp {
         match event {
             WindowEvent::RedrawRequested => {
                 // Throttle to target_fps if set.
+                // Sleep for the remaining interval rather than busy-skipping
+                // frames, which would spin the CPU at 100%.
                 if let Some(target_fps) = self.target_fps {
                     if let Some(last) = self.last_frame {
                         let min_delta =
                             std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
-                        let elapsed = last.elapsed();
-                        if elapsed < min_delta {
-                            // Too soon — skip this frame but request next.
-                            self.window.as_ref().unwrap().request_redraw();
-                            return;
+                        if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
+                            std::thread::sleep(remaining);
                         }
                     }
                 }
+
+                // Record frame start so the next throttle check measures
+                // from here, not from after render (which would cause the
+                // render time to eat into the frame budget).
+                self.last_frame = Some(Instant::now());
 
                 let app = app.as_mut().unwrap();
                 self.window.as_ref().unwrap().pre_present_notify();
@@ -95,7 +99,6 @@ impl ApplicationHandler for WinitApp {
                 if render_result.is_none() {
                     log::warn!("render returned None");
                 }
-                self.last_frame = Some(Instant::now());
                 self.window.as_ref().unwrap().request_redraw();
                 log::trace!("requested next redraw");
             }

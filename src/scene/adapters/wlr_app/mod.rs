@@ -452,21 +452,22 @@ pub fn start(
             if let Some(last) = state.last_frame {
                 let min_delta =
                     std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
-                let elapsed = last.elapsed();
-                if elapsed < min_delta {
-                    let remaining = min_delta - elapsed;
+                if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
                     std::thread::sleep(remaining);
                 }
             }
         }
+
+        // Record frame start so the next throttle check measures
+        // from here, not from after render (which would cause the
+        // render time to eat into the frame budget).
+        state.last_frame = Some(Instant::now());
 
         log::trace!("frame {}: calling render...", frame_count);
         let render_result = state.app.render();
         if render_result.is_none() {
             log::warn!("frame {}: render returned None", frame_count);
         }
-
-        state.last_frame = Some(Instant::now());
         frame_count = frame_count.wrapping_add(1);
     }
 }
