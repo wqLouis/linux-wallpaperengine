@@ -8,7 +8,6 @@ use log::LevelFilter;
 use serde::Deserialize;
 
 use crate::scene::adapters::FitMode;
-use crate::scene::adapters::RenderMethod;
 use crate::scene::adapters::{winit_adapter, wlr_app};
 
 // ── JSON Config ──────────────────────────────────────────────────────────────
@@ -30,8 +29,6 @@ pub struct Config {
     pub no_effects: bool,
     #[serde(default = "default_log_level")]
     pub log_level: String,
-    #[serde(default = "default_render_method")]
-    pub render_method: String,
     #[serde(default)]
     pub target_fps: Option<u32>,
 }
@@ -47,9 +44,6 @@ fn default_fit_mode() -> String {
 }
 fn default_log_level() -> String {
     "warning".to_string()
-}
-fn default_render_method() -> String {
-    "pull".to_string()
 }
 
 // ── Root CLI ─────────────────────────────────────────────────────────────────
@@ -85,12 +79,7 @@ struct Cli {
     #[arg(long)]
     assets_path: Option<String>,
 
-    /// Rendering method: 'pull' (continuous) or 'wait' (on-demand).
-    #[arg(long, default_value = "pull")]
-    render_method: String,
-
-    /// Target frames per second when render-method is 'pull'.
-    /// If unset, renders as fast as possible.
+    /// Target frames per second. If unset, renders as fast as possible.
     #[arg(long)]
     target_fps: Option<u32>,
 
@@ -293,7 +282,6 @@ fn main() {
         cli.no_effects = config.no_effects;
         cli.log_level = config.log_level;
         cli.assets_path = Some(config.assets_path);
-        cli.render_method = config.render_method;
         cli.target_fps = config.target_fps;
     }
 
@@ -315,36 +303,17 @@ fn main() {
         }
     };
 
-    let render_method = match cli.render_method.as_str() {
-        "pull" => RenderMethod::Pull,
-        "wait" => RenderMethod::Wait,
-        _ => {
-            eprintln!(
-                "Unknown render-method '{}'. Valid: pull, wait",
-                cli.render_method
-            );
-            return;
-        }
-    };
+    // --no-effects implies a static image: render once and stop,
+    // unless the user explicitly set a different target_fps.
+    if cli.no_effects && cli.target_fps.is_none() {
+        cli.target_fps = Some(0);
+    }
 
     let target_fps = cli.target_fps;
 
     match cli.modes.as_str() {
-        "winit" => winit_adapter::start(
-            cli.path,
-            cli.no_effects,
-            cli.assets_path,
-            render_method,
-            target_fps,
-        ),
-        "wlr" => wlr_app::start(
-            cli.path,
-            fit_mode,
-            cli.no_effects,
-            cli.assets_path,
-            render_method,
-            target_fps,
-        ),
+        "winit" => winit_adapter::start(cli.path, cli.no_effects, cli.assets_path, target_fps),
+        "wlr" => wlr_app::start(cli.path, fit_mode, cli.no_effects, cli.assets_path, target_fps),
         _ => {
             eprintln!("Unknown display mode '{}'. Valid: wlr, winit", cli.modes);
         }

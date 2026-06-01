@@ -25,6 +25,11 @@ use crate::scene::{
 
 pub struct EffectStep {
     pub pipeline: RenderPipeline,
+    /// Optional compute pipeline for compute-based post-processing.
+    /// When set, the intermediate pass dispatches a compute shader instead
+    /// of rendering a full-screen quad. Used for blur, bloom, etc.
+    #[allow(dead_code)]
+    pub compute_pipeline: Option<ComputePipeline>,
     pub bindgroup: EffectBindGroup,
     pub pipedata: EffectPipelineData,
     pub bind_inputs: Vec<(String, u32)>,
@@ -38,6 +43,8 @@ pub struct EffectStep {
 pub struct FboTexture {
     #[allow(dead_code)] pub texture: Texture,
     pub view: TextureView,
+    pub width: u32,
+    pub height: u32,
 }
 
 // ── Effect JSON deserialization ───────────────────────────────
@@ -55,6 +62,7 @@ pub fn build_effect_steps(
     post_process: &PostProcess, pipelines: &mut BTreeMap<String, EffectPipelineData>,
     proj_bgl: &BindGroupLayout, source_view: &TextureView,
     source_w: u32, source_h: u32, no_effects: bool,
+    has_immediates: bool, has_partially_bound: bool, has_subgroup: bool,
 ) -> (Vec<EffectStep>, BTreeMap<String, FboTexture>, bool) {
     if no_effects { return (vec![], BTreeMap::new(), false); }
 
@@ -67,7 +75,8 @@ pub fn build_effect_steps(
 
         if def.passes.len() <= 1 && def.fbos.is_empty() {
             if let Some(s) = build_step(device, queue, effect, effect.passes.first(), None,
-                                         scene, post_process, pipelines, proj_bgl, source_view, source_w, source_h) {
+                                         scene, post_process, pipelines, proj_bgl, source_view,
+                                         source_w, source_h, has_immediates, has_partially_bound, has_subgroup) {
                 steps.push(s);
             }
         } else {
@@ -81,12 +90,13 @@ pub fn build_effect_steps(
                     usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING, view_formats: &[],
                 });
                 let view = tex.create_view(&Default::default());
-                fbos.insert(fbo_def.name.clone(), FboTexture { texture: tex, view });
+                fbos.insert(fbo_def.name.clone(), FboTexture { texture: tex, view, width: w, height: h });
             }
             for (i, def_pass) in def.passes.iter().enumerate() {
                 if let Some(s) = build_step(device, queue, effect, effect.passes.get(i),
                                              Some(def_pass), scene, post_process, pipelines, proj_bgl,
-                                             source_view, source_w, source_h) {
+                                             source_view, source_w, source_h,
+                                             has_immediates, has_partially_bound, has_subgroup) {
                     steps.push(s);
                 }
             }
@@ -107,6 +117,7 @@ fn build_step(
     pipelines: &mut BTreeMap<String, EffectPipelineData>,
     proj_bgl: &BindGroupLayout, source_view: &TextureView,
     source_w: u32, source_h: u32,
+    has_immediates: bool, _has_partially_bound: bool, has_subgroup: bool,
 ) -> Option<EffectStep> {
     let scene_pass = scene_pass?;
 
@@ -118,7 +129,7 @@ fn build_step(
         let p = pipeline_handler::create_effect_pipeline_for_multipass(
             device, &format!("shaders/{}.frag", shader), &format!("shaders/{}.vert", shader),
             &dp.material, &scene_pass.textures, scene_pass.combos.as_ref(),
-            pipelines, scene, proj_bgl,
+            pipelines, scene, proj_bgl, has_immediates, has_subgroup,
         )?;
         let pd = pipelines.values().find(|d| Rc::ptr_eq(&d.pipeline, &p))?.clone();
         let bi: Vec<(String, u32)> = dp.bind.iter().map(|b| (b.name.clone(), b.index)).collect();
@@ -127,7 +138,7 @@ fn build_step(
         // Single-pass
         let p = pipeline_handler::get_or_create_pipeline(
             device, effect.file.clone(), &scene_pass.textures, scene_pass.combos.as_ref(),
-            pipelines, scene, proj_bgl,
+            pipelines, scene, proj_bgl, has_immediates, has_subgroup,
         )?;
         let pd = pipelines.values().find(|d| Rc::ptr_eq(&d.pipeline, &p))?.clone();
         (p.as_ref().clone(), pd, vec![("previous".to_string(), 0)], None)
@@ -143,7 +154,7 @@ fn build_step(
         mask_tex, noise_tex,
     )?;
 
-    Some(EffectStep { pipeline, bindgroup, pipedata, bind_inputs, target, cached_bg_a: None, cached_bg_b: None })
+    Some(EffectStep { pipeline, compute_pipeline: None, bindgroup, pipedata, bind_inputs, target, cached_bg_a: None, cached_bg_b: None })
 }
 
 fn load_mask_and_noise(device: &Device, queue: &Queue, scene: &Scene,

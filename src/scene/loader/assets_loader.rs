@@ -78,7 +78,8 @@ impl TextureBucket {
         load_cached(&self.map, &self.assets_path, key, |bytes| {
             let mut tex = Tex::new(bytes)?;
             tex.parse_to_rgba()?;
-            log::debug!("assets: loaded tex '{}' ({}x{})", key, tex.dimension[0], tex.dimension[1]);
+            tex.build_mip_chain();
+            log::debug!("assets: loaded tex '{}' ({}x{}) mips={}", key, tex.dimension[0], tex.dimension[1], tex.mip_levels.len());
             Some(Rc::new(tex))
         })
     }

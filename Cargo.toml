@@ -28,8 +28,10 @@ wgpu = { version = "28.0.0", features = ["glsl"] }
 winit = "0.30.12"
 
 [profile.release]
+opt-level = 3
 debug = false
 strip = true
-lto = "thin"
+lto = "fat"
 panic = "abort"
 codegen-units = 1
+overflow-checks = false

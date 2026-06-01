@@ -50,6 +50,9 @@ impl DrawQueue {
         post_process: &PostProcess,
         projection_bgl: &BindGroupLayout,
         no_effects: bool,
+        has_immediates: bool,
+        has_partially_bound: bool,
+        has_subgroup: bool,
     ) -> Self {
         let mut render_pipelines = BTreeMap::new();
 
@@ -66,6 +69,9 @@ impl DrawQueue {
                     buffers,
                     projection_bgl,
                     no_effects,
+                    has_immediates,
+                    has_partially_bound,
+                    has_subgroup,
                 )
             })
             .collect();
@@ -89,6 +95,9 @@ impl DrawObject {
         buffers: &mut Buffers,
         projection_bgl: &BindGroupLayout,
         no_effects: bool,
+        has_immediates: bool,
+        has_partially_bound: bool,
+        has_subgroup: bool,
     ) -> Self {
         let index_start = buffers.index_len;
 
@@ -125,6 +134,9 @@ impl DrawObject {
             tex_w,
             tex_h,
             no_effects,
+            has_immediates,
+            has_partially_bound,
+            has_subgroup,
         );
 
         let mut intermediates = if has_steps {
@@ -174,18 +186,23 @@ impl DrawObject {
 
     fn upload_texture(device: &Device, queue: &Queue, tex_obj: &TextureObject) -> Texture {
         let ext = tex_obj.texture.extension.as_str();
-        let (format, bytes_per_row) = match ext {
-            "r8" => (TextureFormat::R8Unorm, tex_obj.texture.dimension[0] * 1),
-            "rg88" => (TextureFormat::Rg8Unorm, tex_obj.texture.dimension[0] * 2),
-            // BCn compressed: raw DXT payload goes directly to GPU, no CPU decode.
-            // Block size: 8 bytes (BC1) or 16 bytes (BC3) per 4×4 texel block.
-            "dxt1" => (TextureFormat::Bc1RgbaUnormSrgb, tex_obj.texture.dimension[0].div_ceil(4) * 8),
-            "dxt5" => (TextureFormat::Bc3RgbaUnormSrgb, tex_obj.texture.dimension[0].div_ceil(4) * 16),
-            _ => (TextureFormat::Rgba8UnormSrgb, tex_obj.texture.dimension[0] * 4),
+        let is_bcn = matches!(ext, "dxt1" | "dxt5");
+        let format = match ext {
+            "r8" => TextureFormat::R8Unorm,
+            "rg88" => TextureFormat::Rg8Unorm,
+            "dxt1" => TextureFormat::Bc1RgbaUnormSrgb,
+            "dxt5" => TextureFormat::Bc3RgbaUnormSrgb,
+            _ => TextureFormat::Rgba8UnormSrgb,
         };
 
         let w = tex_obj.texture.dimension[0];
         let h = tex_obj.texture.dimension[1];
+        let mip_level_count = (tex_obj.texture.mip_levels.len() + 1) as u32;
+
+        log::debug!(
+            "upload_texture: {}x{} fmt={:?} mips={}",
+            w, h, format, mip_level_count
+        );
 
         let texture = device.create_texture(&TextureDescriptor {
             label: None,
@@ -194,7 +211,7 @@ impl DrawObject {
                 height: h,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count,
             sample_count: 1,
             dimension: TextureDimension::D2,
             format,
@@ -202,6 +219,12 @@ impl DrawObject {
             view_formats: &[],
         });
 
+        // Upload level 0
+        let bytes_per_row = if is_bcn {
+            w.div_ceil(4) * if ext == "dxt1" { 8 } else { 16 }
+        } else {
+            w * match ext { "r8" => 1, "rg88" => 2, _ => 4 }
+        };
         queue.write_texture(
             TexelCopyTextureInfo {
                 texture: &texture,
@@ -221,6 +244,41 @@ impl DrawObject {
                 depth_or_array_layers: 1,
             },
         );
+
+        // Upload remaining mip levels
+        let mut level_w = w;
+        let mut level_h = h;
+        for (i, level_data) in tex_obj.texture.mip_levels.iter().enumerate() {
+            level_w = (level_w / 2).max(1);
+            level_h = (level_h / 2).max(1);
+            let level = (i + 1) as u32;
+
+            let level_bpr = if is_bcn {
+                level_w.div_ceil(4) * if ext == "dxt1" { 8 } else { 16 }
+            } else {
+                level_w * match ext { "r8" => 1, "rg88" => 2, _ => 4 }
+            };
+
+            queue.write_texture(
+                TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level,
+                    origin: Origin3d::ZERO,
+                    aspect: TextureAspect::All,
+                },
+                level_data,
+                TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(level_bpr),
+                    rows_per_image: None,
+                },
+                Extent3d {
+                    width: level_w,
+                    height: level_h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
 
         texture
     }

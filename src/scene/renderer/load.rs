@@ -37,7 +37,12 @@ impl WgpuApp {
             scene.root.general.orthogonalprojection.height as u32,
         ];
 
-        let post_process = PostProcess::new(&self.device, &self.queue, size);
+        let post_process = PostProcess::new(
+            &self.device,
+            &self.queue,
+            size,
+            self.has_clear_texture,
+        );
 
         self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 
@@ -57,6 +62,9 @@ impl WgpuApp {
             &post_process,
             &self.projection_bindgroup.projection_layout,
             self.no_effects,
+            self.has_immediates,
+            self.has_partially_bound,
+            self.has_subgroup,
         );
 
         load_audios(&self.audio_stream, objects.audio, &scene);

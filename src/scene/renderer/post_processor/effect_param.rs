@@ -199,6 +199,18 @@ fn align_up(val: u64, align: u64) -> u64 {
     (val + align - 1) & !(align - 1)
 }
 
+/// Compute the total size of a uniform block given its declarations.
+/// Replicates the logic used in `UniformLayout::new`.
+pub fn compute_uniform_size(decls: &[(String, String)]) -> u64 {
+    let mut offset: u64 = 0;
+    for (_name, ty) in decls {
+        offset = align_up(offset, type_align(ty));
+        let size = type_size(ty);
+        offset += size;
+    }
+    align_up(offset, 16).max(16)
+}
+
 /// Parse a type string that may include array brackets, e.g. `"float [32]"`.
 /// Returns (base_type, array_size) where array_size is 1 for non-array types.
 fn parse_type(ty: &str) -> (&str, u64) {

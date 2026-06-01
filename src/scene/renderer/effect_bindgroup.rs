@@ -32,15 +32,22 @@ impl EffectBindGroup {
     ) -> Option<Self> {
         let blank_view = post_process.blank_texture.create_view(&Default::default());
 
-        let uniform_buffer = if !pipedata.layout.uniform_decls.is_empty() {
+        // When using immediates, no uniform buffer is needed — data is pushed per draw.
+        let use_immediates = pipedata.layout.use_immediates;
+        let uniform_buffer = if !pipedata.layout.uniform_decls.is_empty() && !use_immediates {
             Some(device.create_buffer(&BufferDescriptor {
                 label: None, size: pipedata.uniform_layout.total_size(),
                 usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false,
             }))
         } else { None };
 
-        let mut entries: Vec<BindGroupEntry<'_>> = Vec::with_capacity(pipedata.layout.sampler_count() + 2);
-        for i in 0..pipedata.layout.sampler_count() {
+        let sampler_count = pipedata.layout.sampler_count();
+        let mut entries: Vec<BindGroupEntry<'_>> = Vec::with_capacity(sampler_count + 2);
+
+        // Each declared sampler slot must have a binding entry — wgpu requires
+        // all entries to be present even for non-array bindings. Use blank_view
+        // as placeholder for missing mask/noise textures.
+        for i in 0..sampler_count {
             let view = match i {
                 0 => source_view,
                 1 => mask_view.unwrap_or(&blank_view),
@@ -49,6 +56,7 @@ impl EffectBindGroup {
             };
             entries.push(BindGroupEntry { binding: i as u32 * 2, resource: BindingResource::TextureView(view) });
         }
+
         entries.push(BindGroupEntry { binding: WM_SAMPLER_BINDING, resource: BindingResource::Sampler(&post_process.sampler) });
         if let Some(ref buf) = uniform_buffer {
             entries.push(BindGroupEntry { binding: pipedata.layout.uniform_binding, resource: buf.as_entire_binding() });

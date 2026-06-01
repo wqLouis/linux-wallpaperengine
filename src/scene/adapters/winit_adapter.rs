@@ -18,7 +18,6 @@ use winit::{
     window::{Fullscreen, Window},
 };
 
-use crate::scene::adapters::RenderMethod;
 use crate::scene::renderer::app::WgpuApp;
 
 struct WinitApp {
@@ -28,7 +27,6 @@ struct WinitApp {
     pkg_path: String,
     no_effects: bool,
     assets_path: Option<String>,
-    render_method: RenderMethod,
     target_fps: Option<u32>,
     /// Track last frame time for FPS limiting.
     last_frame: Option<Instant>,
@@ -75,23 +73,25 @@ impl ApplicationHandler for WinitApp {
 
         match event {
             WindowEvent::RedrawRequested => {
-                // In wait mode, only render if we actually requested a redraw.
-                // In pull mode, throttle to target_fps if set.
-                if self.render_method == RenderMethod::Pull {
-                    if let Some(target_fps) = self.target_fps {
+                // Throttle to target_fps if set.
+                // Sleep for the remaining interval rather than busy-skipping
+                // frames, which would spin the CPU at 100%.
+                if let Some(target_fps) = self.target_fps {
+                    if target_fps > 0 {
                         if let Some(last) = self.last_frame {
-                            let min_delta = std::time::Duration::from_secs_f64(
-                                1.0 / target_fps as f64,
-                            );
-                            let elapsed = last.elapsed();
-                            if elapsed < min_delta {
-                                // Too soon — skip this frame but request next.
-                                self.window.as_ref().unwrap().request_redraw();
-                                return;
+                            let min_delta =
+                                std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+                            if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
+                                std::thread::sleep(remaining);
                             }
                         }
                     }
                 }
+
+                // Record frame start so the next throttle check measures
+                // from here, not from after render (which would cause the
+                // render time to eat into the frame budget).
+                self.last_frame = Some(Instant::now());
 
                 let app = app.as_mut().unwrap();
                 self.window.as_ref().unwrap().pre_present_notify();
@@ -101,14 +101,12 @@ impl ApplicationHandler for WinitApp {
                 if render_result.is_none() {
                     log::warn!("render returned None");
                 }
-                self.last_frame = Some(Instant::now());
-
-                // In pull mode, chain the next redraw to keep frames flowing.
-                // In wait mode, only redraw when something actually changes.
-                if self.render_method == RenderMethod::Pull {
+                // Don't request the next redraw when target_fps is 0 (static image mode),
+                // so the wallpaper renders one frame and then stays idle.
+                if self.target_fps != Some(0) {
                     self.window.as_ref().unwrap().request_redraw();
+                    log::trace!("requested next redraw");
                 }
-                log::trace!("requested next redraw");
             }
             WindowEvent::Resized(physical_size) => {
                 let app = app.as_mut().unwrap();
@@ -129,10 +127,6 @@ impl ApplicationHandler for WinitApp {
                         app.user_params = crate::scene::renderer::app::UserParams {
                             cursor_position: [nx, ny],
                         };
-                        // In wait mode, request redraw on cursor movement.
-                        if self.render_method == RenderMethod::Wait {
-                            self.window.as_ref().unwrap().request_redraw();
-                        }
                     }
                 }
             }
@@ -145,7 +139,6 @@ pub fn start(
     pkg_path: String,
     no_effects: bool,
     assets_path: Option<String>,
-    render_method: RenderMethod,
     target_fps: Option<u32>,
 ) {
     let event_loop = EventLoop::new().unwrap();
@@ -153,7 +146,6 @@ pub fn start(
         pkg_path,
         no_effects,
         assets_path,
-        render_method,
         target_fps,
         last_frame: None,
         app: Arc::new(Mutex::new(None)),

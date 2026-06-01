@@ -183,12 +183,22 @@ pub fn preprocess_with_layout_tracked(
     layout: &EffectLayout,
     headers: &BTreeMap<String, String>,
     defines: &BTreeMap<String, String>,
+    has_subgroup: bool,
 ) -> (String, Vec<String>) {
     let mut result = String::with_capacity(source.len() + 4096);
     let mut emitted_varyings: Vec<String> = Vec::new();
     let mut ifp = IfBlockProcessor::new();
 
     result.push_str("#version 450\n");
+
+    // Add subgroup extension when available (Vulkan only)
+    if has_subgroup {
+        result.push_str("#extension GL_KHR_shader_subgroup_arithmetic : enable\n");
+        result.push_str("#extension GL_KHR_shader_subgroup_basic : enable\n");
+        result.push_str("#extension GL_KHR_shader_subgroup_vote : enable\n");
+        result.push_str("#extension GL_KHR_shader_subgroup_ballot : enable\n");
+        result.push_str("#extension GL_KHR_shader_subgroup_shuffle : enable\n");
+    }
 
     emit_declarations(&mut result, stage, layout, headers);
 
@@ -361,10 +371,16 @@ fn emit_declarations(
     ));
 
     if !layout.uniform_decls.is_empty() {
-        result.push_str(&format!(
-            "layout(binding={}, std140) uniform EffectParams {{\n",
-            layout.uniform_binding
-        ));
+        if layout.use_immediates {
+            // Push constants: data supplied via set_immediates(), no buffer binding.
+            // Naga GLSL frontend expects `layout(push_constant)` for immediate data.
+            result.push_str("layout(push_constant) uniform EffectParams {\n");
+        } else {
+            result.push_str(&format!(
+                "layout(binding={}, std140) uniform EffectParams {{\n",
+                layout.uniform_binding
+            ));
+        }
         for (name, ty) in &layout.uniform_decls {
             result.push_str(&format!("    {} {};\n", ty, name));
         }
@@ -469,6 +485,8 @@ pub fn preprocess_pair(
     frag: &str,
     headers: &BTreeMap<String, String>,
     defines: &BTreeMap<String, String>,
+    has_subgroup: bool,
+    use_immediates: bool,
 ) -> (String, String, EffectLayout) {
     // Merge source-level #define macros into the defines map.
     // Combo values (from defines) take priority over source macros.
@@ -487,10 +505,12 @@ pub fn preprocess_pair(
         merged_defines.insert(k.clone(), v.clone());
     }
 
-    let layout = collect_layout(vert, frag, headers);
+    let mut layout = collect_layout(vert, frag, headers);
+    layout.use_immediates = use_immediates;
+
     let (mut vert_out, vert_emitted) =
-        preprocess_with_layout_tracked(vert, ShaderStage::Vertex, &layout, headers, &merged_defines);
-    let (mut frag_out, _) = preprocess_with_layout_tracked(frag, ShaderStage::Fragment, &layout, headers, &merged_defines);
+        preprocess_with_layout_tracked(vert, ShaderStage::Vertex, &layout, headers, &merged_defines, has_subgroup);
+    let (mut frag_out, _) = preprocess_with_layout_tracked(frag, ShaderStage::Fragment, &layout, headers, &merged_defines, has_subgroup);
 
     // Fix fragment shader varying writes: Vulkan GLSL `in` variables are read-only.
     // If a varying is assigned to in the fragment shader, rename the input and

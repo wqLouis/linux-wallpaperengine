@@ -45,6 +45,8 @@ impl Scene {
                             None => return,
                         };
 
+                        tex.build_mip_chain();
+
                         texs.lock().unwrap().insert(key_clone, tex);
                     });
 

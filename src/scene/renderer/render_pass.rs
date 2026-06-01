@@ -115,6 +115,9 @@ pub fn render_final_pass<'a>(
 ///
 /// Effect uniforms always use the identity projection matrix since
 /// effect pipelines operate in NDC/texture space.
+///
+/// Steps that use immediates (push constants) are skipped here — their
+/// data is written directly via `set_immediates()` in the render pass.
 pub fn write_effect_uniforms(
     queue: &Queue,
     staging: &mut Vec<u8>,
@@ -133,6 +136,10 @@ pub fn write_effect_uniforms(
 
     for draw_object in objects {
         for step in &draw_object.effect_steps {
+            // Skip steps that use immediates — data is pushed per render pass.
+            if step.pipedata.layout.use_immediates {
+                continue;
+            }
             if let Some(ref buf) = step.bindgroup.uniform_buffer {
                 let buf_size = step.bindgroup.uniform_layout.total_size() as usize;
                 // Reuse the caller's staging buffer; grow if needed (amortized).
@@ -162,4 +169,44 @@ pub fn write_effect_uniforms(
             }
         }
     }
+}
+
+/// Build immediates (push constant) data for a single effect step.
+/// Returns the byte slice ready to pass to `RenderPass::set_immediates()`.
+pub fn build_immediates_data<'a>(
+    staging: &'a mut Vec<u8>,
+    step: &crate::scene::renderer::post_processor::effect_step::EffectStep,
+    elapsed: f32,
+    screen_res: [u32; 2],
+    user_params: &UserParams,
+) -> &'a [u8] {
+    let buf_size = step.bindgroup.uniform_layout.total_size() as usize;
+    if staging.len() < buf_size {
+        staging.resize(buf_size, 0);
+    }
+    staging[..buf_size].fill(0);
+
+    let identity: [[f32; 4]; 4] = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+
+    let sys = SystemUniforms {
+        screen_resolution: screen_res,
+        tex_resolutions: step.bindgroup.tex_resolutions.clone(),
+        cursor_position: user_params.cursor_position,
+    };
+
+    step.bindgroup.uniform_layout.populate_effect_params(
+        &mut staging[..buf_size],
+        &step.bindgroup.constants,
+        &step.bindgroup.material_keys,
+        elapsed,
+        &identity,
+        &sys,
+    );
+
+    &staging[..buf_size]
 }

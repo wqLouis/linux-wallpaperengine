@@ -12,11 +12,20 @@ pub struct EffectLayout {
     /// Fragment shader `in` declarations are only emitted for varyings in this set.
     pub vertex_varyings: Vec<String>,
     pub attribute_locations: BTreeMap<String, u32>,
+    /// Whether this shader uses immediates (push constants) for uniforms.
+    /// Set by the pipeline handler after computing the total uniform size.
+    pub use_immediates: bool,
 }
 
 impl EffectLayout {
     pub fn sampler_count(&self) -> usize {
         self.sampler_names.len()
+    }
+
+    /// Compute the total size of the uniform block in bytes (std140 layout).
+    /// Returns the aligned total size.
+    pub fn total_uniform_size(&self) -> u64 {
+        crate::scene::renderer::post_processor::effect_param::compute_uniform_size(&self.uniform_decls)
     }
 }
 
@@ -99,6 +108,7 @@ pub fn collect_layout(source1: &str, source2: &str, headers: &BTreeMap<String, S
         varying_types,
         vertex_varyings: vert_varyings,
         attribute_locations,
+        use_immediates: false,
     }
 }
 
