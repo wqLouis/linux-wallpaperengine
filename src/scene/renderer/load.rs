@@ -98,14 +98,18 @@ fn load_audios(audio_stream: &OutputStream, audios: Vec<AudioObject>, scene: &Sc
 
             let cursor = Cursor::new(raw);
             let sound_pathbuf = Path::new(&sound).to_path_buf();
-            let hint = sound_pathbuf.extension().unwrap().to_str().unwrap();
-            let Some(source) = rodio::decoder::Decoder::builder()
-                .with_data(cursor)
-                .with_hint(hint)
-                .build()
-                .ok()
-            else {
-                println!("failed to build audio: {:?} with hint: {:?}", sound, hint);
+            let hint = sound_pathbuf
+                .extension()
+                .and_then(|e| e.to_str());
+
+            let mut builder = rodio::decoder::Decoder::builder().with_data(cursor);
+            if let Some(ext) = hint {
+                builder = builder.with_hint(ext);
+            }
+            // When no hint is provided, rodio auto-detects the format from
+            // magic bytes — no need to hardcode a fallback.
+            let Some(source) = builder.build().ok() else {
+                println!("failed to build audio: {:?}", sound);
                 continue;
             };
 

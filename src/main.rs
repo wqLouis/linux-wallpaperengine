@@ -127,11 +127,12 @@ fn setup_logging(level_str: &str) {
     builder.format_timestamp_millis().init();
 }
 
-fn validate_pkg_path(path: &str) {
+fn validate_pkg_path(path: &str) -> Result<(), String> {
     let p = Path::new(path);
     if !p.exists() || p.extension().unwrap_or_default() != "pkg" {
-        panic!("Path '{}' does not exist or is not a .pkg file", path);
+        return Err(format!("Path '{}' does not exist or is not a .pkg file", path));
     }
+    Ok(())
 }
 
 fn print_error_list(paths: &[String], msg: &str) {
@@ -144,9 +145,18 @@ fn print_error_list(paths: &[String], msg: &str) {
 // ── Parser subcommand logic ──────────────────────────────────────────────────
 
 fn run_parser(args: ParserArgs) {
-    validate_pkg_path(&args.path);
+    if let Err(e) = validate_pkg_path(&args.path) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
 
-    let pkg = pkg_parser::pkg_parser::parser::Pkg::new(Path::new(&args.path));
+    let pkg = match pkg_parser::pkg_parser::parser::Pkg::new(Path::new(&args.path)) {
+        Ok(pkg) => pkg,
+        Err(e) => {
+            eprintln!("error: failed to parse pkg: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     // --list / -l : list files, optionally filtered by prefix
     if let Some(prefix) = &args.list {
@@ -226,7 +236,10 @@ fn main() {
     // No subcommand → run the wallpaper engine.
     setup_logging(&cli.log_level);
 
-    validate_pkg_path(&cli.path);
+    if let Err(e) = validate_pkg_path(&cli.path) {
+        eprintln!("error: {}", e);
+        return;
+    }
 
     let fit_mode = match cli.fit_mode.as_str() {
         "cover" => FitMode::Cover,

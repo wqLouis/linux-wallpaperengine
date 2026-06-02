@@ -19,9 +19,17 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// Load a wallpaper scene from a .pkg file.
+    ///
+    /// Panics if the .pkg file is unreadable or `scene.json` is missing/
+    /// invalid — there is no meaningful fallback without a scene definition.
+    /// Individual asset failures (textures, etc.) are logged and skipped
+    /// gracefully.
     pub fn new(path: String) -> Self {
         let path = Path::new(&path);
-        let pkg = Pkg::new(path);
+        let pkg = Pkg::new(path).unwrap_or_else(|e| {
+            panic!("Failed to load PKG file '{}': {}", path.display(), e);
+        });
 
         let texs: Arc<Mutex<BTreeMap<String, Tex>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let mut jsons: BTreeMap<String, String> = BTreeMap::new();
@@ -32,22 +40,50 @@ impl Scene {
 
         for (key, val) in pkg.files.into_iter() {
             let file_path = Path::new(&key);
-            match file_path.extension().unwrap().to_str().unwrap() {
+            let ext = file_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            match ext {
                 "tex" => {
                     let key_clone = key.clone();
+                    let key_for_log = key.clone();
                     let texs = Arc::clone(&texs);
 
                     let handle = thread::spawn(move || {
-                        let mut tex = Tex::new(&val).unwrap();
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let mut tex = match Tex::new(&val) {
+                                Some(t) => t,
+                                None => {
+                                    log::warn!("pkg: failed to parse texture: {}", key_clone);
+                                    return;
+                                }
+                            };
 
-                        match tex.parse_to_rgba() {
-                            Some(_) => {}
-                            None => return,
-                        };
+                            match tex.parse_to_rgba() {
+                                Some(_) => {}
+                                None => {
+                                    log::warn!("pkg: failed to convert texture to RGBA: {}", key_clone);
+                                    return;
+                                }
+                            };
 
-                        tex.build_mip_chain();
+                            tex.build_mip_chain();
 
-                        texs.lock().unwrap().insert(key_clone, tex);
+                            texs.lock().unwrap().insert(key_clone.clone(), tex);
+                            log::debug!("pkg: loaded tex: {}", key_clone);
+                        }));
+
+                        if let Err(e) = result {
+                            let msg = if let Some(s) = e.downcast_ref::<String>() {
+                                s.clone()
+                            } else if let Some(s) = e.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else {
+                                "unknown panic".to_string()
+                            };
+                            log::warn!("pkg: texture thread panicked for '{}': {}", key_for_log, msg);
+                        }
                     });
 
                     log::debug!("pkg: enqueued tex: {}", key);
@@ -68,15 +104,30 @@ impl Scene {
         }
 
         for handle in handles {
-            handle.join().unwrap();
+            match handle.join() {
+                Ok(()) => {}
+                Err(e) => {
+                    let msg = if let Some(s) = e.downcast_ref::<String>() {
+                        s.as_str()
+                    } else if let Some(s) = e.downcast_ref::<&str>() {
+                        s
+                    } else {
+                        "unknown panic"
+                    };
+                    log::warn!("pkg: texture thread panicked: {}", msg);
+                }
+            }
             pb.inc(1);
         }
 
         pb.finish_and_clear();
 
-        let scene_string = jsons.get("scene.json").unwrap();
+        let scene_string = jsons.get("scene.json")
+            .unwrap_or_else(|| panic!("scene.json not found in PKG archive"));
         let root: crate::scene::loader::scene::Root =
-            serde_json::from_str(scene_string).expect("Unsupported scene.json");
+            serde_json::from_str(scene_string)
+                .unwrap_or_else(|e| panic!("Failed to parse scene.json: {}", e));
+
         let mut texs_locked = texs.lock().unwrap();
         let texs = std::mem::take(&mut *texs_locked)
             .into_iter()
