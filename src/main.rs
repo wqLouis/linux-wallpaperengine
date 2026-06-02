@@ -32,6 +32,10 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     no_effects: bool,
 
+    // Ignore MDL puppet models, render as flat quads
+    #[arg(long, default_value_t = false)]
+    no_mdl: bool,
+
     // Log level: verbose (everything + wgpu/naga), debug, warning, errors
     #[arg(short = 'l', long, default_value = "warning")]
     log_level: String,
@@ -263,8 +267,8 @@ fn main() {
     let target_fps = cli.target_fps;
 
     match cli.modes.as_str() {
-        "winit" => winit_adapter::start(cli.path, cli.no_effects, cli.assets_path, target_fps),
-        "wlr" => wlr_app::start(cli.path, fit_mode, cli.no_effects, cli.assets_path, target_fps),
+        "winit" => winit_adapter::start(cli.path, cli.no_effects, cli.no_mdl, cli.assets_path, target_fps),
+        "wlr" => wlr_app::start(cli.path, fit_mode, cli.no_effects, cli.no_mdl, cli.assets_path, target_fps),
         _ => {
             eprintln!("Unknown display mode '{}'. Valid: wlr, winit", cli.modes);
         }

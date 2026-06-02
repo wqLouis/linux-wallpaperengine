@@ -218,30 +218,72 @@ pub struct MdlvHeader {
 ```rust
 pub struct MdlvData {
     pub marker_type: u32,           // 0x80000F00
-    pub record_block_size: u32,
+    pub record_block_size: u32,     // Total size of control point records
     pub records: Vec<ControlPoint>, // 80-byte control point records
-    pub triangles: Vec<Triangle>,   // Index triplets (u16×3)
+    pub quads: Vec<Triangle>,       // Quad-derived triangles (index into control points)
+    pub triangles: Vec<Triangle>,   // Tessellated render triangles (higher vertex IDs)
 }
 ```
+
+The data section contains control points followed by a **gap** that holds two distinct triangle lists:
+
+1. **Quads** — triangle strip data from a quad topology. Vertex indices range within
+   `[0, num_records)` and reference control points directly.
+2. **Render triangles** — derived from tessellating the quads. Vertex indices far
+   exceed the control point count (e.g., up to ~65000 for 985 control points).
+
+The gap starts with a **5-byte header**:
+
+| Offset | Size | Description |
+|--------|------|-------------|
+| 0 | 1 byte | Section type (`0x3E` or `0x3F`) |
+| 1 | 4 bytes | `quads_size` (u32 LE) — byte length of the quads triangle data |
+
+Everything after `header[1..5]` bytes of quads data is the render triangles section.
+Trailing bytes that don't form complete 6-byte triangles are ignored.
 
 ### `ControlPoint`
 
-80-byte record with position, UV, and group data:
+80-byte record. All coordinate pairs are stored as `i16` and normalized to `f32`
+in the range ≈ `[-1, 1]` by dividing by 32767.
 
 ```rust
 pub struct ControlPoint {
-    pub index: u32,
-    pub pos_x: i16, pub pos_y: i16,  // Position coordinates
-    pub tex_u: i16, pub tex_v: i16,  // Texture coordinates
-    pub group_id: u32,
-    pub sub_group: u32,
-    pub sub_sub_group: u32,
-    // Various unknown/partially-understood fields
-    pub field_0: u32, pub field_4: u32, pub field_12: u32, pub field_16: u32,
-    pub field_28: f32, pub field_56: f32, pub field_60: u32,
-    pub field_72: u32, pub field_76: f32,
+    pub index: u32,              // Sequential index (0..num_records-1)
+    pub pos_x: f32, pub pos_y: f32,        // Normalized position
+    pub tex_u: f32, pub tex_v: f32,        // Normalized texture UV
+    pub group_id: u32,                     // Mesh group identifier
+    pub sub_group: u32,                    // Sub-group index
+    pub sub_sub_group: u32,                // Sub-sub-group index
+    pub weight: f32,                       // Scalar weight/parameter [0, ~0.1]
+    pub handle_a_x: f32, pub handle_a_y: f32,  // Deformation handle A
+    pub handle_b_x: f32, pub handle_b_y: f32,  // Deformation handle B
+    pub handle_c_x: f32, pub handle_c_y: f32,  // Deformation handle C
 }
 ```
+
+**80-byte layout:**
+
+| Offset | Size | Field | Type |
+|--------|------|-------|------|
+| 0 | 4 | `pos_x`, `pos_y` | 2× i16 → f32 |
+| 4 | 4 | `tex_u`, `tex_v` | 2× i16 → f32 |
+| 8 | 4 | `group_id` | u32 |
+| 12 | 4 | — | padding (always 0) |
+| 16 | 4 | — | padding (always 0) |
+| 20 | 4 | — | marker (always `0x80000000`) |
+| 24 | 4 | — | marker (~`0x8000003F`) |
+| 28 | 4 | `handle_a_x`, `handle_a_y` | 2× i16 → f32 |
+| 32 | 4 | `sub_group` | u32 |
+| 36 | 4 | — | marker (always `0x80000000`) |
+| 40 | 2 | `weight` | i16 → f32 |
+| 42 | 14 | — | padding (always 0) |
+| 56 | 4 | — | marker (always `0x80000000`) |
+| 60 | 4 | — | constant (always `0x0000003F` = 63) |
+| 64 | 4 | `sub_sub_group` | u32 |
+| 68 | 4 | — | padding (always 0) |
+| 72 | 4 | `handle_b_x`, `handle_b_y` | 2× i16 → f32 |
+| 76 | 4 | `handle_c_x`, `handle_c_y` | 2× i16 → f32 |
 
 ### `Triangle`
 
@@ -285,12 +327,20 @@ pub struct Animation {
 
 ### `MdlFile::new(bytes: &[u8]) -> Option<MdlFile>`
 
-Parses an MDL file by finding the three section markers (`MDLS`, `MDLA`) via byte scanning:
+Parses an MDL file from raw bytes. **Fail-safe** — returns `None` on any malformed
+or truncated data instead of panicking.
 
-1. **Header:** Reads magic, type, sub-version, flags, material path. Finds data start by locating the `0x00 0x0F 0x00 0x80` marker.
-2. **Data:** At the marker (0x80000F00), reads record block size, parses 80-byte control point records, then parses triangles from the gap between records_end and the MDLS marker.
-3. **Bones (MDLS):** Reads bone count, bone entries with 4×4 matrices and names.
-4. **Animation (MDLA):** Reads frame count, animation name, loop mode, and raw data.
+1. **Header:** Reads magic `MDLV0023`, type, sub-version, flags, material path.
+   Finds data start by locating the `0x00 0x0F 0x00 0x80` marker via byte scanning.
+2. **Data:** At the marker (`0x80000F00`), reads the 3-byte record block size,
+   parses 80-byte control point records (with bounds checks), then splits the gap
+   between records and `MDLS` into quads and render triangles using the 5-byte
+   section header.
+3. **Bones (MDLS):** Reads the `MDLS0004` section: bone count, per-bone 4×4
+   transformation matrices, and bone names.
+4. **Animation (MDLA):** Reads frame count, animation name, loop mode, and raw
+   animation keyframe data. If `pos` overruns, returns empty data instead of
+   panicking.
 
 ### `MdlFile::to_json() -> Result<String>`
 

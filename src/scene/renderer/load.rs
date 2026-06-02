@@ -51,6 +51,7 @@ impl WgpuApp {
             &scene.root.objects.clone(),
             &scene,
             self.clear_color,
+            self.no_mdl,
         );
         let draw_queue = DrawQueue::new(
             &self.device,

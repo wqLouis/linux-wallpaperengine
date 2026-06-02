@@ -365,6 +365,7 @@ pub fn start(
     pkg_path: String,
     fit_mode: super::FitMode,
     no_effects: bool,
+    no_mdl: bool,
     assets_path: Option<String>,
     target_fps: Option<u32>,
 ) {
@@ -427,6 +428,7 @@ pub fn start(
         InitAppSurface::Raw((raw_display_handle, raw_window_handle)),
         [256, 256],
         no_effects,
+        no_mdl,
         assets_path,
     ));
     app.load();

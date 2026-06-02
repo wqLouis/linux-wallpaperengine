@@ -26,6 +26,7 @@ struct WinitApp {
 
     pkg_path: String,
     no_effects: bool,
+    no_mdl: bool,
     assets_path: Option<String>,
     target_fps: Option<u32>,
     last_frame: Option<Instant>,
@@ -53,6 +54,7 @@ impl ApplicationHandler for WinitApp {
             crate::scene::renderer::app::InitAppSurface::Winit(Arc::clone(&window)),
             [size.width, size.height],
             self.no_effects,
+            self.no_mdl,
             self.assets_path.clone(),
         ));
 
@@ -132,6 +134,7 @@ impl ApplicationHandler for WinitApp {
 pub fn start(
     pkg_path: String,
     no_effects: bool,
+    no_mdl: bool,
     assets_path: Option<String>,
     target_fps: Option<u32>,
 ) {
@@ -139,6 +142,7 @@ pub fn start(
     let mut app = WinitApp {
         pkg_path,
         no_effects,
+        no_mdl,
         assets_path,
         target_fps,
         last_frame: None,

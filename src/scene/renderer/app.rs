@@ -52,6 +52,7 @@ pub struct WgpuApp {
     pub elapsed_ms: u64,
     pub projection_matrix: [[f32; 4]; 4],
     pub no_effects: bool,
+    pub no_mdl: bool,
     pub user_params: UserParams,
     pub uniform_staging: Vec<u8>,
     pub has_immediates: bool,
@@ -70,6 +71,7 @@ impl WgpuApp {
         surface: InitAppSurface,
         size: [u32; 2],
         no_effects: bool,
+        no_mdl: bool,
         assets_path: Option<String>,
     ) -> Self {
         let instance = Instance::new(&InstanceDescriptor {
@@ -160,6 +162,7 @@ impl WgpuApp {
             elapsed_ms: 0,
             projection_matrix: [[1.0; 4]; 4],
             no_effects,
+            no_mdl,
             user_params: UserParams::default(),
             uniform_staging: Vec::new(),
             has_immediates,

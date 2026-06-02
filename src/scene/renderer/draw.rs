@@ -167,16 +167,34 @@ impl DrawObject {
             pp.cache_final_bindgroup(device, &post_process.layout, &post_process.sampler);
         }
 
-        buffers.draw_texture(
-            queue,
-            texture_object.origin,
-            texture_object.angles,
-            texture_object.scale,
-            texture_object.size,
-        );
+        let index_range = if let Some(ref mesh) = texture_object.mesh {
+            log::debug!(
+                "drawing mesh: {} verts, {} indices",
+                mesh.vertices.len(),
+                mesh.indices.len(),
+            );
+            buffers.draw_mesh(
+                queue,
+                &mesh.vertices,
+                &mesh.indices,
+                texture_object.origin,
+                texture_object.angles,
+                texture_object.scale,
+                texture_object.size,
+            )
+        } else {
+            buffers.draw_texture(
+                queue,
+                texture_object.origin,
+                texture_object.angles,
+                texture_object.scale,
+                texture_object.size,
+            );
+            [index_start, buffers.index_len]
+        };
 
         Self {
-            index_range: [index_start, buffers.index_len],
+            index_range,
             bindgroup,
             effect_steps,
             fbos,

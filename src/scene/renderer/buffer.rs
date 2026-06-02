@@ -112,4 +112,69 @@ impl Buffers {
 
         self.draw_rect(queue, rect);
     }
+
+    /// Upload an arbitrary triangle mesh to the GPU vertex/index buffers.
+    ///
+    /// Vertex positions are in object-local normalised space `[0,1]^2`
+    /// (same convention as [`draw_texture`] corners).  They are scaled by
+    /// `size`, centered, rotated by `angles.z`, and translated by `origin`.
+    pub fn draw_mesh(
+        &mut self,
+        queue: &Queue,
+        vertices: &[Vertex],
+        indices: &[u32],
+        origin: Vec3,
+        angles: Vec3,
+        scale: Vec3,
+        size: Vec2,
+    ) -> [u32; 2] {
+        let index_start = self.index_len;
+
+        let size = size
+            * Vec2 {
+                x: scale.x,
+                y: scale.y,
+            };
+        let z = origin.z - 1.0;
+
+        let rotation_mat = Mat2::from_angle(angles.z);
+        let half = Vec2::new(size.x / 2.0, size.y / 2.0);
+        let pos_offset = Vec2::new(origin.x, origin.y);
+
+        // Transform each vertex: [0,1] → [-half, +half] → rotate → translate
+        let transformed: Vec<Vertex> = vertices
+            .iter()
+            .map(|v| {
+                let p = Vec2::new(v.pos[0] * size.x - half.x, v.pos[1] * size.y - half.y);
+                let rotated = rotation_mat * p + pos_offset;
+                Vertex {
+                    pos: [rotated.x, rotated.y, z],
+                    uv: v.uv,
+                }
+            })
+            .collect();
+
+        // Offset indices by the current vertex count
+        let offset_indices: Vec<u32> =
+            indices.iter().map(|i| i + self.vertex_len).collect();
+
+        let vertex_bytes: &[u8] = bytemuck::cast_slice(&transformed);
+        let index_bytes: &[u8] = bytemuck::cast_slice(&offset_indices);
+
+        queue.write_buffer(
+            &self.vertex,
+            std::mem::size_of::<Vertex>() as BufferAddress * self.vertex_len as BufferAddress,
+            vertex_bytes,
+        );
+        queue.write_buffer(
+            &self.index,
+            std::mem::size_of::<u32>() as BufferAddress * self.index_len as BufferAddress,
+            index_bytes,
+        );
+
+        self.vertex_len += vertices.len() as u32;
+        self.index_len += indices.len() as u32;
+
+        [index_start, self.index_len]
+    }
 }

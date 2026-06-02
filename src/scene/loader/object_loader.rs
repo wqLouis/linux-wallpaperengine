@@ -5,6 +5,7 @@ use pkg_parser::pkg_parser::tex_parser::Tex;
 use serde_json::Value;
 
 use crate::scene::loader::{
+    mdl::{self, PuppetMesh},
     model::Model,
     scene::{Effect, Object, Vectors},
     scene_loader::Scene,
@@ -20,6 +21,8 @@ pub struct TextureObject {
     pub parent: Option<i64>,
     pub effects: Vec<Effect>,
     pub visible: bool,
+    /// Optional puppet mesh extracted from a `.mdl` file.
+    pub mesh: Option<PuppetMesh>,
 }
 
 pub struct AudioObject {
@@ -51,7 +54,7 @@ enum ObjectType {
 }
 
 impl ObjectMap {
-    pub fn with_clear_color(objects: &Vec<Object>, scene: &Scene, clear_color: Vec3) -> Self {
+    pub fn with_clear_color(objects: &Vec<Object>, scene: &Scene, clear_color: Vec3, no_mdl: bool) -> Self {
         let mut render_sequence: Vec<i64> = vec![];
 
         let mut texture_map: BTreeMap<i64, Rc<RefCell<TextureObject>>> = BTreeMap::new();
@@ -59,7 +62,7 @@ impl ObjectMap {
         let mut node_map: BTreeMap<i64, Node> = BTreeMap::new();
 
         for object in objects {
-            let Some(loaded_object) = Self::load_object(object, &scene, clear_color) else {
+            let Some(loaded_object) = Self::load_object(object, &scene, clear_color, no_mdl) else {
                 continue;
             };
             match loaded_object {
@@ -145,7 +148,7 @@ impl ObjectMap {
 }
 
 impl ObjectMap {
-    fn load_object(object: &Object, scene: &Scene, clear_color: Vec3) -> Option<ObjectType> {
+    fn load_object(object: &Object, scene: &Scene, clear_color: Vec3, no_mdl: bool) -> Option<ObjectType> {
         // Common transform properties shared by texture and node objects
         let origin = object
             .origin
@@ -187,8 +190,10 @@ impl ObjectMap {
 
             let model_path = object.image.clone().unwrap_or_default();
 
-            // Helper: build a 1×1 solid-colour fallback texture using the
-            // object's `color` / `alpha` properties.
+            // -----------------------------------------------------------
+            // Resolve the texture:
+            //   model JSON → material JSON → texture reference (tex file)
+            // -----------------------------------------------------------
             let make_solid = || -> Rc<Tex> {
                 let color_vec = object
                     .color
@@ -225,33 +230,51 @@ impl ObjectMap {
                 })
             };
 
-            // Resolve the texture:
-            //   model JSON → material JSON → texture reference (tex file)
-            // Falls back to a solid-colour placeholder at every step.
-            let texture: Rc<Tex> = (|| -> Option<Rc<Tex>> {
-                let model_raw = scene.jsons.get(&model_path)?;
-                let model = serde_json::from_str::<Model>(&model_raw[..]).ok()?;
-                let material_raw = scene.jsons.get(&model.material)?;
-                let material_json: Value =
-                    serde_json::from_str(&material_raw[..]).ok()?;
-                let tex_name = material_json["passes"]
-                    .get(0)?
-                    .get("textures")?
-                    .get(0)?
-                    .as_str()?;
-                let tex_key = format!("materials/{}.tex", tex_name);
-                match scene.textures.get(&tex_key) {
-                    Some(t) => Some(t),
-                    None => {
-                        log::debug!(
-                            "cannot get texture '{}' for material '{}'",
-                            tex_key, model.material
-                        );
-                        None
-                    }
-                }
-            })()
-            .unwrap_or_else(make_solid);
+            // Parse the model JSON once so we can use both `material` (for
+            // the texture) and `puppet` (for the MDL mesh).
+            let model_json: Option<Model> = scene
+                .jsons
+                .get(&model_path)
+                .and_then(|raw| serde_json::from_str::<Model>(&raw[..]).ok());
+
+            let texture = model_json
+                .as_ref()
+                .and_then(|model| {
+                    let material_raw = scene.jsons.get(&model.material)?;
+                    let material_json: Value =
+                        serde_json::from_str(&material_raw[..]).ok()?;
+                    let tex_name = material_json["passes"]
+                        .get(0)?
+                        .get("textures")?
+                        .get(0)?
+                        .as_str()?;
+                    let tex_key = format!("materials/{}.tex", tex_name);
+                    scene.textures.get(&tex_key)
+                })
+                .unwrap_or_else(make_solid);
+
+            // Load puppet mesh if the model references a .mdl file
+            // (unless --no-mdl was passed).
+            let mesh = if no_mdl {
+                None
+            } else {
+                model_json
+                    .as_ref()
+                    .and_then(|model| model.puppet.as_ref())
+                    .and_then(|puppet_path| {
+                        log::debug!("loading puppet mesh '{}' for '{}'", puppet_path, object.name);
+                        scene.mdls.get(puppet_path)
+                    })
+                    .and_then(|mdl_rc| mdl::extract_mesh(&mdl_rc))
+            };
+
+            if mesh.is_some() {
+                log::info!("loaded puppet mesh for '{}': {} verts, {} indices",
+                    object.name,
+                    mesh.as_ref().unwrap().vertices.len(),
+                    mesh.as_ref().unwrap().indices.len(),
+                );
+            }
 
             return Some(ObjectType::Texture(TextureObject {
                 origin,
@@ -262,6 +285,7 @@ impl ObjectMap {
                 texture: Rc::clone(&texture),
                 effects: object.effects.clone(),
                 visible,
+                mesh,
             }));
         }
 
