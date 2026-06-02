@@ -148,7 +148,107 @@ impl ObjectMap {
 }
 
 impl ObjectMap {
-    fn load_object(object: &Object, scene: &Scene, clear_color: Vec3, no_mdl: bool) -> Option<ObjectType> {
+    /// Try to resolve a renderable texture for an object.
+    ///
+    /// Returns `None` when the object should be skipped (model not found,
+    /// texture unresolvable, or a composelayer that cannot be rendered
+    /// stand-alone).
+    fn resolve_texture(
+        scene: &Scene,
+        model: &Model,
+        object: &Object,
+    ) -> Option<Rc<Tex>> {
+        // ── composelayer (passthrough) ────────────────────────────
+        // Uses a runtime framebuffer (`_rt_FullFrameBuffer`) that only
+        // exists during effect compositing.  Skip when rendering
+        // stand-alone.
+        if model.passthrough == Some(true) {
+            log::debug!(
+                "object '{}' (id {}): composelayer (passthrough) — skipping",
+                object.name, object.id,
+            );
+            return None;
+        }
+
+        // ── load material JSON ────────────────────────────────────
+        let material_raw = scene.jsons.get(&model.material)?;
+        let material_json: Value =
+            serde_json::from_str(&material_raw[..]).ok()?;
+        let passes = material_json["passes"].as_array()?;
+        let first_pass = passes.first()?;
+
+        // ── solidlayer: no textures, flat shader ──────────────────
+        let has_textures = first_pass
+            .get("textures")
+            .and_then(|t| t.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+
+        let is_solidlayer = model.solidlayer == Some(true) || !has_textures;
+
+        if is_solidlayer {
+            let color_vec = object
+                .color
+                .as_ref()
+                .and_then(|c| c.parse())
+                .unwrap_or(glam::Vec3::ONE);
+            let alpha_val = object
+                .alpha
+                .as_ref()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0);
+            let r = (color_vec.x.clamp(0.0, 1.0) * 255.0) as u8;
+            let g = (color_vec.y.clamp(0.0, 1.0) * 255.0) as u8;
+            let b = (color_vec.z.clamp(0.0, 1.0) * 255.0) as u8;
+            let a = (alpha_val.clamp(0.0, 1.0) * 255.0) as u8;
+            log::debug!(
+                "solidlayer '{}': 1x1 rgba({},{},{},{})",
+                object.name, r, g, b, a,
+            );
+            return Some(Rc::new(Tex {
+                texv: String::new(),
+                texi: String::new(),
+                texb: String::new(),
+                size: 4,
+                dimension: [1, 1],
+                image_count: 1,
+                mipmap_count: 1,
+                lz4: false,
+                decompressed_size: 4,
+                extension: "solid".into(),
+                payload: vec![r, g, b, a],
+                mip_levels: Vec::new(),
+            }));
+        }
+
+        // ── normal texture lookup ─────────────────────────────────
+        let textures = first_pass.get("textures")?.as_array()?;
+        let tex_name = textures.first()?.as_str()?;
+
+        // Runtime framebuffer references are only valid during effect
+        // compositing.
+        if tex_name.starts_with("_rt_") {
+            log::debug!(
+                "object '{}' (id {}): runtime texture '{}' — skipping",
+                object.name, object.id, tex_name,
+            );
+            return None;
+        }
+
+        let tex_key = format!("materials/{}.tex", tex_name);
+        if let Some(tex) = scene.textures.get(&tex_key) {
+            return Some(tex);
+        }
+
+        // ── unresolvable ──────────────────────────────────────────
+        log::warn!(
+            "object '{}' (id {}): tex '{}' not found (material '{}')",
+            object.name, object.id, tex_key, model.material,
+        );
+        None
+    }
+
+    fn load_object(object: &Object, scene: &Scene, _clear_color: Vec3, no_mdl: bool) -> Option<ObjectType> {
         // Common transform properties shared by texture and node objects
         let origin = object
             .origin
@@ -194,41 +294,6 @@ impl ObjectMap {
             // Resolve the texture:
             //   model JSON → material JSON → texture reference (tex file)
             // -----------------------------------------------------------
-            let make_solid = || -> Rc<Tex> {
-                let color_vec = object
-                    .color
-                    .as_ref()
-                    .and_then(|c| c.parse())
-                    .unwrap_or(clear_color)
-                    .max(Vec3::ZERO);
-                let alpha_val = object
-                    .alpha
-                    .as_ref()
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(1.0);
-                let r = (color_vec.x.clamp(0.0, 1.0) * 255.0) as u8;
-                let g = (color_vec.y.clamp(0.0, 1.0) * 255.0) as u8;
-                let b = (color_vec.z.clamp(0.0, 1.0) * 255.0) as u8;
-                let a = (alpha_val.clamp(0.0, 1.0) * 255.0) as u8;
-                log::debug!(
-                    "solidlayer fallback for '{}': 1x1 rgba({},{},{},{})",
-                    object.name, r, g, b, a
-                );
-                Rc::new(Tex {
-                    texv: String::new(),
-                    texi: String::new(),
-                    texb: String::new(),
-                    size: 4,
-                    dimension: [1, 1],
-                    image_count: 1,
-                    mipmap_count: 1,
-                    lz4: false,
-                    decompressed_size: 4,
-                    extension: "solid".into(),
-                    payload: vec![r, g, b, a],
-                    mip_levels: Vec::new(),
-                })
-            };
 
             // Parse the model JSON once so we can use both `material` (for
             // the texture) and `puppet` (for the MDL mesh).
@@ -237,30 +302,30 @@ impl ObjectMap {
                 .get(&model_path)
                 .and_then(|raw| serde_json::from_str::<Model>(&raw[..]).ok());
 
-            let texture = model_json
-                .as_ref()
-                .and_then(|model| {
-                    let material_raw = scene.jsons.get(&model.material)?;
-                    let material_json: Value =
-                        serde_json::from_str(&material_raw[..]).ok()?;
-                    let tex_name = material_json["passes"]
-                        .get(0)?
-                        .get("textures")?
-                        .get(0)?
-                        .as_str()?;
-                    let tex_key = format!("materials/{}.tex", tex_name);
-                    scene.textures.get(&tex_key)
-                })
-                .unwrap_or_else(make_solid);
+            let Some(ref model) = model_json else {
+                log::warn!(
+                    "object '{}' (id {}): model JSON '{}' not found or invalid — skipping",
+                    object.name, object.id, model_path,
+                );
+                return None;
+            };
+
+            let Some(texture) = Self::resolve_texture(scene, model, object) else {
+                log::warn!(
+                    "object '{}' (id {}): texture not found for material '{}' — skipping",
+                    object.name, object.id, model.material,
+                );
+                return None;
+            };
 
             // Load puppet mesh if the model references a .mdl file
             // (unless --no-mdl was passed).
             let mesh = if no_mdl {
                 None
             } else {
-                model_json
+                model
+                    .puppet
                     .as_ref()
-                    .and_then(|model| model.puppet.as_ref())
                     .and_then(|puppet_path| {
                         log::debug!("loading puppet mesh '{}' for '{}'", puppet_path, object.name);
                         scene.mdls.get(puppet_path)
