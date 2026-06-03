@@ -5,7 +5,7 @@ use std::{io::Cursor, path::Path};
 
 use crate::scene::{
     loader::{
-        object_loader::{AudioObject, ObjectMap, PlaybackMode},
+        object_loader::{AudioObject, ObjectMap, PlaybackMode, TextureObject},
         scene_loader::Scene,
     },
     renderer::{
@@ -53,10 +53,26 @@ impl WgpuApp {
             self.clear_color,
             self.no_mdl,
         );
+
+        // Pre-compute total geometry so we can allocate GPU buffers once.
+        let (total_verts, total_indices) = count_geometry(&objects.texture);
+        log::info!(
+            "allocating GPU buffers: {} verts, {} indices ({} bytes)",
+            total_verts,
+            total_indices,
+            total_verts as usize * std::mem::size_of::<Vertex>()
+                + total_indices as usize * std::mem::size_of::<u32>()
+        );
+        self.buffers = Some(crate::scene::renderer::buffer::Buffers::new(
+            &self.device,
+            total_indices as u64,
+            total_verts as u64,
+        ));
+
         let draw_queue = DrawQueue::new(
             &self.device,
             &self.queue,
-            &mut self.buffers,
+            self.buffers.as_mut().unwrap(),
             &scene,
             objects.texture,
             pipeline,
@@ -74,7 +90,7 @@ impl WgpuApp {
 
         let camera_uniform = Projection::new(&scene.root).create_camera_uniform();
         self.projection_bindgroup.create_projection_bindgroup(
-            &self.buffers,
+            self.buffers.as_ref().unwrap(),
             &self.device,
             &self.queue,
             &camera_uniform,
@@ -128,6 +144,23 @@ fn load_audios(audio_stream: &OutputStream, audios: Vec<AudioObject>, scene: &Sc
         audio_sink.set_volume(1.0);
         audio_sink.sleep_until_end();
     });
+}
+
+/// Count total vertices and indices needed for all texture objects.
+fn count_geometry(objects: &[TextureObject]) -> (u32, u32) {
+    let mut total_verts: u32 = 0;
+    let mut total_indices: u32 = 0;
+    for obj in objects {
+        if let Some(ref mesh) = obj.mesh {
+            total_verts += mesh.vertices.len() as u32;
+            total_indices += mesh.indices.len() as u32;
+        } else {
+            total_verts += 4; // 4 corners
+            total_indices += 6; // 2 triangles
+        }
+    }
+    // Ensure at least a minimal capacity
+    (total_verts.max(4), total_indices.max(6))
 }
 
 /// Create default rendering pipeline

@@ -100,8 +100,6 @@ struct ParserArgs {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 pub const MAX_TEXTURE: u32 = 512;
-pub const MAX_VERTEX: u32 = MAX_TEXTURE * 4;
-pub const MAX_INDEX: u32 = MAX_TEXTURE * 6;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

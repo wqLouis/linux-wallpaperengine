@@ -1,5 +1,5 @@
 use indicatif::ProgressBar;
-use pkg_parser::pkg_parser::{parser::Pkg, tex_parser::Tex};
+use pkg_parser::pkg_parser::{mdl_parser::MdlFile, parser::Pkg, tex_parser::Tex};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -32,6 +32,7 @@ impl Scene {
         });
 
         let texs: Arc<Mutex<BTreeMap<String, Tex>>> = Arc::new(Mutex::new(BTreeMap::new()));
+        let mut mdls_map: BTreeMap<String, Rc<MdlFile>> = BTreeMap::new();
         let mut jsons: BTreeMap<String, String> = BTreeMap::new();
         let mut misc: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
@@ -90,6 +91,21 @@ impl Scene {
                     handles.push(handle);
                 }
 
+                "mdl" => {
+                    pb.inc(1);
+                    match MdlFile::new(&val) {
+                        Some(mdl) => {
+                            log::debug!("pkg: loaded mdl: {} ({} records, {} quads)",
+                                key, mdl.data.records.len(), mdl.data.quads.len());
+                            mdls_map.insert(key, Rc::new(mdl));
+                        }
+                        None => {
+                            log::warn!("pkg: failed to parse mdl: {}", key);
+                            // Keep raw bytes in misc as fallback
+                            misc.insert(key, val);
+                        }
+                    }
+                }
                 "json" => {
                     pb.inc(1);
                     log::debug!("pkg: loaded json: {}", key);
@@ -137,7 +153,7 @@ impl Scene {
         Self {
             root,
             textures: TextureBucket::new(texs, None),
-            mdls: MdlBucket::new(BTreeMap::new(), None),
+            mdls: MdlBucket::new(mdls_map, None),
             jsons: JsonBucket::new(jsons, None),
             misc: MiscBucket::new(misc, None),
         }

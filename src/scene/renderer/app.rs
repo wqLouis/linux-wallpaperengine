@@ -10,7 +10,7 @@ use glam::Vec3;
 use log;
 use wgpu::*;
 
-use crate::{MAX_INDEX, MAX_TEXTURE, MAX_VERTEX};
+use crate::MAX_TEXTURE;
 
 use super::{
     buffer::Buffers, draw::DrawQueue, intermediate_pass,
@@ -37,7 +37,7 @@ impl Default for UserParams {
 /// Application state owning all WGPU resources.
 pub struct WgpuApp {
     pub surface: AppSurface,
-    pub buffers: Buffers,
+    pub buffers: Option<Buffers>,
     pub projection_bindgroup: ProjectionBindGroups,
     pub scene_path: String,
     pub assets_path: Option<String>,
@@ -141,13 +141,13 @@ impl WgpuApp {
         let has_subgroup = enabled_features.contains(Features::SUBGROUP);
 
         let surface = AppSurface::new(surface, &instance, &adapter, size);
-        let buffers = Buffers::new(&device, MAX_INDEX as u64, MAX_VERTEX as u64);
+        // Buffers are allocated later in load() once we know geometry size.
         let projection_bindgroup = ProjectionBindGroups::new(&device);
         let audio_stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
 
         Self {
             surface,
-            buffers,
+            buffers: None,
             projection_bindgroup,
             scene_path,
             assets_path,
@@ -216,11 +216,13 @@ impl WgpuApp {
             );
         }
 
+        let buffers = self.buffers.as_ref()?;
+
         let output = render_pass::render_final_pass(
             &mut encoder,
             &self.device,
             &self.surface,
-            &self.buffers,
+            buffers,
             &self.projection_bindgroup,
             draw_queue,
             self.clear_color,

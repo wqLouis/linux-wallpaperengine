@@ -27,6 +27,10 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wgpu = { version = "28.0.0", features = ["glsl"] }
 winit = "0.30.12"
 
+[[example]]
+name = "test_mdl_mesh"
+path = "examples/test_mdl_mesh.rs"
+
 [profile.release]
 opt-level = 3
 debug = false

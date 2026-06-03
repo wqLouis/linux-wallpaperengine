@@ -8,23 +8,25 @@ pub struct Buffers {
     pub index: Buffer,
     pub projection: Buffer,
 
+    pub vertex_capacity: u32,
+    pub index_capacity: u32,
     pub vertex_len: u32,
     pub index_len: u32,
 }
 
 impl Buffers {
-    pub(super) fn new(device: &Device, index_len: u64, vertex_len: u64) -> Self {
+    pub(super) fn new(device: &Device, index_capacity: u64, vertex_capacity: u64) -> Self {
         let vertex = device.create_buffer(&BufferDescriptor {
             label: Some("vertex buffer"),
             usage: BufferUsages::COPY_DST | BufferUsages::VERTEX,
             mapped_at_creation: false,
-            size: (std::mem::size_of::<Vertex>() as u64 * vertex_len),
+            size: (std::mem::size_of::<Vertex>() as u64 * vertex_capacity),
         });
         let index = device.create_buffer(&BufferDescriptor {
             label: Some("index buffer"),
             usage: BufferUsages::COPY_DST | BufferUsages::INDEX,
             mapped_at_creation: false,
-            size: (std::mem::size_of::<u32>() as u64 * index_len),
+            size: (std::mem::size_of::<u32>() as u64 * index_capacity),
         });
         let projection = device.create_buffer(&BufferDescriptor {
             label: Some("projection buffer"),
@@ -37,6 +39,8 @@ impl Buffers {
             vertex,
             index,
             projection,
+            vertex_capacity: vertex_capacity as u32,
+            index_capacity: index_capacity as u32,
             vertex_len: 0,
             index_len: 0,
         }

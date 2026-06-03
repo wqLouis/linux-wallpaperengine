@@ -24,28 +24,30 @@ pub struct PuppetMesh {
 ///
 /// Returns `None` if the MDL contains no usable geometry.
 ///
-/// # Triangle filtering
+/// # Triangle selection
 ///
 /// The MDL gap between control-point records and the MDLS bone section
 /// contains two regions: a *quads* section (5-byte header + 6×u16 per
 /// quad → 2 triangles, indices in `[0, num_records)`) followed by a
 /// *render triangles* section (3×u16 per triangle with higher indices
-/// derived from quad subdivision).  Only quads-derived triangles are
-/// usable without a tessellator, so we discard any triangle whose
-/// indices are out of bounds.
+/// derived from quad subdivision).
+///
+/// Only quads-derived triangles are directly usable without a
+/// tessellator, so we use `mdl.data.quads` (not `.triangles`).
 pub fn extract_mesh(mdl: &MdlFile) -> Option<PuppetMesh> {
     let num_records = mdl.data.records.len();
-    if num_records == 0 || mdl.data.triangles.is_empty() {
-        log::debug!("mdl mesh: no records or triangles");
+    if num_records == 0 || mdl.data.quads.is_empty() {
+        log::debug!("mdl mesh: no records or quads");
         return None;
     }
 
-    let num_tri_total = mdl.data.triangles.len();
+    let num_tri_total = mdl.data.quads.len();
 
-    // Keep only triangles whose vertices all reference valid control points.
+    // Quads are guaranteed to index within [0, num_records), but we
+    // keep this filter as a defensive safety check.
     let valid_tris: Vec<_> = mdl
         .data
-        .triangles
+        .quads
         .iter()
         .filter(|t| {
             let a = t.a as usize;
@@ -73,10 +75,10 @@ pub fn extract_mesh(mdl: &MdlFile) -> Option<PuppetMesh> {
 
     // Convert control points to vertices.
     //
-    // pos_x / pos_y are stored as i16 but represent coordinates in the
-    // unsigned [0, 65535] range.  We reinterpret as u16 and normalise to
-    // [0,1] — the renderer will scale by the object's size, apply
-    // rotation, and translate to the origin.
+    // The parser stores pos/tex as `raw_i16 / 32767.0` ([-1,1] range).
+    // Semantically these are u16 values in [0, 65535] that should map
+    // to [0,1].  We recover the original u16 by round-tripping through
+    // i16 and reinterpreting the bit pattern.
     //
     // tex_u / tex_v likewise use the u16 range [0,65535] → [0,1] UV.
     let vertices: Vec<Vertex> = mdl
@@ -84,10 +86,11 @@ pub fn extract_mesh(mdl: &MdlFile) -> Option<PuppetMesh> {
         .records
         .iter()
         .map(|cp| {
-            let px = (cp.pos_x as u16) as f32 / 65535.0;
-            let py = (cp.pos_y as u16) as f32 / 65535.0;
-            let tu = (cp.tex_u as u16) as f32 / 65535.0;
-            let tv = (cp.tex_v as u16) as f32 / 65535.0;
+            // Recover raw u16: round(f32 * 32767) → i16 → reinterpret as u16
+            let px = ((cp.pos_x * 32767.0).round() as i16 as u16) as f32 / 65535.0;
+            let py = ((cp.pos_y * 32767.0).round() as i16 as u16) as f32 / 65535.0;
+            let tu = ((cp.tex_u * 32767.0).round() as i16 as u16) as f32 / 65535.0;
+            let tv = ((cp.tex_v * 32767.0).round() as i16 as u16) as f32 / 65535.0;
             Vertex {
                 pos: [px, py, 0.0],
                 uv: [tu, tv],
