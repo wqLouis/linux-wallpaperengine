@@ -33,21 +33,23 @@ pub struct PuppetMesh {
 /// derived from quad subdivision).
 ///
 /// Only quads-derived triangles are directly usable without a
-/// tessellator, so we use `mdl.data.quads` (not `.triangles`).
-pub fn extract_mesh(mdl: &MdlFile) -> Option<PuppetMesh> {
+/// tessellator, so we use `mdl.data.triangles` (which now holds the
+/// pre-tessellated quad indices, after the parser stopped carrying the
+/// quads separately).
+pub fn extract_mesh(mdl: &MdlFile, _obj_dims: [f32; 2]) -> Option<PuppetMesh> {
     let num_records = mdl.data.records.len();
-    if num_records == 0 || mdl.data.quads.is_empty() {
-        log::debug!("mdl mesh: no records or quads");
+    if num_records == 0 || mdl.data.triangles.is_empty() {
+        log::debug!("mdl mesh: no records or triangles");
         return None;
     }
 
-    let num_tri_total = mdl.data.quads.len();
+    let num_tri_total = mdl.data.triangles.len();
 
-    // Quads are guaranteed to index within [0, num_records), but we
-    // keep this filter as a defensive safety check.
+    // Triangles are guaranteed to index within [0, num_records), but
+    // we keep this filter as a defensive safety check.
     let valid_tris: Vec<_> = mdl
         .data
-        .quads
+        .triangles
         .iter()
         .filter(|t| {
             let a = t.a as usize;
