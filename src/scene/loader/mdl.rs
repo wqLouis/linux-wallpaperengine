@@ -2,6 +2,24 @@
 //!
 //! Converts [`MdlFile`] control points and triangles into a GPU-ready
 //! mesh ([`PuppetMesh`]) with vertex positions and texture coordinates.
+//!
+//! ## Position pipeline
+//!
+//! 1. **Use raw control-point positions directly** — the MDL records
+//!    already contain the vertex positions in the rest (reference)
+//!    pose, in object-local space (centred around 0 with extent
+//!    matching the scene.json `obj_dims`).  The bone matrices stored
+//!    in MDLS are *bind-pose* references used as a basis for
+//!    animation; they are **not** applied at rest, since doing so
+//!    would double-transform the mesh and stretch its parts apart.
+//!
+//! 2. **Normalise to `[0, 1]^2`** using the scene.json `obj_dims`.
+//!    `pos_01 = (pos + obj_dims/2) / obj_dims`.  The renderer's
+//!    `draw_mesh` then multiplies by `obj_dims` to recover the
+//!    original world-space coordinate.  This preserves the relative
+//!    size of sub-meshes (a small eye stays a small eye inside its
+//!    obj_dims box — bbox-fitting would over-scale small parts to
+//!    fill the box).
 
 use pkg_parser::pkg_parser::mdl_parser::MdlFile;
 
@@ -15,28 +33,17 @@ pub struct PuppetMesh {
     /// Number of control points in the source MDL (for debugging).
     #[allow(dead_code)]
     pub num_control_points: usize,
-    /// Number of original triangles (before filtering).
+    /// Number of triangles (for debugging).
     #[allow(dead_code)]
     pub num_triangles_total: usize,
 }
 
 /// Attempt to extract a renderable mesh from a parsed MDL file.
 ///
-/// Returns `None` if the MDL contains no usable geometry.
-///
-/// # Triangle selection
-///
-/// The MDL gap between control-point records and the MDLS bone section
-/// contains two regions: a *quads* section (5-byte header + 6×u16 per
-/// quad → 2 triangles, indices in `[0, num_records)`) followed by a
-/// *render triangles* section (3×u16 per triangle with higher indices
-/// derived from quad subdivision).
-///
-/// Only quads-derived triangles are directly usable without a
-/// tessellator, so we use `mdl.data.triangles` (which now holds the
-/// pre-tessellated quad indices, after the parser stopped carrying the
-/// quads separately).
-pub fn extract_mesh(mdl: &MdlFile, _obj_dims: [f32; 2]) -> Option<PuppetMesh> {
+/// `obj_dims` is the scene.json object size.  It is used as the
+/// normaliser for the `[0, 1]` mapping and is the expected extent
+/// of the mesh's vertex positions in object-local space.
+pub fn extract_mesh(mdl: &MdlFile, obj_dims: [f32; 2]) -> Option<PuppetMesh> {
     let num_records = mdl.data.records.len();
     if num_records == 0 || mdl.data.triangles.is_empty() {
         log::debug!("mdl mesh: no records or triangles");
@@ -44,63 +51,34 @@ pub fn extract_mesh(mdl: &MdlFile, _obj_dims: [f32; 2]) -> Option<PuppetMesh> {
     }
 
     let num_tri_total = mdl.data.triangles.len();
-
-    // Triangles are guaranteed to index within [0, num_records), but
-    // we keep this filter as a defensive safety check.
-    let valid_tris: Vec<_> = mdl
-        .data
-        .triangles
-        .iter()
-        .filter(|t| {
-            let a = t.a as usize;
-            let b = t.b as usize;
-            let c = t.c as usize;
-            a < num_records && b < num_records && c < num_records
-        })
-        .collect();
-
-    if valid_tris.is_empty() {
-        log::debug!(
-            "mdl mesh: {} total triangles, 0 within control-point range (max index {})",
-            num_tri_total,
-            num_records,
-        );
-        return None;
-    }
+    let bones = &mdl.bones.bones;
 
     log::debug!(
-        "mdl mesh: {} / {} triangles valid, {} control points",
-        valid_tris.len(),
-        num_tri_total,
-        num_records,
+        "mdl mesh: {} tris, {} verts, {} bones, obj_dims={}x{}",
+        num_tri_total, num_records, bones.len(),
+        obj_dims[0] as u32, obj_dims[1] as u32,
     );
 
-    // Convert control points to vertices.
-    //
-    // The parser stores pos/tex as `raw_i16 / 32767.0` ([-1,1] range).
-    // Semantically these are u16 values in [0, 65535] that should map
-    // to [0,1].  We recover the original u16 by round-tripping through
-    // i16 and reinterpreting the bit pattern.
-    //
-    // tex_u / tex_v likewise use the u16 range [0,65535] → [0,1] UV.
+    // Map raw object-local positions to [0, 1] using obj_dims.
+    // Guard against zero-size to avoid division by zero.
+    let obj_w = obj_dims[0].max(f32::EPSILON);
+    let obj_h = obj_dims[1].max(f32::EPSILON);
+    let half_w = obj_w * 0.5;
+    let half_h = obj_h * 0.5;
+
     let vertices: Vec<Vertex> = mdl
         .data
         .records
         .iter()
-        .map(|cp| {
-            // Recover raw u16: round(f32 * 32767) → i16 → reinterpret as u16
-            let px = ((cp.pos_x * 32767.0).round() as i16 as u16) as f32 / 65535.0;
-            let py = ((cp.pos_y * 32767.0).round() as i16 as u16) as f32 / 65535.0;
-            let tu = ((cp.tex_u * 32767.0).round() as i16 as u16) as f32 / 65535.0;
-            let tv = ((cp.tex_v * 32767.0).round() as i16 as u16) as f32 / 65535.0;
-            Vertex {
-                pos: [px, py, 0.0],
-                uv: [tu, tv],
-            }
+        .map(|cp| Vertex {
+            pos: [(cp.pos_x + half_w) / obj_w, (cp.pos_y + half_h) / obj_h, 0.0],
+            uv: [cp.tex_u, cp.tex_v],
         })
         .collect();
 
-    let indices: Vec<u32> = valid_tris
+    let indices: Vec<u32> = mdl
+        .data
+        .triangles
         .iter()
         .flat_map(|t| [t.a as u32, t.b as u32, t.c as u32])
         .collect();
