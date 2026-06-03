@@ -59,6 +59,7 @@ pub struct WgpuApp {
     pub has_clear_texture: bool,
     pub has_partially_bound: bool,
     pub has_subgroup: bool,
+    pub show_progress: bool,
 }
 
 impl WgpuApp {
@@ -73,6 +74,7 @@ impl WgpuApp {
         no_effects: bool,
         no_mdl: bool,
         assets_path: Option<String>,
+        show_progress: bool,
     ) -> Self {
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::VULKAN | Backends::METAL,
@@ -169,6 +171,7 @@ impl WgpuApp {
             has_clear_texture,
             has_partially_bound,
             has_subgroup,
+            show_progress,
         }
     }
 

@@ -29,6 +29,7 @@ struct WinitApp {
     no_mdl: bool,
     assets_path: Option<String>,
     target_fps: Option<u32>,
+    show_progress: bool,
     last_frame: Option<Instant>,
 }
 
@@ -56,6 +57,7 @@ impl ApplicationHandler for WinitApp {
             self.no_effects,
             self.no_mdl,
             self.assets_path.clone(),
+            self.show_progress,
         ));
 
         wgpu_app.load();
@@ -137,6 +139,7 @@ pub fn start(
     no_mdl: bool,
     assets_path: Option<String>,
     target_fps: Option<u32>,
+    show_progress: bool,
 ) {
     let event_loop = EventLoop::new().unwrap();
     let mut app = WinitApp {
@@ -145,6 +148,7 @@ pub fn start(
         no_mdl,
         assets_path,
         target_fps,
+        show_progress,
         last_frame: None,
         app: Arc::new(Mutex::new(None)),
         window: None,

@@ -243,6 +243,11 @@ fn main() {
         return;
     }
 
+    // The extraction progress bar overwrites stdout as it redraws, so
+    // it would eat any debug/trace logs printed during scene load. Hide
+    // it whenever those levels are active.
+    let show_progress = !matches!(cli.log_level.as_str(), "verbose" | "debug");
+
     let fit_mode = match cli.fit_mode.as_str() {
         "cover" => FitMode::Cover,
         "contain" | "fit" => FitMode::Contain,
@@ -265,8 +270,8 @@ fn main() {
     let target_fps = cli.target_fps;
 
     match cli.modes.as_str() {
-        "winit" => winit_adapter::start(cli.path, cli.no_effects, cli.no_mdl, cli.assets_path, target_fps),
-        "wlr" => wlr_app::start(cli.path, fit_mode, cli.no_effects, cli.no_mdl, cli.assets_path, target_fps),
+        "winit" => winit_adapter::start(cli.path, cli.no_effects, cli.no_mdl, cli.assets_path, target_fps, show_progress),
+        "wlr" => wlr_app::start(cli.path, fit_mode, cli.no_effects, cli.no_mdl, cli.assets_path, target_fps, show_progress),
         _ => {
             eprintln!("Unknown display mode '{}'. Valid: wlr, winit", cli.modes);
         }

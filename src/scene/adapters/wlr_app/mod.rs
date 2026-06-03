@@ -368,6 +368,7 @@ pub fn start(
     no_mdl: bool,
     assets_path: Option<String>,
     target_fps: Option<u32>,
+    show_progress: bool,
 ) {
     let conn = Connection::connect_to_env().unwrap();
     let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
@@ -430,6 +431,7 @@ pub fn start(
         no_effects,
         no_mdl,
         assets_path,
+        show_progress,
     ));
     app.load();
     let wp_res = app.resolution.expect("Unknown resolution");

@@ -25,7 +25,11 @@ impl Scene {
     /// invalid — there is no meaningful fallback without a scene definition.
     /// Individual asset failures (textures, etc.) are logged and skipped
     /// gracefully.
-    pub fn new(path: String) -> Self {
+    ///
+    /// `show_progress` controls whether the extraction progress bar is
+    /// drawn. Set it to `false` when debug/trace logging is enabled,
+    /// because the progress bar's redraw would otherwise eat those logs.
+    pub fn new(path: String, show_progress: bool) -> Self {
         let path = Path::new(&path);
         let pkg = Pkg::new(path).unwrap_or_else(|e| {
             panic!("Failed to load PKG file '{}': {}", path.display(), e);
@@ -37,7 +41,14 @@ impl Scene {
         let mut misc: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
-        let pb = ProgressBar::new(pkg.files.len() as u64);
+        // A no-op stand-in used when the progress bar is disabled. All
+        // `pb.inc(1)` / `pb.finish_and_clear()` calls below then become
+        // free no-ops without scattering `if show_progress` checks.
+        let pb = if show_progress {
+            ProgressBar::new(pkg.files.len() as u64)
+        } else {
+            ProgressBar::hidden()
+        };
 
         for (key, val) in pkg.files.into_iter() {
             let file_path = Path::new(&key);
@@ -95,8 +106,8 @@ impl Scene {
                     pb.inc(1);
                     match MdlFile::new(&val) {
                         Some(mdl) => {
-                            log::debug!("pkg: loaded mdl: {} ({} records, {} quads)",
-                                key, mdl.data.records.len(), mdl.data.quads.len());
+                            log::debug!("pkg: loaded mdl: {} ({} records, {} triangles)",
+                                key, mdl.data.records.len(), mdl.data.triangles.len());
                             mdls_map.insert(key, Rc::new(mdl));
                         }
                         None => {
