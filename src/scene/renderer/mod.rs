@@ -10,4 +10,5 @@ mod post_processor;
 mod projection;
 pub mod render_pass;
 mod surface;
+pub mod transform;
 pub mod vertex;
