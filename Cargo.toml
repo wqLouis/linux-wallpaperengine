@@ -17,7 +17,10 @@ raw-window-handle = "0.6.2"
 rodio = { version = "0.21.1", default-features = false, features = [
   "lewton",
   "playback",
-  "symphonia-all"
+  "symphonia",
+  "symphonia-mp3",
+  "symphonia-aac",
+  "symphonia-isomp4",
 ] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149" }
