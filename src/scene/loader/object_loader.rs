@@ -10,14 +10,19 @@ use crate::scene::loader::{
     scene::{Effect, Object, Vectors},
     scene_loader::Scene,
 };
+use crate::scene::renderer::transform::{
+    build_model_matrix, compose, Alignment, Transform,
+};
 
 #[derive(Debug, Clone)]
 pub struct TextureObject {
     pub texture: Rc<Tex>,
-    pub origin: Vec3,
-    pub angles: Vec3,
+    /// Local transform (position, rotation, scale, pivot, alignment).
+    pub transform: Transform,
+    /// World-space model matrix, computed by composing with the parent
+    /// chain.  This is the matrix the renderer should use.
+    pub model: glam::Mat4,
     pub size: Vec2,
-    pub scale: Vec3,
     pub parent: Option<i64>,
     pub effects: Vec<Effect>,
     pub visible: bool,
@@ -36,9 +41,7 @@ pub struct ObjectMap {
 }
 
 struct Node {
-    origin: Vec3,
-    angles: Vec3,
-    scale: Vec3,
+    transform: Transform,
     parent: Option<i64>,
 }
 
@@ -79,51 +82,58 @@ impl ObjectMap {
             }
         }
 
-        for id in texture_map.keys().copied().collect::<Vec<i64>>() {
+        // Propagate parent transforms in topological order (parents before
+        // children) so each immediate parent already contains its ancestors'
+        // transforms.  We sort by chain depth so we never need to traverse
+        // more than one level up.
+        let mut ids: Vec<i64> = texture_map.keys().copied().collect();
+        ids.sort_by_key(|id| {
+            // Compute chain depth (number of ancestors)
+            let mut depth = 0u32;
+            let mut cur = texture_map.get(id).and_then(|t| t.borrow().parent);
+            while let Some(pid) = cur {
+                depth += 1;
+                cur = texture_map.get(&pid)
+                    .and_then(|t| t.borrow().parent);
+                if cur.is_none() {
+                    cur = node_map.get(&pid).and_then(|n| n.parent);
+                }
+                if depth > 32 { break; }
+            }
+            depth
+        });
+
+        for id in ids {
             let Some(texture_rc) = texture_map.get(&id) else {
                 continue;
             };
 
             let mut texture = texture_rc.borrow_mut();
 
-            let Some(mut parent_id) = texture.parent else {
+            let Some(parent_id) = texture.parent else {
                 continue;
             };
 
-            loop {
-                let tex_parent = texture_map.get(&parent_id);
-                let node_parent = node_map.get(&parent_id);
-
-                if tex_parent.is_none() && node_parent.is_none() {
-                    break;
+            // Look up the parent's world model matrix.  Since the parent
+            // has already been processed (topological order), its `model`
+            // already includes all ancestor transforms.
+            let parent_model: Option<glam::Mat4> = if let Some(parent_rc) =
+                texture_map.get(&parent_id)
+            {
+                let parent = parent_rc.borrow();
+                if !parent.visible {
+                    texture.visible = false;
                 }
+                Some(parent.model)
+            } else if let Some(parent) = node_map.get(&parent_id) {
+                Some(build_model_matrix(&parent.transform, Vec2::ZERO))
+            } else {
+                None
+            };
 
-                if let Some(parent_rc) = tex_parent {
-                    let parent = parent_rc.borrow();
-                    // Propagate invisibility: if parent is not visible, child is also not visible
-                    if !parent.visible {
-                        texture.visible = false;
-                    }
-                    texture.angles += parent.angles;
-                    texture.scale *= parent.scale;
-                    texture.origin = parent.origin + (texture.origin + parent.origin) * parent.scale;
-
-                    match parent.parent {
-                        None => break,
-                        Some(id) => parent_id = id,
-                    }
-                }
-
-                if let Some(parent) = node_parent {
-                    texture.angles += parent.angles;
-                    texture.scale *= parent.scale;
-                    texture.origin = parent.origin + texture.origin * parent.scale;
-
-                    match parent.parent {
-                        None => break,
-                        Some(id) => parent_id = id,
-                    }
-                }
+            if let Some(pm) = parent_model {
+                // M_child_world = M_parent_world * M_child_local
+                texture.model = compose(pm, texture.model);
             }
         }
 
@@ -210,6 +220,7 @@ impl ObjectMap {
                 texi: String::new(),
                 texb: String::new(),
                 size: 4,
+                actual_mip_count: 1,
                 dimension: [1, 1],
                 image_count: 1,
                 mipmap_count: 1,
@@ -250,13 +261,13 @@ impl ObjectMap {
 
     fn load_object(object: &Object, scene: &Scene, _clear_color: Vec3, no_mdl: bool) -> Option<ObjectType> {
         // Common transform properties shared by texture and node objects
-        let origin = object
+        let position = object
             .origin
             .as_ref()
             .unwrap_or(&Vectors::default())
             .parse()
             .unwrap_or_default();
-        let angles = object
+        let rotation = object
             .angles
             .as_ref()
             .unwrap_or(&Vectors::default())
@@ -268,6 +279,16 @@ impl ObjectMap {
             .unwrap_or(&Vectors::Scaler(1.0))
             .parse()
             .unwrap_or_default();
+        let pivot = object
+            .pivot
+            .as_ref()
+            .and_then(|v| v.parse())
+            .unwrap_or_default();
+        let alignment = parse_alignment(object.alignment.as_deref());
+
+        let transform = Transform::new(position, rotation, scale)
+            .with_pivot(pivot)
+            .with_alignment(alignment);
 
         if object.image.is_some() {
             // Texture
@@ -320,6 +341,7 @@ impl ObjectMap {
 
             // Load puppet mesh if the model references a .mdl file
             // (unless --no-mdl was passed).
+            let obj_dims = [size.x, size.y];
             let mesh = if no_mdl {
                 None
             } else {
@@ -330,7 +352,7 @@ impl ObjectMap {
                         log::debug!("loading puppet mesh '{}' for '{}'", puppet_path, object.name);
                         scene.mdls.get(puppet_path)
                     })
-                    .and_then(|mdl_rc| mdl::extract_mesh(&mdl_rc))
+                    .and_then(|mdl_rc| mdl::extract_mesh(&mdl_rc, obj_dims))
             };
 
             if mesh.is_some() {
@@ -342,10 +364,9 @@ impl ObjectMap {
             }
 
             return Some(ObjectType::Texture(TextureObject {
-                origin,
-                angles,
+                transform,
+                model: build_model_matrix(&transform, size),
                 size,
-                scale,
                 parent: object.parent,
                 texture: Rc::clone(&texture),
                 effects: object.effects.clone(),
@@ -368,10 +389,25 @@ impl ObjectMap {
         }
 
         Some(ObjectType::Node(Node {
-            origin,
-            angles,
-            scale,
+            transform,
             parent: object.parent,
         }))
+    }
+}
+
+/// Parse a scene.json `alignment` string into a typed [`Alignment`].
+///
+/// Unknown / missing values fall back to [`Alignment::Center`].
+fn parse_alignment(s: Option<&str>) -> Alignment {
+    match s.unwrap_or("").to_ascii_lowercase().as_str() {
+        "left" => Alignment::Left,
+        "right" => Alignment::Right,
+        "top" => Alignment::Top,
+        "bottom" => Alignment::Bottom,
+        "topleft" | "top-left" | "top_left" => Alignment::TopLeft,
+        "topright" | "top-right" | "top_right" => Alignment::TopRight,
+        "bottomleft" | "bottom-left" | "bottom_left" => Alignment::BottomLeft,
+        "bottomright" | "bottom-right" | "bottom_right" => Alignment::BottomRight,
+        _ => Alignment::Center,
     }
 }

@@ -1,4 +1,4 @@
-use glam::{Mat2, Vec2, Vec3};
+use glam::{Vec2, Vec3};
 use wgpu::*;
 
 use super::vertex::Vertex;
@@ -8,8 +8,6 @@ pub struct Buffers {
     pub index: Buffer,
     pub projection: Buffer,
 
-    pub vertex_capacity: u32,
-    pub index_capacity: u32,
     pub vertex_len: u32,
     pub index_len: u32,
 }
@@ -39,8 +37,6 @@ impl Buffers {
             vertex,
             index,
             projection,
-            vertex_capacity: vertex_capacity as u32,
-            index_capacity: index_capacity as u32,
             vertex_len: 0,
             index_len: 0,
         }
@@ -87,31 +83,21 @@ impl Buffers {
     pub fn draw_texture(
         &mut self,
         queue: &Queue,
-        origin: Vec3,
-        angles: Vec3,
-        scale: Vec3,
+        model: glam::Mat4,
+        z: f32,
         size: Vec2,
     ) {
-        let size_scaled = size
-            * Vec2 {
-                x: scale.x,
-                y: scale.y,
-            };
-        let z = origin.z - 1.0;
-
-        let rotation_mat = Mat2::from_angle(angles.z);
-        let half = Vec2::new(size_scaled.x / 2.0, size_scaled.y / 2.0);
+        let half = Vec2::new(size.x / 2.0, size.y / 2.0);
         let corners = [
-            Vec2::new(-half.x, half.y),
-            Vec2::new(half.x, half.y),
-            Vec2::new(half.x, -half.y),
-            Vec2::new(-half.x, -half.y),
+            Vec3::new(-half.x, half.y, 0.0),
+            Vec3::new(half.x, half.y, 0.0),
+            Vec3::new(half.x, -half.y, 0.0),
+            Vec3::new(-half.x, -half.y, 0.0),
         ];
 
-        let pos_offset = Vec2::new(origin.x, origin.y);
-        let rect = corners.map(|v| {
-            let rotated = rotation_mat * v + pos_offset;
-            Vec3::new(rotated.x, rotated.y, z)
+        let rect = corners.map(|c| {
+            let p = model.transform_point3(c);
+            Vec3::new(p.x, p.y, z)
         });
 
         self.draw_rect(queue, rect);
@@ -121,38 +107,33 @@ impl Buffers {
     ///
     /// Vertex positions are in object-local normalised space `[0,1]^2`
     /// (same convention as [`draw_texture`] corners).  They are scaled by
-    /// `size`, centered, rotated by `angles.z`, and translated by `origin`.
+    /// `size`, recentered, and the `model` matrix (already including
+    /// parent composition, alignment, and pivot) maps them to world space.
     pub fn draw_mesh(
         &mut self,
         queue: &Queue,
         vertices: &[Vertex],
         indices: &[u32],
-        origin: Vec3,
-        angles: Vec3,
-        scale: Vec3,
+        model: glam::Mat4,
+        z: f32,
         size: Vec2,
     ) -> [u32; 2] {
         let index_start = self.index_len;
 
-        let size = size
-            * Vec2 {
-                x: scale.x,
-                y: scale.y,
-            };
-        let z = origin.z - 1.0;
-
-        let rotation_mat = Mat2::from_angle(angles.z);
         let half = Vec2::new(size.x / 2.0, size.y / 2.0);
-        let pos_offset = Vec2::new(origin.x, origin.y);
 
-        // Transform each vertex: [0,1] → [-half, +half] → rotate → translate
+        // Transform each vertex: [0,1] → [-half, +half] → model matrix.
         let transformed: Vec<Vertex> = vertices
             .iter()
             .map(|v| {
-                let p = Vec2::new(v.pos[0] * size.x - half.x, v.pos[1] * size.y - half.y);
-                let rotated = rotation_mat * p + pos_offset;
+                let local = Vec3::new(
+                    v.pos[0] * size.x - half.x,
+                    v.pos[1] * size.y - half.y,
+                    0.0,
+                );
+                let world = model.transform_point3(local);
                 Vertex {
-                    pos: [rotated.x, rotated.y, z],
+                    pos: [world.x, world.y, z],
                     uv: v.uv,
                 }
             })

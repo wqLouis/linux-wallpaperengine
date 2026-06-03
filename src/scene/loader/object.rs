@@ -9,6 +9,7 @@ use super::scene::Vectors;
 #[serde(rename_all = "camelCase")]
 pub struct Object {
     pub alignment: Option<String>,
+    pub pivot: Option<Vectors>,
     pub alpha: Option<Value>,
     pub angles: Option<Vectors>,
     pub brightness: Option<f64>,
