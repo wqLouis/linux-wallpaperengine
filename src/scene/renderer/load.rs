@@ -5,6 +5,7 @@ use std::{io::Cursor, path::Path};
 
 use crate::scene::{
     loader::{
+        mip_loader::MipChainGenerator,
         object_loader::{AudioObject, ObjectMap, PlaybackMode, TextureObject},
         scene_loader::Scene,
     },
@@ -21,7 +22,7 @@ use rodio::{OutputStream, Source};
 impl WgpuApp {
     /// load assets
     pub fn load(&mut self) {
-        let mut scene = Scene::new(self.scene_path.clone());
+        let mut scene = Scene::new(self.scene_path.clone(), self.show_progress);
 
         // Enable lazy-loading fallback to Wallpaper Engine assets directory.
         if let Some(ref assets_path) = self.assets_path {
@@ -78,6 +79,7 @@ impl WgpuApp {
             pipeline,
             &post_process,
             &self.projection_bindgroup.projection_layout,
+            &MipChainGenerator::new(&self.device),
             self.no_effects,
             self.has_immediates,
             self.has_partially_bound,
@@ -196,7 +198,7 @@ fn create_pipeline(app: &WgpuApp, bindgroup_layout: &BindGroupLayout) -> RenderP
                 topology: PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: FrontFace::Ccw,
-                cull_mode: Some(Face::Back),
+                cull_mode: None,
                 unclipped_depth: false,
                 polygon_mode: PolygonMode::Fill,
                 conservative: false,
