@@ -37,6 +37,11 @@ pub struct DrawQueue {
     #[allow(dead_code)]
     pub render_pipelines: BTreeMap<String, pipeline_handler::EffectPipelineData>,
     pub image_pipeline: RenderPipeline,
+    /// Additive (`One / One`) blend pipeline used only for the
+    /// intermediate source -> ping-pong copy. Kept separate from
+    /// `image_pipeline` so the final pass keeps the correct
+    /// straight-alpha blend for non-effect objects.
+    pub copy_pipeline: RenderPipeline,
 }
 
 impl DrawQueue {
@@ -47,6 +52,7 @@ impl DrawQueue {
         scene: &Scene,
         texture_objects: Vec<TextureObject>,
         image_pipeline: RenderPipeline,
+        copy_pipeline: RenderPipeline,
         post_process: &PostProcess,
         projection_bgl: &BindGroupLayout,
         mipgen: &MipChainGenerator,
@@ -82,6 +88,7 @@ impl DrawQueue {
             queue: Rc::new(draw_objects),
             render_pipelines,
             image_pipeline,
+            copy_pipeline,
         }
     }
 }

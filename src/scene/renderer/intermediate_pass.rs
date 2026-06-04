@@ -74,7 +74,7 @@ pub fn render_intermediate_passes(
         }
         copy_texture(
             encoder,
-            &draw_queue.image_pipeline,
+            &draw_queue.copy_pipeline,
             pp,
             &draw_object.bindgroup,
             proj_bg,
@@ -196,7 +196,7 @@ pub fn render_intermediate_passes(
             );
             copy_texture(
                 encoder,
-                &draw_queue.image_pipeline,
+                &draw_queue.copy_pipeline,
                 pp,
                 &bg,
                 proj_bg,

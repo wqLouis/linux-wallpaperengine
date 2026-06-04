@@ -26,10 +26,7 @@ impl WgpuApp {
 
         // Enable lazy-loading fallback to Wallpaper Engine assets directory.
         if let Some(ref assets_path) = self.assets_path {
-            log::info!(
-                "Using Wallpaper Engine assets path: {}",
-                assets_path
-            );
+            log::info!("Using Wallpaper Engine assets path: {}", assets_path);
             scene.set_assets_path(std::path::PathBuf::from(assets_path));
         }
 
@@ -38,16 +35,12 @@ impl WgpuApp {
             scene.root.general.orthogonalprojection.height as u32,
         ];
 
-        let post_process = PostProcess::new(
-            &self.device,
-            &self.queue,
-            size,
-            self.has_clear_texture,
-        );
+        let post_process =
+            PostProcess::new(&self.device, &self.queue, size, self.has_clear_texture);
 
         self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 
-        let pipeline = create_pipeline(&self, &post_process.layout);
+        let (pipeline, copy_pipeline) = create_pipelines(&self, &post_process.layout);
         let objects = ObjectMap::with_clear_color(
             &scene.root.objects.clone(),
             &scene,
@@ -77,6 +70,7 @@ impl WgpuApp {
             &scene,
             objects.texture,
             pipeline,
+            copy_pipeline,
             &post_process,
             &self.projection_bindgroup.projection_layout,
             &MipChainGenerator::new(&self.device),
@@ -117,9 +111,7 @@ fn load_audios(audio_stream: &OutputStream, audios: Vec<AudioObject>, scene: &Sc
 
             let cursor = Cursor::new(raw);
             let sound_pathbuf = Path::new(&sound).to_path_buf();
-            let hint = sound_pathbuf
-                .extension()
-                .and_then(|e| e.to_str());
+            let hint = sound_pathbuf.extension().and_then(|e| e.to_str());
 
             let mut builder = rodio::decoder::Decoder::builder().with_data(cursor);
             if let Some(ext) = hint {
@@ -165,8 +157,62 @@ fn count_geometry(objects: &[TextureObject]) -> (u32, u32) {
     (total_verts.max(4), total_indices.max(6))
 }
 
-/// Create default rendering pipeline
-fn create_pipeline(app: &WgpuApp, bindgroup_layout: &BindGroupLayout) -> RenderPipeline {
+/// Create the image pipeline used for the final pass (straight alpha
+/// blend) and a sibling `copy_pipeline` used only for the intermediate
+/// source -> ping-pong copy in `intermediate_pass.rs`.
+///
+/// The copy must NOT use `src_alpha` blending over a cleared destination,
+/// because that would convert the source's straight-alpha RGBA into
+/// premultiplied alpha. A blur / glow effect that then samples it
+/// computes darker edges (it averages the already-darkened premultiplied
+/// colors) and the final pass straight-alpha-blends those on top of the
+/// clear color — producing a soft gray/black "shade" around the object.
+///
+/// The copy pipeline uses additive (`One / One`) blending instead, so
+/// over a `(0,0,0,0)`-cleared destination `src + 0 == src` and the
+/// source's straight-alpha RGBA is preserved end-to-end.
+fn create_pipelines(
+    app: &WgpuApp,
+    bindgroup_layout: &BindGroupLayout,
+) -> (RenderPipeline, RenderPipeline) {
+    let (image, copy) = (
+        create_pipeline_with_blend(
+            app,
+            bindgroup_layout,
+            BlendState {
+                color: BlendComponent {
+                    src_factor: BlendFactor::SrcAlpha,
+                    dst_factor: BlendFactor::OneMinusSrcAlpha,
+                    operation: BlendOperation::Add,
+                },
+                alpha: BlendComponent::OVER,
+            },
+        ),
+        create_pipeline_with_blend(
+            app,
+            bindgroup_layout,
+            BlendState {
+                color: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add,
+                },
+                alpha: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add,
+                },
+            },
+        ),
+    );
+    (image, copy)
+}
+
+fn create_pipeline_with_blend(
+    app: &WgpuApp,
+    bindgroup_layout: &BindGroupLayout,
+    blend: BlendState,
+) -> RenderPipeline {
     let shader = app.device.create_shader_module(ShaderModuleDescriptor {
         label: None,
         source: ShaderSource::Wgsl(include_str!("./shader/image.wgsl").into()),
@@ -183,8 +229,7 @@ fn create_pipeline(app: &WgpuApp, bindgroup_layout: &BindGroupLayout) -> RenderP
             immediate_size: 0,
         });
 
-    let pipeline = app
-        .device
+    app.device
         .create_render_pipeline(&RenderPipelineDescriptor {
             label: None,
             layout: Some(&pipeline_layout),
@@ -215,20 +260,11 @@ fn create_pipeline(app: &WgpuApp, bindgroup_layout: &BindGroupLayout) -> RenderP
                 compilation_options: Default::default(),
                 targets: &[Some(ColorTargetState {
                     format: app.surface.config.format,
-                    blend: Some(BlendState {
-                        color: BlendComponent {
-                            src_factor: BlendFactor::SrcAlpha,
-                            dst_factor: BlendFactor::OneMinusSrcAlpha,
-                            operation: BlendOperation::Add,
-                        },
-                        alpha: BlendComponent::OVER,
-                    }),
+                    blend: Some(blend),
                     write_mask: ColorWrites::all(),
                 })],
             }),
             multiview_mask: None,
             cache: None,
-        });
-
-    pipeline
+        })
 }

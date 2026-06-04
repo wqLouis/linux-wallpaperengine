@@ -206,7 +206,25 @@ fn compile_pipeline(
             module: &frag_module, entry_point: Some("main"), compilation_options: Default::default(),
             targets: &[Some(ColorTargetState {
                 format: TextureFormat::Rgba8UnormSrgb,
-                blend: Some(BlendState { color: BlendComponent { src_factor: BlendFactor::SrcAlpha, dst_factor: BlendFactor::OneMinusSrcAlpha, operation: BlendOperation::Add }, alpha: BlendComponent::OVER }),
+                // Additive blend (One / One) over the cleared destination.
+                // The destination is cleared to (0,0,0,0) at the start of
+                // each effect step, so `src + 0 == src` — the effect's
+                // output is stored as-is (not premultiplied). The final
+                // pass can then composite it with normal straight-alpha
+                // blending without the double-premultiplication artifact
+                // that produced a dark gray shade around the object.
+                blend: Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::One,
+                        operation: BlendOperation::Add,
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::One,
+                        operation: BlendOperation::Add,
+                    },
+                }),
                 write_mask: ColorWrites::all(),
             })],
         }),
