@@ -13,9 +13,8 @@ use wgpu::*;
 use crate::MAX_TEXTURE;
 
 use super::{
-    buffer::Buffers, draw::DrawQueue, intermediate_pass,
-    post_process::PostProcess, projection::ProjectionBindGroups,
-    render_pass, surface::AppSurface,
+    buffer::Buffers, draw::DrawQueue, intermediate_pass, post_process::PostProcess,
+    projection::ProjectionBindGroups, render_pass, surface::AppSurface,
 };
 
 pub use super::surface::InitAppSurface;
@@ -57,7 +56,6 @@ pub struct WgpuApp {
     pub uniform_staging: Vec<u8>,
     pub has_immediates: bool,
     pub has_clear_texture: bool,
-    pub has_partially_bound: bool,
     pub has_subgroup: bool,
     pub show_progress: bool,
 }
@@ -138,8 +136,6 @@ impl WgpuApp {
 
         let has_immediates = enabled_features.contains(Features::IMMEDIATES);
         let has_clear_texture = enabled_features.contains(Features::CLEAR_TEXTURE);
-        let has_partially_bound =
-            enabled_features.contains(Features::PARTIALLY_BOUND_BINDING_ARRAY);
         let has_subgroup = enabled_features.contains(Features::SUBGROUP);
 
         let surface = AppSurface::new(surface, &instance, &adapter, size);
@@ -169,7 +165,6 @@ impl WgpuApp {
             uniform_staging: Vec::new(),
             has_immediates,
             has_clear_texture,
-            has_partially_bound,
             has_subgroup,
             show_progress,
         }
@@ -198,23 +193,25 @@ impl WgpuApp {
             &params,
         );
 
-        let has_intermediates =
-            draw_queue.queue.iter().any(|o| o.intermediates.is_some());
+        let has_intermediates = draw_queue.queue.iter().any(|o| o.intermediates.is_some());
 
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
 
         if has_intermediates {
-            intermediate_pass::render_intermediate_passes(
-                &mut encoder,
-                &self.device,
-                &self.projection_bindgroup,
-                draw_queue,
+            let frame = intermediate_pass::FrameParams {
+                projection_bindgroup: &self.projection_bindgroup,
                 post_process,
                 elapsed,
                 screen_res,
-                &params,
+                user_params: &params,
+            };
+            intermediate_pass::render_intermediate_passes(
+                &mut encoder,
+                &self.device,
+                draw_queue,
+                &frame,
                 &mut self.uniform_staging,
             );
         }

@@ -10,14 +10,13 @@ use std::{collections::BTreeMap, rc::Rc};
 use wgpu::*;
 
 use crate::scene::{
-    loader::{mip_loader::MipChainGenerator, object_loader::TextureObject, scene_loader::Scene},
+    loader::{mip_loader::MipChainGenerator, object_loader::TextureObject},
     renderer::{
         buffer::Buffers,
         ping_pong::PingPongTextures,
-        post_process::PostProcess,
         post_processor::{
+            context::{EffectContext, EffectTarget, PipelineMap},
             effect_step::{self, EffectStep, FboTexture},
-            pipeline_handler::{self},
         },
     },
 };
@@ -32,10 +31,17 @@ pub struct DrawObject {
     pub intermediates: Option<PingPongTextures>,
 }
 
+/// Context for building the draw queue and its effect pipelines.
+pub struct DrawContext<'a> {
+    pub effects: EffectContext<'a>,
+    pub mipgen: &'a MipChainGenerator,
+    pub no_effects: bool,
+}
+
 pub struct DrawQueue {
     pub queue: Rc<Vec<DrawObject>>,
     #[allow(dead_code)]
-    pub render_pipelines: BTreeMap<String, pipeline_handler::EffectPipelineData>,
+    pub render_pipelines: PipelineMap,
     pub image_pipeline: RenderPipeline,
     /// Additive (`One / One`) blend pipeline used only for the
     /// intermediate source -> ping-pong copy. Kept separate from
@@ -45,44 +51,18 @@ pub struct DrawQueue {
 }
 
 impl DrawQueue {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        device: &Device,
-        queue: &Queue,
+        ctx: &DrawContext,
         buffers: &mut Buffers,
-        scene: &Scene,
         texture_objects: Vec<TextureObject>,
         image_pipeline: RenderPipeline,
         copy_pipeline: RenderPipeline,
-        post_process: &PostProcess,
-        projection_bgl: &BindGroupLayout,
-        mipgen: &MipChainGenerator,
-        no_effects: bool,
-        has_immediates: bool,
-        has_partially_bound: bool,
-        has_subgroup: bool,
     ) -> Self {
-        let mut render_pipelines = BTreeMap::new();
+        let mut render_pipelines = PipelineMap::new();
 
         let draw_objects: Vec<DrawObject> = texture_objects
             .into_iter()
-            .map(|tex_obj| {
-                DrawObject::build(
-                    device,
-                    queue,
-                    scene,
-                    tex_obj,
-                    post_process,
-                    &mut render_pipelines,
-                    buffers,
-                    projection_bgl,
-                    mipgen,
-                    no_effects,
-                    has_immediates,
-                    has_partially_bound,
-                    has_subgroup,
-                )
-            })
+            .map(|tex_obj| DrawObject::build(ctx, buffers, tex_obj, &mut render_pipelines))
             .collect();
 
         Self {
@@ -95,25 +75,19 @@ impl DrawQueue {
 }
 
 impl DrawObject {
-    #[allow(clippy::too_many_arguments)]
     fn build(
-        device: &Device,
-        queue: &Queue,
-        scene: &Scene,
-        texture_object: TextureObject,
-        post_process: &PostProcess,
-        pipelines: &mut BTreeMap<String, pipeline_handler::EffectPipelineData>,
+        ctx: &DrawContext,
         buffers: &mut Buffers,
-        projection_bgl: &BindGroupLayout,
-        mipgen: &MipChainGenerator,
-        no_effects: bool,
-        has_immediates: bool,
-        has_partially_bound: bool,
-        has_subgroup: bool,
+        texture_object: TextureObject,
+        pipelines: &mut PipelineMap,
     ) -> Self {
+        let effects = &ctx.effects;
+        let device = effects.device;
+        let queue = effects.queue;
+        let post_process = effects.post_process;
         let index_start = buffers.index_len;
 
-        let texture = Self::upload_texture(device, queue, &texture_object, mipgen);
+        let texture = Self::upload_texture(device, queue, &texture_object, ctx.mipgen);
         let source_view = texture.create_view(&Default::default());
 
         let bindgroup = device.create_bind_group(&BindGroupDescriptor {
@@ -134,21 +108,17 @@ impl DrawObject {
         let tex_w = texture_object.texture.dimension[0];
         let tex_h = texture_object.texture.dimension[1];
 
+        let target = EffectTarget {
+            view: &source_view,
+            width: tex_w,
+            height: tex_h,
+        };
         let (mut effect_steps, fbos, has_steps) = effect_step::build_effect_steps(
-            device,
-            queue,
+            effects,
             &texture_object.effects,
-            scene,
-            post_process,
             pipelines,
-            projection_bgl,
-            &source_view,
-            tex_w,
-            tex_h,
-            no_effects,
-            has_immediates,
-            has_partially_bound,
-            has_subgroup,
+            &target,
+            ctx.no_effects,
         );
 
         let mut intermediates = if has_steps {

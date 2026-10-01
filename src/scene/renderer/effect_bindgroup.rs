@@ -7,7 +7,9 @@ use crate::scene::{
     loader::shader::WM_SAMPLER_BINDING,
     renderer::{
         post_process::PostProcess,
-        post_processor::{effect_param, pipeline_handler::EffectPipelineData},
+        post_processor::{
+            context::EffectTextures, effect_param, pipeline_handler::EffectPipelineData,
+        },
     },
 };
 
@@ -25,20 +27,22 @@ pub struct EffectBindGroup {
 }
 
 impl EffectBindGroup {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &Device,
         post_process: &PostProcess,
         pipedata: &EffectPipelineData,
-        source_view: &TextureView,
-        mask_view: Option<&TextureView>,
-        noise_view: Option<&TextureView>,
+        textures: EffectTextures,
         material_keys: BTreeMap<String, String>,
         constants: BTreeMap<String, Value>,
         tex_resolutions: BTreeMap<String, [f32; 4]>,
-        mask_tex: Option<Texture>,
-        noise_tex: Option<Texture>,
     ) -> Option<Self> {
+        let EffectTextures {
+            source_view,
+            mask_view,
+            noise_view,
+            mask_tex,
+            noise_tex,
+        } = textures;
         let blank_view = post_process.blank_texture.create_view(&Default::default());
 
         // When using immediates, no uniform buffer is needed — data is pushed per draw.

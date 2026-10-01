@@ -34,65 +34,37 @@ pub fn collect_layout(
     source2: &str,
     headers: &BTreeMap<String, String>,
 ) -> EffectLayout {
-    let mut sampler_names: Vec<String> = Vec::new();
-    let mut uniform_map: BTreeMap<String, String> = BTreeMap::new();
-    let mut varying_set: BTreeMap<String, u32> = BTreeMap::new();
-    let mut varying_types: BTreeMap<String, String> = BTreeMap::new();
-    let mut varying_array_sizes: BTreeMap<String, u32> = BTreeMap::new();
-    let mut attribute_set: BTreeMap<String, u32> = BTreeMap::new();
-    let mut material_keys: BTreeMap<String, String> = BTreeMap::new();
+    let mut collector = LayoutCollector::default();
 
-    // Track vertex varyings for fragment input validation.
-    // wgpu requires all fragment inputs to have corresponding vertex outputs.
-    let mut vert_varyings: Vec<String> = Vec::new();
+    // Process vertex shader (source1) first, tracking all its varyings.
+    collector.collect(source1, headers);
+    // Snapshot all varyings found from the vertex shader.
+    let mut vert_varyings: Vec<String> = collector.varying_set.keys().cloned().collect();
 
-    // Process vertex shader (source1) first, tracking all its varyings
-    collect_from_source(
-        source1,
-        headers,
-        &mut sampler_names,
-        &mut uniform_map,
-        &mut varying_set,
-        &mut varying_types,
-        &mut varying_array_sizes,
-        &mut attribute_set,
-        &mut material_keys,
-    );
-    // Snapshot all varyings found from vertex shader
-    for (name, _) in varying_set.clone() {
-        vert_varyings.push(name);
-    }
+    // Then process fragment shader (source2) for the full layout.
+    collector.collect(source2, headers);
 
-    // Then process fragment shader (source2) for full layout
-    collect_from_source(
-        source2,
-        headers,
-        &mut sampler_names,
-        &mut uniform_map,
-        &mut varying_set,
-        &mut varying_types,
-        &mut varying_array_sizes,
-        &mut attribute_set,
-        &mut material_keys,
-    );
+    collector.sampler_names.sort();
+    collector.sampler_names.dedup();
 
-    sampler_names.sort();
-    sampler_names.dedup();
+    let uniform_decls: Vec<(String, String)> = collector.uniform_map.into_iter().collect();
+    let uniform_binding = collector.sampler_names.len() as u32 * 2 + 2;
 
-    let uniform_decls: Vec<(String, String)> = uniform_map.into_iter().collect();
-    let uniform_binding = sampler_names.len() as u32 * 2 + 2;
-
-    let mut varying_names: Vec<String> = varying_set.keys().cloned().collect();
+    let mut varying_names: Vec<String> = collector.varying_set.keys().cloned().collect();
     varying_names.sort();
     let mut varying_locations: BTreeMap<String, u32> = BTreeMap::new();
     let mut next_location: u32 = 0;
     for name in &varying_names {
-        let array_size = varying_array_sizes.get(name).copied().unwrap_or(1);
+        let array_size = collector
+            .varying_array_sizes
+            .get(name)
+            .copied()
+            .unwrap_or(1);
         varying_locations.insert(name.clone(), next_location);
         next_location += array_size;
     }
 
-    let mut attribute_names: Vec<String> = attribute_set.keys().cloned().collect();
+    let mut attribute_names: Vec<String> = collector.attribute_set.keys().cloned().collect();
     attribute_names.sort();
     let attribute_locations: BTreeMap<String, u32> = attribute_names
         .iter()
@@ -104,117 +76,111 @@ pub fn collect_layout(
     vert_varyings.dedup();
 
     EffectLayout {
-        sampler_names,
+        sampler_names: collector.sampler_names,
         uniform_decls,
-        uniform_material_keys: material_keys,
+        uniform_material_keys: collector.material_keys,
         uniform_binding,
         varying_locations,
-        varying_types,
+        varying_types: collector.varying_types,
         vertex_varyings: vert_varyings,
         attribute_locations,
         use_immediates: false,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn collect_from_source(
-    source: &str,
-    headers: &BTreeMap<String, String>,
-    sampler_names: &mut Vec<String>,
-    uniform_map: &mut BTreeMap<String, String>,
-    varying_set: &mut BTreeMap<String, u32>,
-    varying_types: &mut BTreeMap<String, String>,
-    varying_array_sizes: &mut BTreeMap<String, u32>,
-    attribute_set: &mut BTreeMap<String, u32>,
-    material_keys: &mut BTreeMap<String, String>,
-) {
-    for line in source.lines() {
-        let trimmed = line.trim();
+/// Accumulates the shader interface while recursively walking a source and
+/// its `#include`d headers.
+#[derive(Default)]
+struct LayoutCollector {
+    sampler_names: Vec<String>,
+    uniform_map: BTreeMap<String, String>,
+    varying_set: BTreeMap<String, u32>,
+    varying_types: BTreeMap<String, String>,
+    varying_array_sizes: BTreeMap<String, u32>,
+    attribute_set: BTreeMap<String, u32>,
+    material_keys: BTreeMap<String, String>,
+}
 
-        if trimmed.starts_with("#include") {
-            if let Some(start) = trimmed.find('"')
-                && let Some(end) = trimmed[start + 1..].find('"')
-            {
-                let include_file = &trimmed[start + 1..start + 1 + end];
-                if let Some(header_content) = headers.get(include_file) {
-                    collect_from_source(
-                        header_content,
-                        headers,
-                        sampler_names,
-                        uniform_map,
-                        varying_set,
-                        varying_types,
-                        varying_array_sizes,
-                        attribute_set,
-                        material_keys,
-                    );
+impl LayoutCollector {
+    fn collect(&mut self, source: &str, headers: &BTreeMap<String, String>) {
+        for line in source.lines() {
+            let trimmed = line.trim();
+
+            if trimmed.starts_with("#include") {
+                if let Some(start) = trimmed.find('"')
+                    && let Some(end) = trimmed[start + 1..].find('"')
+                {
+                    let include_file = &trimmed[start + 1..start + 1 + end];
+                    if let Some(header_content) = headers.get(include_file) {
+                        self.collect(header_content, headers);
+                    }
                 }
+                continue;
             }
-            continue;
-        }
 
-        if trimmed.starts_with('#') || trimmed.is_empty() || trimmed.starts_with("//") {
-            continue;
-        }
+            if trimmed.starts_with('#') || trimmed.is_empty() || trimmed.starts_with("//") {
+                continue;
+            }
 
-        let cleaned = super::strip_material_comments(line);
-        if cleaned.is_empty() {
-            continue;
-        }
+            let cleaned = super::strip_material_comments(line);
+            if cleaned.is_empty() {
+                continue;
+            }
 
-        if let Some(rest) = cleaned.strip_prefix("varying ") {
-            let rest = rest.trim();
-            if let Some(name) = extract_variable_name(rest) {
-                varying_set.entry(name.clone()).or_insert(0);
-                if let Some(ty) = extract_type(rest) {
-                    varying_types.entry(name.clone()).or_insert(ty);
+            if let Some(rest) = cleaned.strip_prefix("varying ") {
+                let rest = rest.trim();
+                if let Some(name) = extract_variable_name(rest) {
+                    self.varying_set.entry(name.clone()).or_insert(0);
+                    if let Some(ty) = extract_type(rest) {
+                        self.varying_types.entry(name.clone()).or_insert(ty);
+                    }
+                    // Extract array size if present, e.g. vec2 v_TexCoord[4]
+                    let array_size = extract_array_size(rest);
+                    self.varying_array_sizes.entry(name).or_insert(array_size);
                 }
-                // Extract array size if present, e.g. vec2 v_TexCoord[4]
-                let array_size = extract_array_size(rest);
-                varying_array_sizes.entry(name).or_insert(array_size);
+                continue;
             }
-            continue;
-        }
 
-        if cleaned.contains("attribute ") {
-            let rest = cleaned.split("attribute ").nth(1).unwrap_or("").trim();
-            if let Some(name) = extract_variable_name(rest) {
-                attribute_set.entry(name).or_insert(0);
-            }
-            continue;
-        }
-
-        if let Some(rest) = cleaned.strip_prefix("uniform ") {
-            let rest = rest.trim();
-            if rest.starts_with("sampler2D ") || rest.starts_with("sampler2D\t") {
-                let name = rest["sampler2D".len()..].trim().trim_end_matches(';');
-                if !sampler_names.contains(&name.to_string()) {
-                    sampler_names.push(name.to_string());
+            if cleaned.contains("attribute ") {
+                let rest = cleaned.split("attribute ").nth(1).unwrap_or("").trim();
+                if let Some(name) = extract_variable_name(rest) {
+                    self.attribute_set.entry(name).or_insert(0);
                 }
-            } else {
-                let parts: Vec<&str> = rest.splitn(2, ' ').collect();
-                if parts.len() == 2 {
-                    let ty = parts[0].trim().to_string();
-                    let full_decl = parts[1]
-                        .trim()
-                        .trim_end_matches(';')
-                        .split('=')
-                        .next()
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    // Extract base name (strip array brackets) for lookup
-                    let name = full_decl.split('[').next().unwrap_or("").to_string();
-                    if !name.is_empty() {
-                        // Store full declaration including array brackets for proper emission
-                        let full_ty = if full_decl.contains('[') {
-                            format!("{} {}", ty, &full_decl[name.len()..])
-                        } else {
-                            ty
-                        };
-                        uniform_map.entry(name.clone()).or_insert(full_ty);
-                        if let Some(mk) = extract_material_key(line) {
-                            material_keys.entry(mk).or_insert(name);
+                continue;
+            }
+
+            if let Some(rest) = cleaned.strip_prefix("uniform ") {
+                let rest = rest.trim();
+                if rest.starts_with("sampler2D ") || rest.starts_with("sampler2D\t") {
+                    let name = rest["sampler2D".len()..].trim().trim_end_matches(';');
+                    if !self.sampler_names.contains(&name.to_string()) {
+                        self.sampler_names.push(name.to_string());
+                    }
+                } else {
+                    let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                    if parts.len() == 2 {
+                        let ty = parts[0].trim().to_string();
+                        let full_decl = parts[1]
+                            .trim()
+                            .trim_end_matches(';')
+                            .split('=')
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        // Extract base name (strip array brackets) for lookup
+                        let name = full_decl.split('[').next().unwrap_or("").to_string();
+                        if !name.is_empty() {
+                            // Store full declaration including array brackets for proper emission
+                            let full_ty = if full_decl.contains('[') {
+                                format!("{} {}", ty, &full_decl[name.len()..])
+                            } else {
+                                ty
+                            };
+                            self.uniform_map.entry(name.clone()).or_insert(full_ty);
+                            if let Some(mk) = extract_material_key(line) {
+                                self.material_keys.entry(mk).or_insert(name);
+                            }
                         }
                     }
                 }

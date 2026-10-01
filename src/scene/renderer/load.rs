@@ -10,7 +10,11 @@ use crate::scene::{
         scene_loader::Scene,
     },
     renderer::{
-        app::WgpuApp, draw::DrawQueue, post_process::PostProcess, projection::Projection,
+        app::WgpuApp,
+        draw::{DrawContext, DrawQueue},
+        post_process::PostProcess,
+        post_processor::context::EffectContext,
+        projection::Projection,
         vertex::Vertex,
     },
 };
@@ -66,21 +70,26 @@ impl WgpuApp {
             total_verts as u64,
         ));
 
+        let mipgen = MipChainGenerator::new(&self.device);
+        let draw_ctx = DrawContext {
+            effects: EffectContext {
+                device: &self.device,
+                queue: &self.queue,
+                scene: &scene,
+                post_process: &post_process,
+                projection_bgl: &self.projection_bindgroup.projection_layout,
+                has_immediates: self.has_immediates,
+                has_subgroup: self.has_subgroup,
+            },
+            mipgen: &mipgen,
+            no_effects: self.no_effects,
+        };
         let draw_queue = DrawQueue::new(
-            &self.device,
-            &self.queue,
+            &draw_ctx,
             self.buffers.as_mut().unwrap(),
-            &scene,
             objects.texture,
             pipeline,
             copy_pipeline,
-            &post_process,
-            &self.projection_bindgroup.projection_layout,
-            &MipChainGenerator::new(&self.device),
-            self.no_effects,
-            self.has_immediates,
-            self.has_partially_bound,
-            self.has_subgroup,
         );
 
         load_audios(&self.audio_stream, objects.audio, &scene);

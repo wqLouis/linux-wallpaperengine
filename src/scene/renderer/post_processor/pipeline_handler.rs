@@ -14,6 +14,8 @@ use crate::scene::{
     },
 };
 
+use super::context::{EffectContext, PipelineMap};
+
 #[derive(Debug, Clone)]
 pub struct EffectPipelineData {
     pub pipeline: Rc<RenderPipeline>,
@@ -29,39 +31,32 @@ pub struct EffectPipelineData {
 // ── Public API ────────────────────────────────────────────────
 
 /// Get or create a pipeline for a single-pass effect.
-#[allow(clippy::too_many_arguments)]
 pub fn get_or_create_pipeline(
-    device: &Device,
+    ctx: &EffectContext,
     effect_path: String,
     pass_textures: &[Option<String>],
     pass_combos: Option<&BTreeMap<String, i64>>,
-    pipelines: &mut BTreeMap<String, EffectPipelineData>,
-    scene: &Scene,
-    projection_bgl: &BindGroupLayout,
-    has_immediates: bool,
-    has_subgroup: bool,
+    pipelines: &mut PipelineMap,
 ) -> Option<Rc<RenderPipeline>> {
     let cache_key = make_cache_key(&effect_path, pass_textures, pass_combos);
     if let Some(data) = pipelines.get(&cache_key) {
         return Some(Rc::clone(&data.pipeline));
     }
 
-    let effect_json: Value = serde_json::from_str(&scene.assets.json(&effect_path)?[..]).ok()?;
+    let effect_json: Value =
+        serde_json::from_str(&ctx.scene.assets.json(&effect_path)?[..]).ok()?;
     let material_path = effect_json["passes"][0]["material"].as_str()?;
-    let material_json: Value = serde_json::from_str(&scene.assets.json(material_path)?[..]).ok()?;
+    let material_json: Value =
+        serde_json::from_str(&ctx.scene.assets.json(material_path)?[..]).ok()?;
     let shader_name = material_json["passes"][0]["shader"].as_str()?;
 
     let data = compile_pipeline(
-        device,
+        ctx,
         &format!("shaders/{}.frag", shader_name),
         &format!("shaders/{}.vert", shader_name),
         material_json,
         pass_textures,
         pass_combos,
-        scene,
-        projection_bgl,
-        has_immediates,
-        has_subgroup,
     )?;
     let rc = Rc::clone(&data.pipeline);
     pipelines.insert(cache_key, data);
@@ -69,37 +64,29 @@ pub fn get_or_create_pipeline(
 }
 
 /// Get or create a pipeline for a multi-pass effect step (given material + shader paths directly).
-#[allow(clippy::too_many_arguments)]
 pub fn create_effect_pipeline_for_multipass(
-    device: &Device,
+    ctx: &EffectContext,
     frag_path: &str,
     vert_path: &str,
     material_path: &str,
     pass_textures: &[Option<String>],
     pass_combos: Option<&BTreeMap<String, i64>>,
-    pipelines: &mut BTreeMap<String, EffectPipelineData>,
-    scene: &Scene,
-    projection_bgl: &BindGroupLayout,
-    has_immediates: bool,
-    has_subgroup: bool,
+    pipelines: &mut PipelineMap,
 ) -> Option<Rc<RenderPipeline>> {
     let cache_key = make_cache_key(material_path, pass_textures, pass_combos);
     if let Some(data) = pipelines.get(&cache_key) {
         return Some(Rc::clone(&data.pipeline));
     }
 
-    let material_json: Value = serde_json::from_str(&scene.assets.json(material_path)?[..]).ok()?;
+    let material_json: Value =
+        serde_json::from_str(&ctx.scene.assets.json(material_path)?[..]).ok()?;
     let data = compile_pipeline(
-        device,
+        ctx,
         frag_path,
         vert_path,
         material_json,
         pass_textures,
         pass_combos,
-        scene,
-        projection_bgl,
-        has_immediates,
-        has_subgroup,
     )?;
     let rc = Rc::clone(&data.pipeline);
     pipelines.insert(cache_key, data);
@@ -129,20 +116,15 @@ fn make_cache_key(
 }
 
 /// Shared pipeline compilation: material_json already loaded, shader paths resolved.
-#[allow(clippy::too_many_arguments)]
 fn compile_pipeline(
-    device: &Device,
+    ctx: &EffectContext,
     frag_path: &str,
     vert_path: &str,
     material_json: Value,
     pass_textures: &[Option<String>],
     pass_combos: Option<&BTreeMap<String, i64>>,
-    scene: &Scene,
-    projection_bgl: &BindGroupLayout,
-    has_immediates: bool,
-    has_subgroup: bool,
 ) -> Option<EffectPipelineData> {
-    let program = scene.assets.shader(frag_path, vert_path)?;
+    let program = ctx.scene.assets.shader(frag_path, vert_path)?;
     let frag_source = &program.fragment;
     let vert_source = &program.vertex;
 
@@ -177,13 +159,13 @@ fn compile_pipeline(
     let total_uniform_size = layout_pre.total_uniform_size();
     // Use immediates if available AND uniform block fits within immediate size limit.
     // Vulkan push constants are typically 128–256 bytes; wgpu reports via Limits::max_immediate_size.
-    let max_immediate = if has_immediates {
-        device.limits().max_immediate_size
+    let max_immediate = if ctx.has_immediates {
+        ctx.device.limits().max_immediate_size
     } else {
         0
     };
     let use_immediates =
-        has_immediates && total_uniform_size > 0 && total_uniform_size <= max_immediate as u64;
+        ctx.has_immediates && total_uniform_size > 0 && total_uniform_size <= max_immediate as u64;
     if use_immediates {
         log::info!(
             "Shader {}: using immediates for {} bytes of uniforms (limit={})",
@@ -206,11 +188,11 @@ fn compile_pipeline(
         headers,
         &merged_defines,
         layout_pre,
-        has_subgroup,
+        ctx.has_subgroup,
         use_immediates,
     );
 
-    let vert_module = device.create_shader_module(ShaderModuleDescriptor {
+    let vert_module = ctx.device.create_shader_module(ShaderModuleDescriptor {
         label: None,
         source: ShaderSource::Glsl {
             shader: Cow::Owned(vert_processed),
@@ -218,7 +200,7 @@ fn compile_pipeline(
             defines: &define_refs,
         },
     });
-    let frag_module = device.create_shader_module(ShaderModuleDescriptor {
+    let frag_module = ctx.device.create_shader_module(ShaderModuleDescriptor {
         label: None,
         source: ShaderSource::Glsl {
             shader: Cow::Owned(frag_processed),
@@ -227,7 +209,7 @@ fn compile_pipeline(
         },
     });
 
-    let effect_bgl = pipeline_helpers::create_effect_bindgroup_layout(device, &layout);
+    let effect_bgl = pipeline_helpers::create_effect_bindgroup_layout(ctx.device, &layout);
     // immediate_size must exactly match the data passed to set_immediates().
     // Use the UniformLayout computed here (shared with EffectPipelineData below).
     let uniform_layout = UniformLayout::new(&layout.uniform_decls);
@@ -236,66 +218,70 @@ fn compile_pipeline(
     } else {
         0
     };
-    let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &[&effect_bgl, projection_bgl],
-        immediate_size,
-    });
-    let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-        label: None,
-        layout: Some(&pipeline_layout),
-        vertex: VertexState {
-            module: &vert_module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            buffers: &[Vertex::create_buffer_layout()],
-        },
-        primitive: PrimitiveState {
-            topology: PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: FrontFace::Ccw,
-            cull_mode: Some(Face::Back),
-            unclipped_depth: false,
-            polygon_mode: PolygonMode::Fill,
-            conservative: false,
-        },
-        depth_stencil: None,
-        multisample: MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        fragment: Some(FragmentState {
-            module: &frag_module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            targets: &[Some(ColorTargetState {
-                format: TextureFormat::Rgba8UnormSrgb,
-                // Additive blend (One / One) over the cleared destination.
-                // The destination is cleared to (0,0,0,0) at the start of
-                // each effect step, so `src + 0 == src` — the effect's
-                // output is stored as-is (not premultiplied). The final
-                // pass can then composite it with normal straight-alpha
-                // blending without the double-premultiplication artifact
-                // that produced a dark gray shade around the object.
-                blend: Some(BlendState {
-                    color: BlendComponent {
-                        src_factor: BlendFactor::One,
-                        dst_factor: BlendFactor::One,
-                        operation: BlendOperation::Add,
-                    },
-                    alpha: BlendComponent {
-                        src_factor: BlendFactor::One,
-                        dst_factor: BlendFactor::One,
-                        operation: BlendOperation::Add,
-                    },
-                }),
-                write_mask: ColorWrites::all(),
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
+    let pipeline_layout = ctx
+        .device
+        .create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&effect_bgl, ctx.projection_bgl],
+            immediate_size,
+        });
+    let pipeline = ctx
+        .device
+        .create_render_pipeline(&RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: VertexState {
+                module: &vert_module,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                buffers: &[Vertex::create_buffer_layout()],
+            },
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: Some(Face::Back),
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            fragment: Some(FragmentState {
+                module: &frag_module,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                targets: &[Some(ColorTargetState {
+                    format: TextureFormat::Rgba8UnormSrgb,
+                    // Additive blend (One / One) over the cleared destination.
+                    // The destination is cleared to (0,0,0,0) at the start of
+                    // each effect step, so `src + 0 == src` — the effect's
+                    // output is stored as-is (not premultiplied). The final
+                    // pass can then composite it with normal straight-alpha
+                    // blending without the double-premultiplication artifact
+                    // that produced a dark gray shade around the object.
+                    blend: Some(BlendState {
+                        color: BlendComponent {
+                            src_factor: BlendFactor::One,
+                            dst_factor: BlendFactor::One,
+                            operation: BlendOperation::Add,
+                        },
+                        alpha: BlendComponent {
+                            src_factor: BlendFactor::One,
+                            dst_factor: BlendFactor::One,
+                            operation: BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: ColorWrites::all(),
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
 
     Some(EffectPipelineData {
         pipeline: Rc::new(pipeline),

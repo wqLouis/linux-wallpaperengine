@@ -10,8 +10,10 @@ use crate::scene::{
     loader::{object::Effect, scene_loader::Scene, shader::WM_SAMPLER_BINDING},
     renderer::{
         effect_bindgroup::EffectBindGroup,
-        post_process::PostProcess,
-        post_processor::pipeline_handler::{self, EffectPipelineData, load_mask_texture},
+        post_processor::{
+            context::{EffectContext, EffectTarget, EffectTextures, PipelineMap},
+            pipeline_handler::{self, EffectPipelineData, load_mask_texture},
+        },
     },
 };
 
@@ -74,22 +76,12 @@ struct EffectDef {
 
 // ── Public builder ────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 pub fn build_effect_steps(
-    device: &Device,
-    queue: &Queue,
+    ctx: &EffectContext,
     effects: &[Effect],
-    scene: &Scene,
-    post_process: &PostProcess,
-    pipelines: &mut BTreeMap<String, EffectPipelineData>,
-    proj_bgl: &BindGroupLayout,
-    source_view: &TextureView,
-    source_w: u32,
-    source_h: u32,
+    pipelines: &mut PipelineMap,
+    target: &EffectTarget,
     no_effects: bool,
-    has_immediates: bool,
-    has_partially_bound: bool,
-    has_subgroup: bool,
 ) -> (Vec<EffectStep>, BTreeMap<String, FboTexture>, bool) {
     if no_effects {
         return (vec![], BTreeMap::new(), false);
@@ -99,7 +91,7 @@ pub fn build_effect_steps(
     let mut fbos = BTreeMap::new();
 
     for effect in effects {
-        let raw = match scene.assets.json(&effect.file) {
+        let raw = match ctx.scene.assets.json(&effect.file) {
             Some(r) => r,
             None => continue,
         };
@@ -109,33 +101,18 @@ pub fn build_effect_steps(
         };
 
         if def.passes.len() <= 1 && def.fbos.is_empty() {
-            if let Some(s) = build_step(
-                device,
-                queue,
-                effect,
-                effect.passes.first(),
-                None,
-                scene,
-                post_process,
-                pipelines,
-                proj_bgl,
-                source_view,
-                source_w,
-                source_h,
-                has_immediates,
-                has_partially_bound,
-                has_subgroup,
-            ) {
+            if let Some(s) = build_step(ctx, effect, effect.passes.first(), None, pipelines, target)
+            {
                 steps.push(s);
             }
         } else {
             for fbo_def in &def.fbos {
                 let s = fbo_def.scale.unwrap_or(1.0).max(1.0);
                 let (w, h) = (
-                    ((source_w as f32) / s).max(1.0) as u32,
-                    ((source_h as f32) / s).max(1.0) as u32,
+                    ((target.width as f32) / s).max(1.0) as u32,
+                    ((target.height as f32) / s).max(1.0) as u32,
                 );
-                let tex = device.create_texture(&TextureDescriptor {
+                let tex = ctx.device.create_texture(&TextureDescriptor {
                     label: None,
                     size: Extent3d {
                         width: w,
@@ -162,21 +139,12 @@ pub fn build_effect_steps(
             }
             for (i, def_pass) in def.passes.iter().enumerate() {
                 if let Some(s) = build_step(
-                    device,
-                    queue,
+                    ctx,
                     effect,
                     effect.passes.get(i),
                     Some(def_pass),
-                    scene,
-                    post_process,
                     pipelines,
-                    proj_bgl,
-                    source_view,
-                    source_w,
-                    source_h,
-                    has_immediates,
-                    has_partially_bound,
-                    has_subgroup,
+                    target,
                 ) {
                     steps.push(s);
                 }
@@ -190,43 +158,29 @@ pub fn build_effect_steps(
 // ── Shared step builder ───────────────────────────────────────
 
 /// Build one EffectStep. `def_pass` is Some for multi-pass internal steps.
-#[allow(clippy::too_many_arguments)]
 fn build_step(
-    device: &Device,
-    queue: &Queue,
+    ctx: &EffectContext,
     effect: &Effect,
     scene_pass: Option<&crate::scene::loader::object::Pass>,
     def_pass: Option<&EffectDefPass>,
-    scene: &Scene,
-    post_process: &PostProcess,
-    pipelines: &mut BTreeMap<String, EffectPipelineData>,
-    proj_bgl: &BindGroupLayout,
-    source_view: &TextureView,
-    source_w: u32,
-    source_h: u32,
-    has_immediates: bool,
-    _has_partially_bound: bool,
-    has_subgroup: bool,
+    pipelines: &mut PipelineMap,
+    target: &EffectTarget,
 ) -> Option<EffectStep> {
     let scene_pass = scene_pass?;
 
-    let (pipeline, pipedata, bind_inputs, target) = if let Some(dp) = def_pass {
+    let (pipeline, pipedata, bind_inputs, target_name) = if let Some(dp) = def_pass {
         // Multi-pass step
-        let mat_raw = scene.assets.json(&dp.material)?;
+        let mat_raw = ctx.scene.assets.json(&dp.material)?;
         let mat_json: serde_json::Value = serde_json::from_str(&mat_raw[..]).ok()?;
         let shader = mat_json["passes"][0]["shader"].as_str()?;
         let p = pipeline_handler::create_effect_pipeline_for_multipass(
-            device,
+            ctx,
             &format!("shaders/{}.frag", shader),
             &format!("shaders/{}.vert", shader),
             &dp.material,
             &scene_pass.textures,
             scene_pass.combos.as_ref(),
             pipelines,
-            scene,
-            proj_bgl,
-            has_immediates,
-            has_subgroup,
         )?;
         let pd = pipelines
             .values()
@@ -237,15 +191,11 @@ fn build_step(
     } else {
         // Single-pass
         let p = pipeline_handler::get_or_create_pipeline(
-            device,
+            ctx,
             effect.file.clone(),
             &scene_pass.textures,
             scene_pass.combos.as_ref(),
             pipelines,
-            scene,
-            proj_bgl,
-            has_immediates,
-            has_subgroup,
         )?;
         let pd = pipelines
             .values()
@@ -260,25 +210,28 @@ fn build_step(
     };
 
     let (mask_tex, mask_view, noise_tex, noise_view) =
-        load_mask_and_noise(device, queue, scene, scene_pass);
-    let bindgroup = EffectBindGroup::new(
-        device,
-        post_process,
+        load_mask_and_noise(ctx.device, ctx.queue, ctx.scene, scene_pass);
+    let tex_resolutions = build_tex_resolutions(
         &pipedata,
-        source_view,
-        mask_view.as_ref(),
-        noise_view.as_ref(),
+        target.width,
+        target.height,
+        mask_tex.as_ref(),
+        noise_tex.as_ref(),
+    );
+    let bindgroup = EffectBindGroup::new(
+        ctx.device,
+        ctx.post_process,
+        &pipedata,
+        EffectTextures {
+            source_view: target.view,
+            mask_view: mask_view.as_ref(),
+            noise_view: noise_view.as_ref(),
+            mask_tex,
+            noise_tex,
+        },
         pipedata.layout.uniform_material_keys.clone(),
         scene_pass.constantshadervalues.clone().unwrap_or_default(),
-        build_tex_resolutions(
-            &pipedata,
-            source_w,
-            source_h,
-            mask_tex.as_ref(),
-            noise_tex.as_ref(),
-        ),
-        mask_tex,
-        noise_tex,
+        tex_resolutions,
     )?;
 
     Some(EffectStep {
@@ -287,7 +240,7 @@ fn build_step(
         bindgroup,
         pipedata,
         bind_inputs,
-        target,
+        target: target_name,
         cached_bg_a: None,
         cached_bg_b: None,
     })

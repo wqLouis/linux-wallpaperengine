@@ -18,20 +18,24 @@ use super::{
     render_pass,
 };
 
+/// Per-frame parameters used while rendering intermediate effect passes.
+pub struct FrameParams<'a> {
+    pub projection_bindgroup: &'a ProjectionBindGroups,
+    pub post_process: &'a PostProcess,
+    pub elapsed: f32,
+    pub screen_res: [u32; 2],
+    pub user_params: &'a UserParams,
+}
+
 /// Run intermediate post-process passes for all objects with effects.
 ///
 /// Writes into the shared `encoder` so the caller can batch intermediate
 /// and final passes into a single submission.
-#[allow(clippy::too_many_arguments)]
 pub fn render_intermediate_passes(
     encoder: &mut CommandEncoder,
     device: &Device,
-    projection_bindgroup: &ProjectionBindGroups,
     draw_queue: &DrawQueue,
-    post_process: &PostProcess,
-    elapsed: f32,
-    screen_res: [u32; 2],
-    user_params: &UserParams,
+    frame: &FrameParams,
     staging: &mut Vec<u8>,
 ) {
     log::trace!(
@@ -40,7 +44,8 @@ pub fn render_intermediate_passes(
     );
 
     // Use the identity projection bind group for NDC-space rendering.
-    let proj_bg = projection_bindgroup
+    let proj_bg = frame
+        .projection_bindgroup
         .identity
         .as_ref()
         .expect("identity projection bindgroup not initialized");
@@ -58,7 +63,7 @@ pub fn render_intermediate_passes(
 
         // Step 1: clear ping-pong textures using GPU-side clear if available,
         // then copy source texture → view_a.
-        if post_process.has_clear_texture {
+        if frame.post_process.has_clear_texture {
             // Use CLEAR_TEXTURE feature for zero-cost GPU clears.
             let subresource = ImageSubresourceRange {
                 aspect: TextureAspect::All,
@@ -157,9 +162,9 @@ pub fn render_intermediate_passes(
                     let data = render_pass::build_immediates_data(
                         staging,
                         step,
-                        elapsed,
-                        screen_res,
-                        user_params,
+                        frame.elapsed,
+                        frame.screen_res,
+                        frame.user_params,
                     );
                     cpass.set_immediates(0, data);
                 }
@@ -174,9 +179,9 @@ pub fn render_intermediate_passes(
                     let data = render_pass::build_immediates_data(
                         staging,
                         step,
-                        elapsed,
-                        screen_res,
-                        user_params,
+                        frame.elapsed,
+                        frame.screen_res,
+                        frame.user_params,
                     );
                     pass.set_immediates(0, data);
                 }
@@ -192,8 +197,8 @@ pub fn render_intermediate_passes(
         if !cur_is_a {
             let bg = pp.make_bindgroup(
                 device,
-                &post_process.layout,
-                &post_process.sampler,
+                &frame.post_process.layout,
+                &frame.post_process.sampler,
                 &pp.view_b,
             );
             copy_texture(
