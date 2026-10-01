@@ -184,93 +184,110 @@ The fully-loaded scene asset container.
 
 ```rust
 pub struct Scene {
-    pub root: Root,                                    // Parsed scene.json
-    pub textures: TextureBucket,                       // .tex → Rc<Tex>
-    pub mdls: MdlBucket,                               // .mdl → Rc<MdlFile>
-    pub jsons: JsonBucket,                              // .json → Rc<String>
-    pub misc: MiscBucket,                               // Other files (shaders, audio)
+    pub root: Root,        // Parsed scene.json
+    pub assets: AssetStore, // Typed store of every parsed asset
 }
 ```
 
-### `Scene::new(path: String) -> Self`
+### `Scene::new(path: String, show_progress: bool, no_mdl: bool) -> Self`
 
 Parses a `.pkg` file:
 
 1. Uses `pkg_parser::parser::Pkg::new(path)` to open the package
-2. For each file in the package:
-   - `.tex` → parse in parallel thread via `Tex::new` + `parse_to_rgba()`
-   - `.mdl` → parse in parallel thread via `MdlFile::new()`
-   - `.json` → store as `Rc<String>`
-   - Other → store as raw bytes
+2. For each file, classifies it with `AssetType::from_path()`:
+   - `.tex` → decoded in parallel by a bounded worker pool via `Tex::new` + `parse_to_rgba()`
+   - `.mdl` → parsed via `MdlFile::new()` (skipped entirely when `no_mdl` is set). Parse failures are logged at error level and skipped, since the puppet format is only partially reverse-engineered.
+   - `.json` (scene/effects/materials/particles/presets) → stored as `Rc<String>`
+   - `.frag`/`.vert`/`.h` → stored as text (shaders are paired and parsed in [`Scene::prepare`])
+   - audio/font/video/scripts/other → stored as typed assets
 3. Shows a progress bar via `indicatif::ProgressBar`
 4. Parses `scene.json` as `Root`
 5. Returns the complete `Scene`
 
-**Threading:** `.tex` and `.mdl` files are parsed in parallel using `thread::spawn`, with results merged into the respective buckets.
+The archive is trusted to be well-formed: a package or asset that fails to
+parse is fatal rather than silently skipped. The one exception is `.mdl`
+models — the puppet format is only partially reverse-engineered, so a model
+that fails to parse is logged at error level and skipped instead of aborting
+the scene. Asset *resolution* (model → material → texture) also stays lenient
+because it can legitimately fall back to the Wallpaper Engine `assets/`
+directory or reference runtime textures.
+
+**Threading:** `.tex` files are decoded by a worker pool sized to the available CPU cores (capped at the number of textures). Work is handed out through an atomic index, so threads stay busy even when individual textures decode at different speeds; no thread is spawned per file.
 
 ### `Scene::set_assets_path(&mut self, assets_path: PathBuf)`
 
-Enables lazy-loading fallback to a Wallpaper Engine `assets/` directory on disk. When `get(key)` is called on any bucket and the key isn't found in memory, the file is read from `{assets_path}/{key}`, parsed, cached, and returned.
+Enables lazy-loading fallback to a Wallpaper Engine `assets/` directory on disk. When a typed accessor can't find a key in memory, the file is read from `{assets_path}/{key}`, parsed according to its [`AssetType`], cached, and returned.
+
+### `Scene::prepare(&mut self)`
+
+Pre-parses every shader pair now that the assets directory is known. Each pair is turned into a [`ShaderProgram`] (interface layout, `[COMBO]` defaults, source macros and resolved headers) so pipeline compilation never has to re-read or re-scan the sources.
 
 ---
 
-## `assets_loader` — Lazy-Loading Bucket Wrappers
+## `assets_loader` — Typed Asset Store
 
 **File:** `assets_loader.rs`
 
-Lazy-loading wrappers that fall back to the Wallpaper Engine assets directory on disk when a requested asset is not found in the in-memory map.
+Classifies every scene file into an [`AssetType`] and stores the parsed result as an [`Asset`]. Lazy-loads from the Wallpaper Engine assets directory on disk when a key is not present in the in-memory store.
 
-### `TextureBucket`
+### `AssetType`
+
+Enumerates every asset category Wallpaper Engine uses, resolved from the path (extension plus directory for JSON documents):
+
+| Variant | Source |
+|---------|--------|
+| `Scene` | `scene.json` |
+| `Effect` | `effects/**/effect.json` |
+| `Material` | `materials/**/*.json` |
+| `Model` | `models/**/*.mdl` |
+| `Particle` | `particles/**/*.json` |
+| `Preset` | `presets/**/*.json` |
+| `Shader` | `.frag`, `.vert`, `.h`, `.glsl`, `.wgsl` |
+| `Texture` | `.tex` |
+| `Sound` | `.ogg`, `.mp3`, `.wav`, `.flac` |
+| `Font` | `.ttf`, `.otf` |
+| `Video` | `.mp4`, `.webm`, `.gif`, `.avi` |
+| `Script` | `.js` |
+| `Json` | Any other JSON document |
+| `Other` | Anything else |
+
+### `Asset`
 
 ```rust
-pub struct TextureBucket {
-    map: RefCell<BTreeMap<String, Rc<Tex>>>,
+pub enum Asset {
+    Texture(Rc<Tex>),
+    Model(Rc<MdlFile>),
+    Json(Rc<String>),      // scene/effects/materials/particles/presets
+    Script(Rc<String>),
+    Shader(Rc<ShaderProgram>),
+    Text(Rc<String>),      // shader sources / headers before pairing
+    Sound(Vec<u8>),
+    Font(Vec<u8>),
+    Video(Vec<u8>),
+    Raw(Vec<u8>),
+}
+```
+
+### `AssetStore`
+
+```rust
+pub struct AssetStore {
+    map: RefCell<BTreeMap<String, Asset>>,
+    headers: RefCell<Option<Rc<BTreeMap<String, String>>>>,
     assets_path: Option<PathBuf>,
 }
 ```
 
 | Method | Description |
 |--------|-------------|
-| `new(map, assets_path) -> Self` | Creates bucket from initial map |
-| `set_assets_path(path)` | Sets disk fallback path |
-| `get(key) -> Option<Rc<Tex>>` | Lookup by key, lazy-loads from disk if missing |
-
-### `MdlBucket`
-
-```rust
-pub struct MdlBucket {
-    map: RefCell<BTreeMap<String, Rc<MdlFile>>>,
-    assets_path: Option<PathBuf>,
-}
-```
-
-Same pattern as `TextureBucket` but for `.mdl` puppet model files.
-
-### `JsonBucket`
-
-```rust
-pub struct JsonBucket {
-    map: RefCell<BTreeMap<String, Rc<String>>>,
-    assets_path: Option<PathBuf>,
-}
-```
-
-Stores JSON files as `Rc<String>`. Lazy-loads from disk if missing.
-
-### `MiscBucket`
-
-```rust
-pub struct MiscBucket {
-    map: RefCell<BTreeMap<String, Vec<u8>>>,
-    assets_path: Option<PathBuf>,
-}
-```
-
-Stores binary files (shaders, audio, etc.). Additional method:
-
-| Method | Description |
-|--------|-------------|
-| `remove(key) -> Option<Vec<u8>>` | Removes and returns data (used for audio consumption), lazy-loading from disk if needed |
+| `set_assets_path(path)` | Sets the disk fallback directory |
+| `get(key) -> Option<Asset>` | Lookup by key, lazy-parses from disk if missing |
+| `texture(key) -> Option<Rc<Tex>>` | Parsed `.tex` texture |
+| `model(key) -> Option<Rc<MdlFile>>` | Parsed `.mdl` puppet model |
+| `json(key) -> Option<Rc<String>>` | JSON-backed document |
+| `take_sound(key) -> Option<Vec<u8>>` | Removes and returns audio data (consumed on playback) |
+| `shader(frag, vert) -> Option<Rc<ShaderProgram>>` | Pre-parsed shader pair |
+| `preparse_shaders()` | Eagerly parses every shader pair in the store |
 
 ### Expected assets directory layout:
 
@@ -301,13 +318,13 @@ Converts raw `Object`/`Effect` definitions into render-ready types.
 | Field | Type | Description |
 |-------|------|-------------|
 | `texture` | `Rc<Tex>` | Parsed RGBA texture data |
-| `origin` | `Vec3` | World-space position |
-| `angles` | `Vec3` | Rotation (Euler, degrees, Z-up) |
+| `transform` | `Transform` | Local position/rotation/scale/pivot/alignment |
+| `model` | `Mat4` | World model matrix (parent chain applied) |
 | `size` | `Vec2` | Width/height |
-| `scale` | `Vec3` | Scale multiplier |
 | `parent` | `Option<i64>` | Parent object ID |
 | `effects` | `Vec<Effect>` | Shader effects |
 | `visible` | `bool` | Whether the object is visible |
+| `mesh` | `Option<PuppetMesh>` | Optional puppet mesh extracted from a `.mdl` file |
 
 ### `AudioObject`
 
@@ -334,14 +351,15 @@ pub struct ObjectMap {
 }
 ```
 
-### `ObjectMap::with_clear_color(objects: &Vec<Object>, scene: &Scene, clear_color: Vec3) -> Self`
+### `ObjectMap::with_clear_color(objects: &Vec<Object>, scene: &Scene, clear_color: Vec3, no_mdl: bool) -> Self`
 
-Replaces the old `ObjectMap::new()`. Processes all scene objects:
+Processes all scene objects:
 
-1. **Classifies each object**:
-   - **Texture** — has `image` field. Resolves model JSON → material JSON → texture reference. Falls back to a **solid-colour 1×1 fallback texture** (using object's `color`/`alpha` properties and the scene's `clear_color`) if any step of the chain fails.
-   - **Audio** — has `sound` files
-   - **Node** — transform-only parent for hierarchy (no image, no sound)
+1. **Classifies each object** via `Object::element_type()`, which returns an [`ElementType`](#elementtype):
+   - `Image` — has an `image` field. Resolves model JSON → material JSON → texture reference. Falls back to a **solid-colour 1×1 fallback texture** (using the object's `color`/`alpha` properties) if any step of the chain fails.
+   - `Sound` — has `sound` files
+   - `Particle` / `Text` / `Light` / `Camera` — not rendered yet; treated as transform-only nodes so children keep their world transforms
+   - `Node` — transform-only parent for the hierarchy
    
 2. **Resolves parent-child transform inheritance**: iterates the hierarchy, accumulating `angles`, `scale`, and `origin` from parents. Also propagates invisibility (if parent is not visible, child is also not visible).
 
@@ -349,9 +367,25 @@ Replaces the old `ObjectMap::new()`. Processes all scene objects:
 
 **Visibility:** Objects with `visible == false` are skipped during loading. Child objects whose parent is not visible are also skipped.
 
-**Model Loading:** For texture objects, the chain is: `object.image` → model JSON → `model.material` → material JSON → `passes[0].textures[0]` → `.tex` file loaded from scene textures.
+**Model Loading:** For `Image` objects, the chain is: `object.image` → model JSON → `model.material` → material JSON → `passes[0].textures[0]` → `.tex` file loaded through `scene.assets.texture()`. The model's `puppet` path (if any) is resolved through `scene.assets.model()` and meshed via `mdl::extract_mesh()` unless `no_mdl` is set.
 
-**Solid-Colour Fallback:** When a texture object's image/material/texture chain fails to resolve, a 1×1 RGBA texture is synthesized from the object's `color` and `alpha` properties (falling back to `clear_color` and 1.0 alpha respectively).
+**Solid-Colour Fallback:** When a texture object's image/material/texture chain fails to resolve, a 1×1 RGBA texture is synthesized from the object's `color` and `alpha` properties (falling back to white and 1.0 alpha respectively).
+
+### `ElementType`
+
+```rust
+pub enum ElementType {
+    Image,       // has `image`
+    Sound,       // has `sound`
+    Particle,    // has `particle`
+    Text,        // has `text` / `font`
+    Light,       // has `light`
+    Camera,      // has `camera`
+    Node,        // transform-only
+}
+```
+
+`Object::element_type()` infers the kind from the populated fields, mirroring `AssetType::from_path()` on the asset side.
 
 ---
 
@@ -369,3 +403,45 @@ pub struct Model {
 ```
 
 Referenced by texture objects in `object.image`. The `material` field points to the material JSON that contains the actual `.tex` file reference to load and display.
+
+---
+
+## `shader` — GLSL Preprocessing & Parsing
+
+**Files:** `shader/mod.rs`, `shader/asset.rs`, `shader/header.rs`, `shader/layout.rs`, `shader/replace.rs`
+
+All Wallpaper Engine shader parsing and GLSL→Vulkan preprocessing lives here so
+shaders are understood as soon as the scene is loaded.
+
+### `ShaderProgram` (`shader/asset.rs`)
+
+A `.frag`/`.vert` pair parsed once by `Scene::prepare()`:
+
+| Field | Description |
+|-------|-------------|
+| `vertex` / `fragment` | Raw GLSL sources |
+| `headers` | Shared built-in headers (`Rc`) |
+| `layout` | Combined `EffectLayout` (samplers, uniforms, varyings) |
+| `default_defines` | `[COMBO]` defaults from either stage |
+| `source_defines` | Plain `#define` macros from either stage |
+
+### `shader/mod.rs`
+
+- `preprocess_pair_with_layout(...)` — the define-dependent GLSL→Vulkan pass, using the precomputed layout
+- `collect_layout(...)` / `collect_source_defines(...)` / `collect_default_defines(...)`
+- `preprocess_with_layout`, `preprocess_with_layout_tracked`
+
+### `shader/layout.rs` — `EffectLayout`
+
+Shader interface introspection plus the std140 uniform size helpers
+(`align_up`, `type_align`, `type_size`, `compute_uniform_size`) shared with
+`renderer::post_processor::effect_param::UniformLayout`.
+
+### `shader/header.rs` — Built-in Headers
+
+`get_headers(load)` pulls `shaders/common*.h` through a byte loader and
+`WM_SAMPLER_BINDING` defines the shared sampler binding.
+
+### `shader/replace.rs`
+
+GLSL builtin `mul`/`saturate`/`texSample2D`/… replacements.

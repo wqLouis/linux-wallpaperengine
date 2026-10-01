@@ -8,11 +8,14 @@ Shader effect compilation pipeline: parameter layout, GLSL preprocessing, effect
 
 ```rust
 pub mod effect_param;
+pub mod effect_step;
 pub mod pipeline_handler;
 pub mod pipeline_helpers;
-pub mod shader_header;
-pub mod transform;
 ```
+
+The GLSL preprocessing pipeline itself now lives under
+[`src/scene/loader/shader/`](loader.md) so shaders are parsed when the scene is
+loaded.
 
 ---
 
@@ -114,22 +117,21 @@ effect_path + "|M1" (if mask texture present) + "|T1" (if noise texture present)
 **Pipeline creation** (`create_effect_pipeline`):
 
 1. Parse effect JSON → get `passes[0].material` path → get material JSON → get `passes[0].shader` name
-2. Read `.frag` and `.vert` shader sources from `scene.misc`
+2. Fetch the pre-parsed `ShaderProgram` from `scene.assets.shader(frag, vert)` (sources, headers, layout and defaults were resolved by `Scene::prepare()`)
 3. Collect combo defines (priority: shader defaults < material.json combos < scene pass combos):
-   - `collect_default_defines()` — scans both shader sources for `// [COMBO] {"combo":"NAME","default":N}` annotations
+   - `ShaderProgram::default_defines` — from `// [COMBO] {"combo":"NAME","default":N}` annotations
    - Merges material.json `passes[0].combos`
    - Applies scene pass combos (highest priority)
 4. Apply automatic texture combos via `apply_texture_combos()` — sets `MASK=1` if textures[1] present, `TIMEOFFSET=1` if textures[2] present
-5. Load shader headers via `shader_header::get_headers()`
-6. Preprocess shaders via `transform::preprocess_pair(vert, frag, headers, defines)`
-7. Create shader modules with GLSL-to-SPIR-V compilation (naga backend with `ShaderSource::Glsl`)
-8. Create bind group layout via `create_effect_bindgroup_layout()`
-9. Create render pipeline with alpha blending (`SrcAlpha / OneMinusSrcAlpha`), back-face culling, `Rgba8UnormSrgb` format
-10. Build `UniformLayout` from the shader's uniform declarations
+5. Merge the shader's `source_defines` (combo defines take priority) and preprocess via `transform::preprocess_pair_with_layout(vert, frag, headers, defines, layout, has_subgroup, use_immediates)`
+6. Create shader modules with GLSL-to-SPIR-V compilation (naga backend with `ShaderSource::Glsl`)
+7. Create bind group layout via `create_effect_bindgroup_layout()`
+8. Create render pipeline with alpha blending (`SrcAlpha / OneMinusSrcAlpha`), back-face culling, `Rgba8UnormSrgb` format
+9. Build `UniformLayout` from the shader's uniform declarations
 
 ### `load_mask_texture(device, queue, scene, path) -> Option<(Texture, TextureView)>`
 
-Loads a mask or noise texture from `scene.textures`, uploaded with the correct GPU format:
+Loads a mask or noise texture from `scene.assets`, uploaded with the correct GPU format:
 
 | Extension | GPU Format |
 |-----------|-----------|
@@ -169,16 +171,20 @@ Creates a bind group layout from `EffectLayout`:
 
 ## Shader Preprocessing Pipeline
 
-**Files:** `transform/mod.rs`, `transform/layout.rs`, `transform/replace.rs`
+The preprocessing pipeline lives in `src/scene/loader/shader/` and is driven by
+the loader: `Scene::prepare()` parses each shader pair into a `ShaderProgram`,
+and the pipeline handler only runs the define-dependent pass.
 
-### Public API (`transform/mod.rs`)
+**Files:** `shader/mod.rs`, `shader/layout.rs`, `shader/replace.rs`
 
-#### `preprocess_pair(vert: &str, frag: &str, headers, defines) -> (String, String, EffectLayout)`
+### Public API (`shader/mod.rs`)
 
-Preprocesses both vertex and fragment shaders for Vulkan/SPIR-V compatibility. Returns transformed sources and the combined shader interface layout.
+#### `preprocess_pair_with_layout(vert: &str, frag: &str, headers, defines, layout, has_subgroup, use_immediates) -> (String, String, EffectLayout)`
+
+Preprocesses both vertex and fragment shaders for Vulkan/SPIR-V compatibility using a layout that was already collected at load time. Returns transformed sources and the combined shader interface layout.
 
 **Features:**
-- Collects layout from both shaders (including transitively `#include`-d headers)
+- Uses the precomputed layout from `ShaderProgram` (no re-scan of the sources)
 - Evaluates `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif` using provided defines (supports `defined()`, `==`, `!=`, `!`, `||`, `&&`)
 - Strips or inlines header content based on active branches
 - Hoists conditional varyings: fragment varyings that only appear inside `#if` blocks in the vertex shader are hoisted to unconditional vertex outputs (wgpu requires all fragment inputs to have corresponding vertex outputs). Synthesizes declarations and zero-initializations in `main()` as needed.
@@ -195,7 +201,7 @@ Returns both the transformed source and the list of varyings that were unconditi
 
 ---
 
-## `transform/layout.rs` — EffectLayout
+## `shader/layout.rs` — EffectLayout
 
 Describes a compiled shader's GPU interface:
 
@@ -230,7 +236,7 @@ Introsects both vertex (source1) and fragment (source2) shaders, collecting:
 
 ---
 
-## `transform/replace.rs` — GLSL Builtin Replacements
+## `shader/replace.rs` — GLSL Builtin Replacements
 
 | GLSL/HLSL | Vulkan GLSL |
 |-----------|-------------|
@@ -255,13 +261,13 @@ Introsects both vertex (source1) and fragment (source2) shaders, collecting:
 
 ---
 
-## `shader_header.rs` — Built-in Headers Loading
+## `shader/header.rs` — Built-in Headers Loading
 
-**File:** `shader_header.rs`
+**File:** `shader/header.rs`
 
-#### `get_headers(misc: &MiscBucket) -> BTreeMap<String, String>`
+#### `get_headers(load: impl Fn(&str) -> Option<Vec<u8>>) -> BTreeMap<String, String>`
 
-Loads shader header files from the Wallpaper Engine assets bucket. Headers are stored under `shaders/common*.h` paths.
+Loads shader header files through the supplied byte loader (the scene's `AssetStore`). Headers are stored under `shaders/common*.h` paths.
 
 Returns a map of bare filename → header content for these headers:
 

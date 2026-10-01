@@ -161,9 +161,16 @@ src/
     ├── loader/
     │   ├── scene.rs              # scene.json schema types (Root, Camera, General, etc.)
     │   ├── scene_loader.rs       # Scene loading from .pkg (parallel texture parsing)
-    │   ├── object.rs             # Object JSON schema with all WP Engine properties
+    │   ├── object.rs             # Object JSON schema + ElementType classification
     │   ├── object_loader.rs      # ObjectMap construction (texture/audio/node hierarchy)
-    │   └── model.rs              # Model JSON schema
+    │   ├── assets_loader.rs      # AssetType classification & typed AssetStore
+    │   ├── model.rs              # Model JSON schema
+    │   └── shader/               # Shader preprocessing & pre-parsing
+    │       ├── mod.rs            # GLSL → Vulkan preprocessing pipeline
+    │       ├── asset.rs          # ShaderProgram: pre-parsed .frag/.vert pair
+    │       ├── header.rs         # Shader include headers (common.h, etc.)
+    │       ├── layout.rs         # EffectLayout generation from GLSL
+    │       └── replace.rs        # GLSL→GLSL fixes (mul, saturate, texSample2D, etc.)
     ├── renderer/
     │   ├── app.rs                # WgpuApp: main GPU state & render loop
     │   ├── surface.rs            # Surface abstraction (raw handles + winit)
@@ -177,16 +184,11 @@ src/
     │   ├── effect_bindgroup.rs   # Effect bind group construction
     │   ├── ping_pong.rs          # Ping-pong texture pair management
     │   ├── post_process.rs       # Post-process sampler & layout
-    │   └── post_processor/       # GLSL→WGSL shader preprocessing
-    │       ├── shader_header.rs  # Shader include headers (common.h, etc.)
-    │       ├── shader_headers/   # GLSL include files (*.h)
+    │   └── post_processor/       # Effect pipeline (GPU)
     │       ├── effect_param.rs   # Uniform layout & per-frame parameter population
+    │       ├── effect_step.rs    # Flattened effect steps & bind groups
     │       ├── pipeline_handler.rs # Effect pipeline creation & caching
-    │       ├── pipeline_helpers.rs # Defines collection & bind group layout
-    │       └── transform/        # Shader source transformations
-    │           ├── layout.rs     # EffectLayout generation from GLSL
-    │           ├── mod.rs        # Preprocessing pipeline (header injection, varying/attribute translation)
-    │           └── replace.rs    # GLSL→GLSL fixes (mul, saturate, texSample2D, etc.)
+    │       └── pipeline_helpers.rs # Bind group layout helpers
     └── adapters/
         ├── mod.rs               # FitMode enum
         ├── winit_adapter.rs     # Winit window adapter (always-on-bottom, cursor tracking)

@@ -81,11 +81,11 @@ Creates the wgpu instance, adapter, device, queue, surface, buffers, and project
 
 Called after `new()`. Loads scene assets and builds the draw queue:
 
-1. `Scene::new(scene_path)` — parses `.pkg` file (textures, mdls, jsons, misc)
-2. Enables lazy-loading fallback if `assets_path` is set
+1. `Scene::new(scene_path, show_progress, no_mdl)` — parses `.pkg` file into the typed `AssetStore`
+2. Enables lazy-loading fallback if `assets_path` is set, then `Scene::prepare()` pre-parses shaders
 3. `PostProcess::new(device, queue, size)` — sampler + blank texture
 4. Creates the default `image_pipeline` from `shader/image.wgsl` (entry points: `vs_main`, `fs_main`)
-5. `ObjectMap::with_clear_color(objects, scene, clear_color)` — converts to `TextureObject`/`AudioObject`
+5. `ObjectMap::with_clear_color(objects, scene, clear_color, no_mdl)` — converts to `TextureObject`/`AudioObject`
 6. `DrawQueue::new(...)` — builds GPU draw objects
 7. `Projection::new(root).create_camera_uniform()` — camera projection matrix
 8. Loads audio via rodio
@@ -290,7 +290,7 @@ Implements `WgpuApp::load()`. Also contains:
 
 ### `load_audios(audio_stream, audios, scene)`
 
-Loads audio files from `scene.misc` using rodio:
+Loads audio files from `scene.assets` (via `take_sound`) using rodio:
 - `PlaybackMode::Loop` → `source.repeat_infinite()` added to mixer
 - `PlaybackMode::Others` → no playback
 - Runs on a spawned thread via `rodio::Sink`

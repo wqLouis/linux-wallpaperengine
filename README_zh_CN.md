@@ -147,9 +147,16 @@ src/
     ├── loader/
     │   ├── scene.rs              # scene.json 结构类型（Root、Camera、General 等）
     │   ├── scene_loader.rs       # 从 .pkg 加载场景（平行纹理解析）
-    │   ├── object.rs             # 对象 JSON 结构，包含所有 WP Engine 属性
+    │   ├── object.rs             # 对象 JSON 结构 + ElementType 分类
     │   ├── object_loader.rs      # 对象映射构建（纹理/音频/节点层级）
-    │   └── model.rs              # 模型 JSON 结构
+    │   ├── assets_loader.rs      # AssetType 分类与类型化 AssetStore
+    │   ├── model.rs              # 模型 JSON 结构
+    │   └── shader/               # 着色器预处理与预解析
+    │       ├── mod.rs            # GLSL → Vulkan 预处理管线
+    │       ├── asset.rs          # ShaderProgram：预解析的 .frag/.vert 对
+    │       ├── header.rs         # 着色器包含头文件（common.h 等）
+    │       ├── layout.rs         # 从 GLSL 产生 EffectLayout
+    │       └── replace.rs        # GLSL→GLSL 修正（mul、saturate、texSample2D 等）
     ├── renderer/
     │   ├── app.rs                # WgpuApp：主要 GPU 状态与渲染循环
     │   ├── surface.rs            # 表面抽象层（原始句柄 + winit）
@@ -163,16 +170,11 @@ src/
     │   ├── effect_bindgroup.rs   # 效果绑定群组构建
     │   ├── ping_pong.rs          # 来回纹理对管理
     │   ├── post_process.rs       # 后处理采样器与布局
-    │   └── post_processor/       # GLSL→WGSL 着色器预处理
-    │       ├── shader_header.rs  # 着色器包含头文件（common.h 等）
-    │       ├── shader_headers/   # GLSL 包含文件（*.h）
+    │   └── post_processor/       # 效果管线（GPU）
     │       ├── effect_param.rs   # 统一变量布局与每帧参数填充
+    │       ├── effect_step.rs    # 扁平化效果步骤与绑定群组
     │       ├── pipeline_handler.rs # 效果管线创建与缓存
-    │       ├── pipeline_helpers.rs # 定义收集与绑定群组布局
-    │       └── transform/        # 着色器源代码转换
-    │           ├── layout.rs     # 从 GLSL 产生 EffectLayout
-    │           ├── mod.rs        # 预处理管线（头文件注入、可变/属性翻译）
-    │           └── replace.rs    # GLSL→GLSL 修正（mul、saturate、texSample2D 等）
+    │       └── pipeline_helpers.rs # 绑定群组布局辅助
     └── adapters/
         ├── mod.rs               # FitMode 枚举
         ├── winit_adapter.rs     # Winit 窗口适配器（置底窗口、光标追踪）

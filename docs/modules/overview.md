@@ -23,11 +23,17 @@ src/
     ├── loader/                       # Scene data loading & parsing
     │   ├── mod.rs
     │   ├── scene.rs                  # Root/Camera/General/Object data structures
-    │   ├── scene_loader.rs           # .pkg file parser → Scene struct
-    │   ├── object.rs                 # Object/Effect/Pass/Combos definitions
+    │   ├── scene_loader.rs           # .pkg parser → Scene + AssetStore
+    │   ├── object.rs                 # Object/Effect/Pass/Combos + ElementType
     │   ├── object_loader.rs          # Converts Objects → TextureObject/AudioObject/Node
     │   ├── model.rs                  # Material model JSON definition
-    │   └── assets_loader.rs          # Lazy-loading bucket wrappers (disk fallback)
+    │   ├── assets_loader.rs          # AssetType classification & typed AssetStore
+    │   └── shader/                   # Shader preprocessing & parsing
+    │       ├── mod.rs                # GLSL → Vulkan preprocessing
+    │       ├── asset.rs              # ShaderProgram: pre-parsed shader pair
+    │       ├── header.rs             # Built-in GLSL headers loading
+    │       ├── layout.rs             # EffectLayout + std140 size helpers
+    │       └── replace.rs            # GLSL builtin → Vulkan builtin replacement
     └── renderer/                     # GPU rendering
         ├── mod.rs
         ├── app.rs                    # WgpuApp: main render orchestrator
@@ -45,13 +51,9 @@ src/
         ├── post_processor/           # Shader effect pipeline
         │   ├── mod.rs
         │   ├── effect_param.rs       # UniformLayout: GPU uniform buffer layout
+        │   ├── effect_step.rs        # EffectStep model & bind groups
         │   ├── pipeline_handler.rs   # Effect pipeline creation & caching
-        │   ├── pipeline_helpers.rs   # Bind group layout helpers
-        │   ├── shader_header.rs      # Built-in GLSL headers loading
-        │   └── transform/
-        │       ├── mod.rs            # GLSL → Vulkan transformation (preprocess_pair)
-        │       ├── layout.rs         # EffectLayout: shader interface introspection
-        │       └── replace.rs        # GLSL builtin → Vulkan builtin replacement
+        │   └── pipeline_helpers.rs   # Bind group layout helpers
         └── shader/
             └── image.wgsl            # Default WGSL image shader
 ```
@@ -118,9 +120,10 @@ Options:
 
 ### Scene Loading Pipeline
 
-1. **`Scene::new(path)`** — Parses a `.pkg` file into textures (`.tex`), models (`.mdl`), JSON configs, and misc binary files (shaders, audio, etc.)
-2. **`ObjectMap::with_clear_color(objects, scene, clear_color)`** — Converts raw `Object`/`Effect` definitions into `TextureObject`/`AudioObject`/`Node`, resolves parent-child transforms, propagates visibility, builds solid-colour fallback textures
-3. **`DrawQueue::new(...)`** — Creates GPU resources (`DrawObject`, `EffectBindGroup`, `PingPongTextures`) for each texture object
+1. **`Scene::new(path, show_progress, no_mdl)`** — Parses a `.pkg` file, classifying every file with `AssetType` and storing parsed `Asset`s (textures, models, JSON documents, shaders, audio, fonts, video, …)
+2. **`Scene::prepare()`** — Pre-parses each shader pair into a `ShaderProgram` (interface layout, combo defaults, source macros, resolved headers)
+3. **`ObjectMap::with_clear_color(objects, scene, clear_color, no_mdl)`** — Classifies each object via `ElementType`, converts them into `TextureObject`/`AudioObject`/`Node`, resolves parent-child transforms, propagates visibility, builds solid-colour fallback textures
+4. **`DrawQueue::new(...)`** — Creates GPU resources (`DrawObject`, `EffectBindGroup`, `PingPongTextures`) for each texture object
 
 ### Render Pipeline
 
@@ -132,7 +135,7 @@ Options:
 
 Wallpaper Engine effects use GLSL shaders with custom conventions (`[COMBO]` defines, `// {"material":"key"}` annotations, `texSample2D` calls). The preprocessor:
 
-1. **Collects `EffectLayout`** — Samplers, uniforms, varyings, attributes from both vertex and fragment sources (including transitively `#include`-d headers)
+1. **Collects `EffectLayout` at load time** — Samplers, uniforms, varyings, attributes from both vertex and fragment sources (including transitively `#include`-d headers), precomputed by `Scene::prepare()`
 2. **Evaluates preprocessor conditions** — `#ifdef`, `#ifndef`, `#if | NAME == VALUE | ... || ... && ...`, handles `defined()` and negation
 3. **Transforms GLSL → Vulkan** — Replaces `mul(a,b)` → `b*a`, `texSample2D(tex,uv)` → `texture(sampler2D(tex,_wm_sampler), uv)`, `saturate(x)` → `clamp(x,0.0,1.0)`, `frac(x)` → `fract(x)`, etc.
 4. **Emits declarations** — Generates proper `layout(binding=N)` declarations for wgpu
@@ -155,7 +158,7 @@ The wlr adapter uses `wp_fractional_scale_manager_v1` + `wp_viewporter` protocol
 
 ### Lazy-Loading Asset Fallback
 
-When `--assets-path` is provided pointing to the Wallpaper Engine `assets/` directory, the `TextureBucket`, `MdlBucket`, `JsonBucket`, and `MiscBucket` wrappers will lazy-load assets from disk that are not found in the `.pkg` file's in-memory buckets.
+When `--assets-path` is provided pointing to the Wallpaper Engine `assets/` directory, the `AssetStore` will lazy-load assets from disk that are not found in the `.pkg` file's in-memory map, classifying each one with `AssetType`.
 
 ### Texture Format Handling
 
