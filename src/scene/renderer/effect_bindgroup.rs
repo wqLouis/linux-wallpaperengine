@@ -25,6 +25,7 @@ pub struct EffectBindGroup {
 }
 
 impl EffectBindGroup {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &Device,
         post_process: &PostProcess,

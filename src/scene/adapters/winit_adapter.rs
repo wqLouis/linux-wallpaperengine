@@ -4,10 +4,7 @@
 //! wayland winit). Cursor tracking works because winit windows receive
 //! pointer events even when stacked behind other windows.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
 use log;
 use pollster::block_on;
@@ -21,7 +18,7 @@ use winit::{
 use crate::scene::renderer::app::WgpuApp;
 
 struct WinitApp {
-    app: Arc<Mutex<Option<WgpuApp>>>,
+    app: Rc<RefCell<Option<WgpuApp>>>,
     window: Option<Arc<Window>>,
 
     pkg_path: String,
@@ -35,7 +32,7 @@ struct WinitApp {
 
 impl ApplicationHandler for WinitApp {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        if self.app.as_ref().lock().unwrap().is_some() {
+        if self.app.borrow().is_some() {
             return;
         }
 
@@ -62,7 +59,7 @@ impl ApplicationHandler for WinitApp {
 
         wgpu_app.load();
 
-        self.app.lock().unwrap().replace(wgpu_app);
+        self.app.borrow_mut().replace(wgpu_app);
         self.window = Some(window);
     }
 
@@ -72,20 +69,18 @@ impl ApplicationHandler for WinitApp {
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        let mut app = self.app.lock().unwrap();
+        let mut app = self.app.borrow_mut();
 
         match event {
             WindowEvent::RedrawRequested => {
                 // Throttle to target_fps if set.
-                if let Some(target_fps) = self.target_fps {
-                    if target_fps > 0 {
-                        if let Some(last) = self.last_frame {
-                            let min_delta =
-                                std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
-                            if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
-                                std::thread::sleep(remaining);
-                            }
-                        }
+                if let Some(target_fps) = self.target_fps
+                    && target_fps > 0
+                    && let Some(last) = self.last_frame
+                {
+                    let min_delta = std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+                    if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
+                        std::thread::sleep(remaining);
                     }
                 }
 
@@ -121,10 +116,9 @@ impl ApplicationHandler for WinitApp {
                     if let Some(size) = size {
                         let nx = position.x as f32 / size.width as f32;
                         let ny = position.y as f32 / size.height as f32;
-                        app.user_params =
-                            crate::scene::renderer::app::UserParams {
-                                cursor_position: [nx, ny],
-                            };
+                        app.user_params = crate::scene::renderer::app::UserParams {
+                            cursor_position: [nx, ny],
+                        };
                     }
                 }
             }
@@ -150,7 +144,7 @@ pub fn start(
         target_fps,
         show_progress,
         last_frame: None,
-        app: Arc::new(Mutex::new(None)),
+        app: Rc::new(RefCell::new(None)),
         window: None,
     };
 

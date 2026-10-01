@@ -29,6 +29,7 @@ pub struct EffectPipelineData {
 // ── Public API ────────────────────────────────────────────────
 
 /// Get or create a pipeline for a single-pass effect.
+#[allow(clippy::too_many_arguments)]
 pub fn get_or_create_pipeline(
     device: &Device,
     effect_path: String,
@@ -68,6 +69,7 @@ pub fn get_or_create_pipeline(
 }
 
 /// Get or create a pipeline for a multi-pass effect step (given material + shader paths directly).
+#[allow(clippy::too_many_arguments)]
 pub fn create_effect_pipeline_for_multipass(
     device: &Device,
     frag_path: &str,
@@ -127,6 +129,7 @@ fn make_cache_key(
 }
 
 /// Shared pipeline compilation: material_json already loaded, shader paths resolved.
+#[allow(clippy::too_many_arguments)]
 fn compile_pipeline(
     device: &Device,
     frag_path: &str,

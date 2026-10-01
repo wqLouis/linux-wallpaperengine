@@ -270,10 +270,11 @@ pub fn replace_bool_arithmetic(line: &str) -> String {
         if open_pos > 0 {
             let before = result[..open_pos].trim_end();
             if let Some(last_char) = before.chars().last()
-                && (last_char.is_alphanumeric() || last_char == '_') {
-                    search_start = close_pos + 1;
-                    continue;
-                }
+                && (last_char.is_alphanumeric() || last_char == '_')
+            {
+                search_start = close_pos + 1;
+                continue;
+            }
         }
 
         // Replace '(' with 'float(' — the existing ')' becomes the closing of float()
@@ -305,64 +306,65 @@ pub fn replace_float_as_bool(line: &str) -> String {
 
         // Check if the condition is a parenthesized expression
         if before.ends_with(')')
-            && let Some(open_pos) = find_matching_open_paren(&result, before.len() - 1) {
-                let inside = &result[open_pos + 1..before.len() - 1];
-                // If inside contains comparison operators, it's already a bool — skip
-                if inside.contains('<')
-                    || inside.contains('>')
-                    || inside.contains("==")
-                    || inside.contains("!=")
-                    || inside.contains("<=")
-                    || inside.contains(">=")
-                    || inside.contains("&&")
-                    || inside.contains("||")
-                {
-                    search_start = abs_q + 1;
-                    continue;
-                }
-                // Check if already wrapped with bool()
-                if open_pos >= 5 && &result[open_pos - 5..open_pos] == "bool(" {
-                    search_start = abs_q + 1;
-                    continue;
-                }
-                // Wrap the parenthesized expression with bool()
-                result.replace_range(open_pos..open_pos + 1, "bool(");
-                search_start = abs_q + 5; // account for extra chars
+            && let Some(open_pos) = find_matching_open_paren(&result, before.len() - 1)
+        {
+            let inside = &result[open_pos + 1..before.len() - 1];
+            // If inside contains comparison operators, it's already a bool — skip
+            if inside.contains('<')
+                || inside.contains('>')
+                || inside.contains("==")
+                || inside.contains("!=")
+                || inside.contains("<=")
+                || inside.contains(">=")
+                || inside.contains("&&")
+                || inside.contains("||")
+            {
+                search_start = abs_q + 1;
                 continue;
             }
+            // Check if already wrapped with bool()
+            if open_pos >= 5 && &result[open_pos - 5..open_pos] == "bool(" {
+                search_start = abs_q + 1;
+                continue;
+            }
+            // Wrap the parenthesized expression with bool()
+            result.replace_range(open_pos..open_pos + 1, "bool(");
+            search_start = abs_q + 5; // account for extra chars
+            continue;
+        }
 
         // Check if the condition is a simple identifier (potential float variable)
         if let Some(last_word) = before
             .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
             .next()
             && !last_word.is_empty()
-                && !last_word.starts_with(|c: char| c.is_ascii_digit())
-                && last_word != "true"
-                && last_word != "false"
-            {
-                // Check this is a standalone identifier (not preceded by a comparison op)
-                let before_word = before[..before.len() - last_word.len()].trim_end();
-                let preceded_by_cmp = before_word.ends_with('<')
-                    || before_word.ends_with('>')
-                    || before_word.ends_with("==")
-                    || before_word.ends_with("!=")
-                    || before_word.ends_with("<=")
-                    || before_word.ends_with(">=")
-                    || before_word.ends_with("&&")
-                    || before_word.ends_with("||");
+            && !last_word.starts_with(|c: char| c.is_ascii_digit())
+            && last_word != "true"
+            && last_word != "false"
+        {
+            // Check this is a standalone identifier (not preceded by a comparison op)
+            let before_word = before[..before.len() - last_word.len()].trim_end();
+            let preceded_by_cmp = before_word.ends_with('<')
+                || before_word.ends_with('>')
+                || before_word.ends_with("==")
+                || before_word.ends_with("!=")
+                || before_word.ends_with("<=")
+                || before_word.ends_with(">=")
+                || before_word.ends_with("&&")
+                || before_word.ends_with("||");
 
-                if !preceded_by_cmp {
-                    // Replace `identifier?` with `identifier != 0.0 ?`
-                    let word_start = before.len() - last_word.len();
-                    // Only add conversion if it's not already bool()
-                    if word_start < 5 || &result[word_start - 5..word_start] != "bool(" {
-                        let replacement = format!("{} != 0.0 ", last_word);
-                        result.replace_range(word_start..abs_q, &replacement);
-                        search_start = word_start + replacement.len() + 1;
-                        continue;
-                    }
+            if !preceded_by_cmp {
+                // Replace `identifier?` with `identifier != 0.0 ?`
+                let word_start = before.len() - last_word.len();
+                // Only add conversion if it's not already bool()
+                if word_start < 5 || &result[word_start - 5..word_start] != "bool(" {
+                    let replacement = format!("{} != 0.0 ", last_word);
+                    result.replace_range(word_start..abs_q, &replacement);
+                    search_start = word_start + replacement.len() + 1;
+                    continue;
                 }
             }
+        }
 
         search_start = abs_q + 1;
     }

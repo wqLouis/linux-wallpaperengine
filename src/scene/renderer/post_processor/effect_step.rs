@@ -74,6 +74,7 @@ struct EffectDef {
 
 // ── Public builder ────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_effect_steps(
     device: &Device,
     queue: &Queue,
@@ -189,6 +190,7 @@ pub fn build_effect_steps(
 // ── Shared step builder ───────────────────────────────────────
 
 /// Build one EffectStep. `def_pass` is Some for multi-pass internal steps.
+#[allow(clippy::too_many_arguments)]
 fn build_step(
     device: &Device,
     queue: &Queue,

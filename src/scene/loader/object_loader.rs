@@ -129,7 +129,11 @@ impl ObjectMap {
                         texture.visible = false;
                     }
                     Some(parent.model)
-                } else { node_map.get(&parent_id).map(|parent| build_model_matrix(&parent.transform, Vec2::ZERO)) };
+                } else {
+                    node_map
+                        .get(&parent_id)
+                        .map(|parent| build_model_matrix(&parent.transform, Vec2::ZERO))
+                };
 
             if let Some(pm) = parent_model {
                 // M_child_world = M_parent_world * M_child_local
@@ -374,12 +378,12 @@ impl ObjectMap {
                         .and_then(|mdl_rc| mdl::extract_mesh(&mdl_rc, obj_dims))
                 };
 
-                if mesh.is_some() {
+                if let Some(mesh) = &mesh {
                     log::info!(
                         "loaded puppet mesh for '{}': {} verts, {} indices",
                         object.name,
-                        mesh.as_ref().unwrap().vertices.len(),
-                        mesh.as_ref().unwrap().indices.len(),
+                        mesh.vertices.len(),
+                        mesh.indices.len(),
                     );
                 }
 

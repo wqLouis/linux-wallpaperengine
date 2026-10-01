@@ -488,15 +488,13 @@ pub fn start(
         event_queue.dispatch_pending(&mut state).unwrap();
 
         // --- FPS limiting ---
-        if let Some(target_fps) = state.target_fps {
-            if target_fps > 0 {
-                if let Some(last) = state.last_frame {
-                    let min_delta =
-                        std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
-                    if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
-                        std::thread::sleep(remaining);
-                    }
-                }
+        if let Some(target_fps) = state.target_fps
+            && target_fps > 0
+            && let Some(last) = state.last_frame
+        {
+            let min_delta = std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+            if let Some(remaining) = min_delta.checked_sub(last.elapsed()) {
+                std::thread::sleep(remaining);
             }
         }
 

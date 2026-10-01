@@ -14,17 +14,15 @@ use log;
 use wgpu::*;
 
 use super::{
-    draw::DrawQueue,
-    post_process::PostProcess,
-    projection::ProjectionBindGroups,
+    app::UserParams, draw::DrawQueue, post_process::PostProcess, projection::ProjectionBindGroups,
     render_pass,
-    app::UserParams,
 };
 
 /// Run intermediate post-process passes for all objects with effects.
 ///
 /// Writes into the shared `encoder` so the caller can batch intermediate
 /// and final passes into a single submission.
+#[allow(clippy::too_many_arguments)]
 pub fn render_intermediate_passes(
     encoder: &mut CommandEncoder,
     device: &Device,
@@ -88,19 +86,15 @@ pub fn render_intermediate_passes(
         for step in &draw_object.effect_steps {
             // Select the correct pre-cached intermediate bind group.
             let inter_bg = if cur_is_a {
-                step.cached_bg_a
-                    .as_ref()
-                    .unwrap_or_else(|| {
-                        log::error!("cached_bg_a missing for step, recreating");
-                        panic!("cached_bg_a missing")
-                    })
+                step.cached_bg_a.as_ref().unwrap_or_else(|| {
+                    log::error!("cached_bg_a missing for step, recreating");
+                    panic!("cached_bg_a missing")
+                })
             } else {
-                step.cached_bg_b
-                    .as_ref()
-                    .unwrap_or_else(|| {
-                        log::error!("cached_bg_b missing for step, recreating");
-                        panic!("cached_bg_b missing")
-                    })
+                step.cached_bg_b.as_ref().unwrap_or_else(|| {
+                    log::error!("cached_bg_b missing for step, recreating");
+                    panic!("cached_bg_b missing")
+                })
             };
 
             let target_view = match &step.target {
@@ -161,7 +155,11 @@ pub fn render_intermediate_passes(
                 // Immediates must come after set_pipeline.
                 if step.pipedata.layout.use_immediates {
                     let data = render_pass::build_immediates_data(
-                        staging, step, elapsed, screen_res, user_params,
+                        staging,
+                        step,
+                        elapsed,
+                        screen_res,
+                        user_params,
                     );
                     cpass.set_immediates(0, data);
                 }
@@ -174,7 +172,11 @@ pub fn render_intermediate_passes(
                 // Immediates must come AFTER set_pipeline (wgpu validation).
                 if step.pipedata.layout.use_immediates {
                     let data = render_pass::build_immediates_data(
-                        staging, step, elapsed, screen_res, user_params,
+                        staging,
+                        step,
+                        elapsed,
+                        screen_res,
+                        user_params,
                     );
                     pass.set_immediates(0, data);
                 }

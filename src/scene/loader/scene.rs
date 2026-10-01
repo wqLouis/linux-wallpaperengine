@@ -81,7 +81,7 @@ pub struct Lightconfig {
 #[serde(untagged)]
 pub enum Vectors {
     Scaler(f64),
-    Vectors(String),
+    Text(String),
     Object(Value),
 }
 
@@ -99,7 +99,7 @@ impl Vectors {
                 y: *val as f32,
                 z: *val as f32,
             }),
-            Vectors::Vectors(val) => {
+            Vectors::Text(val) => {
                 let vec = val
                     .split_whitespace()
                     .map(|f| f.parse::<f32>().unwrap_or_default())

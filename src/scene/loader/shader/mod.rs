@@ -52,8 +52,8 @@ pub fn collect_source_defines(source: &str) -> BTreeMap<String, String> {
     let mut macros = BTreeMap::new();
     for line in source.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("#define ") {
-            let rest = trimmed["#define ".len()..].trim();
+        if let Some(rest) = trimmed.strip_prefix("#define ") {
+            let rest = rest.trim();
             if let Some(space_pos) = rest.find(|c: char| c.is_whitespace()) {
                 let name = rest[..space_pos].trim().to_string();
                 let value = rest[space_pos..].trim().to_string();
@@ -75,9 +75,10 @@ fn eval_if_condition(cond: &str, defines: &BTreeMap<String, String>) -> bool {
 
     // Handle `defined(NAME)`
     if let Some(inner) = cond.strip_prefix("defined(")
-        && let Some(name) = inner.strip_suffix(')') {
-            return defines.contains_key(name.trim());
-        }
+        && let Some(name) = inner.strip_suffix(')')
+    {
+        return defines.contains_key(name.trim());
+    }
 
     // Handle `!defined(NAME)`
     if let Some(rest) = cond.strip_prefix('!') {
@@ -151,8 +152,8 @@ impl IfBlockProcessor {
     fn process_line(&mut self, line: &str, defines: &BTreeMap<String, String>) -> Option<bool> {
         let trimmed = line.trim();
 
-        if trimmed.starts_with("#ifdef") {
-            let macro_name = trimmed["#ifdef".len()..].trim();
+        if let Some(macro_name) = trimmed.strip_prefix("#ifdef") {
+            let macro_name = macro_name.trim();
             let cond_true = defines.contains_key(macro_name);
             self.stack.push(if cond_true {
                 IfBlockState::Active
@@ -161,8 +162,8 @@ impl IfBlockProcessor {
             });
             return Some(true);
         }
-        if trimmed.starts_with("#ifndef") {
-            let macro_name = trimmed["#ifndef".len()..].trim();
+        if let Some(macro_name) = trimmed.strip_prefix("#ifndef") {
+            let macro_name = macro_name.trim();
             let cond_true = defines.contains_key(macro_name);
             self.stack.push(if !cond_true {
                 IfBlockState::Active
@@ -185,15 +186,14 @@ impl IfBlockProcessor {
             return Some(true);
         }
 
-        if trimmed.starts_with("#elif") {
+        if let Some(cond) = trimmed.strip_prefix("#elif") {
             if let Some(top) = self.stack.last_mut() {
                 match top {
                     IfBlockState::Active | IfBlockState::Done => {
                         *top = IfBlockState::Done;
                     }
                     IfBlockState::Inactive => {
-                        let cond = trimmed["#elif".len()..].trim();
-                        if eval_if_condition(cond, defines) {
+                        if eval_if_condition(cond.trim(), defines) {
                             *top = IfBlockState::Active;
                         }
                     }
@@ -257,12 +257,13 @@ pub fn preprocess_with_layout_tracked(
         if trimmed.starts_with("#include") {
             if ifp.is_active()
                 && let Some(start) = trimmed.find('"')
-                    && let Some(end) = trimmed[start + 1..].find('"') {
-                        let file = &trimmed[start + 1..start + 1 + end];
-                        if let Some(hdr) = headers.get(file) {
-                            include_header_lines(hdr, defines, &sampler_set, &mut result, headers);
-                        }
-                    }
+                && let Some(end) = trimmed[start + 1..].find('"')
+            {
+                let file = &trimmed[start + 1..start + 1 + end];
+                if let Some(hdr) = headers.get(file) {
+                    include_header_lines(hdr, defines, &sampler_set, &mut result, headers);
+                }
+            }
             continue;
         }
 
@@ -320,8 +321,8 @@ pub fn preprocess_with_layout_tracked(
             continue;
         }
 
-        if cleaned.starts_with("varying ") {
-            let rest = cleaned["varying ".len()..].trim();
+        if let Some(rest) = cleaned.strip_prefix("varying ") {
+            let rest = rest.trim();
             let keyword = if matches!(stage, ShaderStage::Vertex) {
                 "out"
             } else {
@@ -332,9 +333,10 @@ pub fn preprocess_with_layout_tracked(
             // Fragment: skip varyings not present in vertex shader source
             if stage == ShaderStage::Fragment
                 && let Some(ref n) = name
-                    && !layout.vertex_varyings.iter().any(|v| v == n) {
-                        continue;
-                    }
+                && !layout.vertex_varyings.iter().any(|v| v == n)
+            {
+                continue;
+            }
 
             let location = name
                 .as_ref()
@@ -347,10 +349,12 @@ pub fn preprocess_with_layout_tracked(
             ));
 
             // Track emitted varyings for hoisting logic in preprocess_pair
-            if stage == ShaderStage::Vertex && ifp.is_active()
-                && let Some(n) = name {
-                    emitted_varyings.push(n);
-                }
+            if stage == ShaderStage::Vertex
+                && ifp.is_active()
+                && let Some(n) = name
+            {
+                emitted_varyings.push(n);
+            }
             continue;
         }
 
@@ -500,12 +504,13 @@ fn include_header_lines(
         if htrim.starts_with("#include") {
             if ifp.is_active()
                 && let Some(start) = htrim.find('"')
-                    && let Some(end) = htrim[start + 1..].find('"') {
-                        let include_file = &htrim[start + 1..start + 1 + end];
-                        if let Some(nested) = headers.get(include_file) {
-                            include_header_lines(nested, defines, sampler_set, result, headers);
-                        }
-                    }
+                && let Some(end) = htrim[start + 1..].find('"')
+            {
+                let include_file = &htrim[start + 1..start + 1 + end];
+                if let Some(nested) = headers.get(include_file) {
+                    include_header_lines(nested, defines, sampler_set, result, headers);
+                }
+            }
             continue;
         }
 
@@ -621,21 +626,25 @@ fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&S
         }
 
         // Track all varying declarations (top-level and conditional).
-        if trimmed.starts_with("layout(") && trimmed.contains(") out ")
-            && let Some(n) = extract_pp_varying_name(trimmed) {
-                seen_names.insert(n);
-            }
+        if trimmed.starts_with("layout(")
+            && trimmed.contains(") out ")
+            && let Some(n) = extract_pp_varying_name(trimmed)
+        {
+            seen_names.insert(n);
+        }
 
         // Check if this is a conditional varying declaration (vertex stage: "out")
         if if_depth > 0 && trimmed.starts_with("layout(") && trimmed.contains(") out ") {
             let name = extract_pp_varying_name(trimmed);
             if let Some(ref n) = name
-                && missing.iter().any(|v| v == &n) && !hoisted_names.contains(n) {
-                    // Collect this declaration to hoist outside #if blocks
-                    hoisted_names.insert(n.clone());
-                    hoisted_decls.push(line.to_string());
-                    continue; // Skip the inside-#if copy
-                }
+                && missing.iter().any(|v| v == &n)
+                && !hoisted_names.contains(n)
+            {
+                // Collect this declaration to hoist outside #if blocks
+                hoisted_names.insert(n.clone());
+                hoisted_decls.push(line.to_string());
+                continue; // Skip the inside-#if copy
+            }
         }
 
         result.push_str(line);
@@ -726,9 +735,10 @@ fn fix_fragment_varying_writes(output: &str, layout: &EffectLayout) -> String {
 /// Insert a statement after the opening brace of main().
 fn insert_at_main(output: &mut String, stmt: &str) {
     if let Some(main_pos) = output.find("void main()")
-        && let Some(brace_pos) = output[main_pos..].find('{') {
-            output.insert_str(main_pos + brace_pos + 1, &format!("\n    {}", stmt));
-        }
+        && let Some(brace_pos) = output[main_pos..].find('{')
+    {
+        output.insert_str(main_pos + brace_pos + 1, &format!("\n    {}", stmt));
+    }
 }
 
 /// Extract the variable name from a preprocessed varying line like

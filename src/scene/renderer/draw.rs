@@ -45,6 +45,7 @@ pub struct DrawQueue {
 }
 
 impl DrawQueue {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &Device,
         queue: &Queue,
@@ -94,6 +95,7 @@ impl DrawQueue {
 }
 
 impl DrawObject {
+    #[allow(clippy::too_many_arguments)]
     fn build(
         device: &Device,
         queue: &Queue,
@@ -273,7 +275,11 @@ impl DrawObject {
         let bytes_per_row = if is_bcn {
             w.div_ceil(4) * if ext == "dxt1" { 8 } else { 16 }
         } else {
-            w * match ext { "r8" => 1, "rg88" => 2, _ => 4 }
+            w * match ext {
+                "r8" => 1,
+                "rg88" => 2,
+                _ => 4,
+            }
         };
         queue.write_texture(
             TexelCopyTextureInfo {
@@ -307,7 +313,12 @@ impl DrawObject {
             let level_bpr = if is_bcn {
                 level_w.div_ceil(4) * if ext == "dxt1" { 8 } else { 16 }
             } else {
-                level_w * match ext { "r8" => 1, "rg88" => 2, _ => 4 }
+                level_w
+                    * match ext {
+                        "r8" => 1,
+                        "rg88" => 2,
+                        _ => 4,
+                    }
             };
 
             queue.write_texture(

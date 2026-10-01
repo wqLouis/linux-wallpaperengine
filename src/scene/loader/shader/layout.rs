@@ -116,6 +116,7 @@ pub fn collect_layout(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_from_source(
     source: &str,
     headers: &BTreeMap<String, String>,
@@ -132,22 +133,23 @@ fn collect_from_source(
 
         if trimmed.starts_with("#include") {
             if let Some(start) = trimmed.find('"')
-                && let Some(end) = trimmed[start + 1..].find('"') {
-                    let include_file = &trimmed[start + 1..start + 1 + end];
-                    if let Some(header_content) = headers.get(include_file) {
-                        collect_from_source(
-                            header_content,
-                            headers,
-                            sampler_names,
-                            uniform_map,
-                            varying_set,
-                            varying_types,
-                            varying_array_sizes,
-                            attribute_set,
-                            material_keys,
-                        );
-                    }
+                && let Some(end) = trimmed[start + 1..].find('"')
+            {
+                let include_file = &trimmed[start + 1..start + 1 + end];
+                if let Some(header_content) = headers.get(include_file) {
+                    collect_from_source(
+                        header_content,
+                        headers,
+                        sampler_names,
+                        uniform_map,
+                        varying_set,
+                        varying_types,
+                        varying_array_sizes,
+                        attribute_set,
+                        material_keys,
+                    );
                 }
+            }
             continue;
         }
 
@@ -160,8 +162,8 @@ fn collect_from_source(
             continue;
         }
 
-        if cleaned.starts_with("varying ") {
-            let rest = cleaned["varying ".len()..].trim();
+        if let Some(rest) = cleaned.strip_prefix("varying ") {
+            let rest = rest.trim();
             if let Some(name) = extract_variable_name(rest) {
                 varying_set.entry(name.clone()).or_insert(0);
                 if let Some(ty) = extract_type(rest) {
@@ -182,8 +184,8 @@ fn collect_from_source(
             continue;
         }
 
-        if cleaned.starts_with("uniform ") {
-            let rest = cleaned["uniform ".len()..].trim();
+        if let Some(rest) = cleaned.strip_prefix("uniform ") {
+            let rest = rest.trim();
             if rest.starts_with("sampler2D ") || rest.starts_with("sampler2D\t") {
                 let name = rest["sampler2D".len()..].trim().trim_end_matches(';');
                 if !sampler_names.contains(&name.to_string()) {
@@ -264,12 +266,13 @@ pub fn extract_type(rest: &str) -> Option<String> {
 pub fn extract_array_size(decl: &str) -> u32 {
     // Look for `[N]` after the variable name
     if let Some(bracket_start) = decl.find('[')
-        && let Some(bracket_end) = decl[bracket_start..].find(']') {
-            let num_str = &decl[bracket_start + 1..bracket_start + bracket_end];
-            if let Ok(n) = num_str.parse::<u32>() {
-                return n;
-            }
+        && let Some(bracket_end) = decl[bracket_start..].find(']')
+    {
+        let num_str = &decl[bracket_start + 1..bracket_start + bracket_end];
+        if let Ok(n) = num_str.parse::<u32>() {
+            return n;
         }
+    }
     1
 }
 
