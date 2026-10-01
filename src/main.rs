@@ -132,7 +132,10 @@ fn setup_logging(level_str: &str) {
 fn validate_pkg_path(path: &str) -> Result<(), String> {
     let p = Path::new(path);
     if !p.exists() || p.extension().unwrap_or_default() != "pkg" {
-        return Err(format!("Path '{}' does not exist or is not a .pkg file", path));
+        return Err(format!(
+            "Path '{}' does not exist or is not a .pkg file",
+            path
+        ));
     }
     Ok(())
 }
@@ -211,7 +214,13 @@ fn run_parser(args: ParserArgs) {
             args.parse_mdl,
             args.dry_run,
         );
-        pkg.save_pkg(target, args.dry_run, args.parse_tex, args.parse_video, args.parse_mdl);
+        pkg.save_pkg(
+            target,
+            args.dry_run,
+            args.parse_tex,
+            args.parse_video,
+            args.parse_mdl,
+        );
         return;
     }
 
@@ -270,8 +279,23 @@ fn main() {
     let target_fps = cli.target_fps;
 
     match cli.modes.as_str() {
-        "winit" => winit_adapter::start(cli.path, cli.no_effects, cli.no_mdl, cli.assets_path, target_fps, show_progress),
-        "wlr" => wlr_app::start(cli.path, fit_mode, cli.no_effects, cli.no_mdl, cli.assets_path, target_fps, show_progress),
+        "winit" => winit_adapter::start(
+            cli.path,
+            cli.no_effects,
+            cli.no_mdl,
+            cli.assets_path,
+            target_fps,
+            show_progress,
+        ),
+        "wlr" => wlr_app::start(
+            cli.path,
+            fit_mode,
+            cli.no_effects,
+            cli.no_mdl,
+            cli.assets_path,
+            target_fps,
+            show_progress,
+        ),
         _ => {
             eprintln!("Unknown display mode '{}'. Valid: wlr, winit", cli.modes);
         }
