@@ -7,12 +7,10 @@ use serde_json::Value;
 use crate::scene::loader::{
     mdl::{self, PuppetMesh},
     model::Model,
-    scene::{Effect, Object, Vectors},
+    scene::{Effect, ElementType, Object, Vectors},
     scene_loader::Scene,
 };
-use crate::scene::renderer::transform::{
-    build_model_matrix, compose, Alignment, Transform,
-};
+use crate::scene::renderer::transform::{Alignment, Transform, build_model_matrix, compose};
 
 #[derive(Debug, Clone)]
 pub struct TextureObject {
@@ -57,7 +55,12 @@ enum ObjectType {
 }
 
 impl ObjectMap {
-    pub fn with_clear_color(objects: &Vec<Object>, scene: &Scene, clear_color: Vec3, no_mdl: bool) -> Self {
+    pub fn with_clear_color(
+        objects: &Vec<Object>,
+        scene: &Scene,
+        clear_color: Vec3,
+        no_mdl: bool,
+    ) -> Self {
         let mut render_sequence: Vec<i64> = vec![];
 
         let mut texture_map: BTreeMap<i64, Rc<RefCell<TextureObject>>> = BTreeMap::new();
@@ -65,7 +68,7 @@ impl ObjectMap {
         let mut node_map: BTreeMap<i64, Node> = BTreeMap::new();
 
         for object in objects {
-            let Some(loaded_object) = Self::load_object(object, &scene, clear_color, no_mdl) else {
+            let Some(loaded_object) = Self::load_object(object, scene, clear_color, no_mdl) else {
                 continue;
             };
             match loaded_object {
@@ -85,20 +88,22 @@ impl ObjectMap {
         // Propagate parent transforms in topological order (parents before
         // children) so each immediate parent already contains its ancestors'
         // transforms.  We sort by chain depth so we never need to traverse
-        // more than one level up.
+        // more than one level up.  Wallpaper Engine archives form a valid
+        // forest, so no cycle handling is needed.
         let mut ids: Vec<i64> = texture_map.keys().copied().collect();
         ids.sort_by_key(|id| {
-            // Compute chain depth (number of ancestors)
+            let parent_of = |id: i64| {
+                texture_map
+                    .get(&id)
+                    .and_then(|t| t.borrow().parent)
+                    .or_else(|| node_map.get(&id).and_then(|n| n.parent))
+            };
+
             let mut depth = 0u32;
-            let mut cur = texture_map.get(id).and_then(|t| t.borrow().parent);
+            let mut cur = parent_of(*id);
             while let Some(pid) = cur {
                 depth += 1;
-                cur = texture_map.get(&pid)
-                    .and_then(|t| t.borrow().parent);
-                if cur.is_none() {
-                    cur = node_map.get(&pid).and_then(|n| n.parent);
-                }
-                if depth > 32 { break; }
+                cur = parent_of(pid);
             }
             depth
         });
@@ -117,19 +122,14 @@ impl ObjectMap {
             // Look up the parent's world model matrix.  Since the parent
             // has already been processed (topological order), its `model`
             // already includes all ancestor transforms.
-            let parent_model: Option<glam::Mat4> = if let Some(parent_rc) =
-                texture_map.get(&parent_id)
-            {
-                let parent = parent_rc.borrow();
-                if !parent.visible {
-                    texture.visible = false;
-                }
-                Some(parent.model)
-            } else if let Some(parent) = node_map.get(&parent_id) {
-                Some(build_model_matrix(&parent.transform, Vec2::ZERO))
-            } else {
-                None
-            };
+            let parent_model: Option<glam::Mat4> =
+                if let Some(parent_rc) = texture_map.get(&parent_id) {
+                    let parent = parent_rc.borrow();
+                    if !parent.visible {
+                        texture.visible = false;
+                    }
+                    Some(parent.model)
+                } else { node_map.get(&parent_id).map(|parent| build_model_matrix(&parent.transform, Vec2::ZERO)) };
 
             if let Some(pm) = parent_model {
                 // M_child_world = M_parent_world * M_child_local
@@ -163,11 +163,7 @@ impl ObjectMap {
     /// Returns `None` when the object should be skipped (model not found,
     /// texture unresolvable, or a composelayer that cannot be rendered
     /// stand-alone).
-    fn resolve_texture(
-        scene: &Scene,
-        model: &Model,
-        object: &Object,
-    ) -> Option<Rc<Tex>> {
+    fn resolve_texture(scene: &Scene, model: &Model, object: &Object) -> Option<Rc<Tex>> {
         // ── composelayer (passthrough) ────────────────────────────
         // Uses a runtime framebuffer (`_rt_FullFrameBuffer`) that only
         // exists during effect compositing.  Skip when rendering
@@ -175,15 +171,15 @@ impl ObjectMap {
         if model.passthrough == Some(true) {
             log::debug!(
                 "object '{}' (id {}): composelayer (passthrough) — skipping",
-                object.name, object.id,
+                object.name,
+                object.id,
             );
             return None;
         }
 
         // ── load material JSON ────────────────────────────────────
-        let material_raw = scene.jsons.get(&model.material)?;
-        let material_json: Value =
-            serde_json::from_str(&material_raw[..]).ok()?;
+        let material_raw = scene.assets.json(&model.material)?;
+        let material_json: Value = serde_json::from_str(&material_raw[..]).ok()?;
         let passes = material_json["passes"].as_array()?;
         let first_pass = passes.first()?;
 
@@ -213,7 +209,11 @@ impl ObjectMap {
             let a = (alpha_val.clamp(0.0, 1.0) * 255.0) as u8;
             log::debug!(
                 "solidlayer '{}': 1x1 rgba({},{},{},{})",
-                object.name, r, g, b, a,
+                object.name,
+                r,
+                g,
+                b,
+                a,
             );
             return Some(Rc::new(Tex {
                 texv: String::new(),
@@ -241,25 +241,35 @@ impl ObjectMap {
         if tex_name.starts_with("_rt_") {
             log::debug!(
                 "object '{}' (id {}): runtime texture '{}' — skipping",
-                object.name, object.id, tex_name,
+                object.name,
+                object.id,
+                tex_name,
             );
             return None;
         }
 
         let tex_key = format!("materials/{}.tex", tex_name);
-        if let Some(tex) = scene.textures.get(&tex_key) {
+        if let Some(tex) = scene.assets.texture(&tex_key) {
             return Some(tex);
         }
 
         // ── unresolvable ──────────────────────────────────────────
         log::warn!(
             "object '{}' (id {}): tex '{}' not found (material '{}')",
-            object.name, object.id, tex_key, model.material,
+            object.name,
+            object.id,
+            tex_key,
+            model.material,
         );
         None
     }
 
-    fn load_object(object: &Object, scene: &Scene, _clear_color: Vec3, no_mdl: bool) -> Option<ObjectType> {
+    fn load_object(
+        object: &Object,
+        scene: &Scene,
+        _clear_color: Vec3,
+        no_mdl: bool,
+    ) -> Option<ObjectType> {
         // Common transform properties shared by texture and node objects
         let position = object
             .origin
@@ -290,102 +300,118 @@ impl ObjectMap {
             .with_pivot(pivot)
             .with_alignment(alignment);
 
-        if object.image.is_some() {
-            // Texture
-            let visible = object
-                .visible
-                .clone()
-                .and_then(|v| v.value())
-                .unwrap_or(true);
+        match object.element_type() {
+            ElementType::Image => {
+                // Texture
+                let visible = object
+                    .visible
+                    .clone()
+                    .and_then(|v| v.value())
+                    .unwrap_or(true);
 
-            let size = object
-                .size
-                .as_ref()
-                .unwrap_or(&Vectors::default())
-                .parse()
-                .unwrap_or_default();
-            let size = Vec2 {
-                x: size.x,
-                y: size.y,
-            };
-
-            let model_path = object.image.clone().unwrap_or_default();
-
-            // -----------------------------------------------------------
-            // Resolve the texture:
-            //   model JSON → material JSON → texture reference (tex file)
-            // -----------------------------------------------------------
-
-            // Parse the model JSON once so we can use both `material` (for
-            // the texture) and `puppet` (for the MDL mesh).
-            let model_json: Option<Model> = scene
-                .jsons
-                .get(&model_path)
-                .and_then(|raw| serde_json::from_str::<Model>(&raw[..]).ok());
-
-            let Some(ref model) = model_json else {
-                log::warn!(
-                    "object '{}' (id {}): model JSON '{}' not found or invalid — skipping",
-                    object.name, object.id, model_path,
-                );
-                return None;
-            };
-
-            let Some(texture) = Self::resolve_texture(scene, model, object) else {
-                log::warn!(
-                    "object '{}' (id {}): texture not found for material '{}' — skipping",
-                    object.name, object.id, model.material,
-                );
-                return None;
-            };
-
-            // Load puppet mesh if the model references a .mdl file
-            // (unless --no-mdl was passed).
-            let obj_dims = [size.x, size.y];
-            let mesh = if no_mdl {
-                None
-            } else {
-                model
-                    .puppet
+                let size = object
+                    .size
                     .as_ref()
-                    .and_then(|puppet_path| {
-                        log::debug!("loading puppet mesh '{}' for '{}'", puppet_path, object.name);
-                        scene.mdls.get(puppet_path)
-                    })
-                    .and_then(|mdl_rc| mdl::extract_mesh(&mdl_rc, obj_dims))
-            };
+                    .unwrap_or(&Vectors::default())
+                    .parse()
+                    .unwrap_or_default();
+                let size = Vec2 {
+                    x: size.x,
+                    y: size.y,
+                };
 
-            if mesh.is_some() {
-                log::info!("loaded puppet mesh for '{}': {} verts, {} indices",
-                    object.name,
-                    mesh.as_ref().unwrap().vertices.len(),
-                    mesh.as_ref().unwrap().indices.len(),
-                );
+                let model_path = object.image.clone().unwrap_or_default();
+
+                // -----------------------------------------------------------
+                // Resolve the texture:
+                //   model JSON → material JSON → texture reference (tex file)
+                // -----------------------------------------------------------
+
+                // Parse the model JSON once so we can use both `material` (for
+                // the texture) and `puppet` (for the MDL mesh).
+                let model_json: Option<Model> = scene
+                    .assets
+                    .json(&model_path)
+                    .and_then(|raw| serde_json::from_str::<Model>(&raw[..]).ok());
+
+                let Some(ref model) = model_json else {
+                    log::warn!(
+                        "object '{}' (id {}): model JSON '{}' not found or invalid — skipping",
+                        object.name,
+                        object.id,
+                        model_path,
+                    );
+                    return None;
+                };
+
+                let Some(texture) = Self::resolve_texture(scene, model, object) else {
+                    log::warn!(
+                        "object '{}' (id {}): texture not found for material '{}' — skipping",
+                        object.name,
+                        object.id,
+                        model.material,
+                    );
+                    return None;
+                };
+
+                // Load puppet mesh if the model references a .mdl file
+                // (unless --no-mdl was passed).
+                let obj_dims = [size.x, size.y];
+                let mesh = if no_mdl {
+                    None
+                } else {
+                    model
+                        .puppet
+                        .as_ref()
+                        .and_then(|puppet_path| {
+                            log::debug!(
+                                "loading puppet mesh '{}' for '{}'",
+                                puppet_path,
+                                object.name
+                            );
+                            scene.assets.model(puppet_path)
+                        })
+                        .and_then(|mdl_rc| mdl::extract_mesh(&mdl_rc, obj_dims))
+                };
+
+                if mesh.is_some() {
+                    log::info!(
+                        "loaded puppet mesh for '{}': {} verts, {} indices",
+                        object.name,
+                        mesh.as_ref().unwrap().vertices.len(),
+                        mesh.as_ref().unwrap().indices.len(),
+                    );
+                }
+
+                return Some(ObjectType::Texture(TextureObject {
+                    transform,
+                    model: build_model_matrix(&transform, size),
+                    size,
+                    parent: object.parent,
+                    texture: Rc::clone(&texture),
+                    effects: object.effects.clone(),
+                    visible,
+                    mesh,
+                }));
             }
 
-            return Some(ObjectType::Texture(TextureObject {
-                transform,
-                model: build_model_matrix(&transform, size),
-                size,
-                parent: object.parent,
-                texture: Rc::clone(&texture),
-                effects: object.effects.clone(),
-                visible,
-                mesh,
-            }));
-        }
+            ElementType::Sound => {
+                // Audio
+                let playback_mode = match object.playbackmode.clone().unwrap_or_default().as_str() {
+                    "loop" => PlaybackMode::Loop,
+                    _ => PlaybackMode::Others,
+                };
 
-        if object.sound.len() > 0 {
-            // Audio
-            let playback_mode = match object.playbackmode.clone().unwrap_or_default().as_str() {
-                "loop" => PlaybackMode::Loop,
-                _ => PlaybackMode::Others,
-            };
+                return Some(ObjectType::Audio(AudioObject {
+                    sounds: object.sound.to_owned(),
+                    playback_mode,
+                }));
+            }
 
-            return Some(ObjectType::Audio(AudioObject {
-                sounds: object.sound.to_owned(),
-                playback_mode: playback_mode,
-            }));
+            // Particle systems, text, lights and cameras are not rendered by
+            // this backend yet, but they still act as transform-only nodes so
+            // their children keep their world transforms.
+            _ => {}
         }
 
         Some(ObjectType::Node(Node {

@@ -25,11 +25,15 @@ impl EffectLayout {
     /// Compute the total size of the uniform block in bytes (std140 layout).
     /// Returns the aligned total size.
     pub fn total_uniform_size(&self) -> u64 {
-        crate::scene::renderer::post_processor::effect_param::compute_uniform_size(&self.uniform_decls)
+        compute_uniform_size(&self.uniform_decls)
     }
 }
 
-pub fn collect_layout(source1: &str, source2: &str, headers: &BTreeMap<String, String>) -> EffectLayout {
+pub fn collect_layout(
+    source1: &str,
+    source2: &str,
+    headers: &BTreeMap<String, String>,
+) -> EffectLayout {
     let mut sampler_names: Vec<String> = Vec::new();
     let mut uniform_map: BTreeMap<String, String> = BTreeMap::new();
     let mut varying_set: BTreeMap<String, u32> = BTreeMap::new();
@@ -123,13 +127,12 @@ fn collect_from_source(
     attribute_set: &mut BTreeMap<String, u32>,
     material_keys: &mut BTreeMap<String, String>,
 ) {
-
     for line in source.lines() {
         let trimmed = line.trim();
 
         if trimmed.starts_with("#include") {
-            if let Some(start) = trimmed.find('"') {
-                if let Some(end) = trimmed[start + 1..].find('"') {
+            if let Some(start) = trimmed.find('"')
+                && let Some(end) = trimmed[start + 1..].find('"') {
                     let include_file = &trimmed[start + 1..start + 1 + end];
                     if let Some(header_content) = headers.get(include_file) {
                         collect_from_source(
@@ -145,7 +148,6 @@ fn collect_from_source(
                         );
                     }
                 }
-            }
             continue;
         }
 
@@ -200,11 +202,7 @@ fn collect_from_source(
                         .trim()
                         .to_string();
                     // Extract base name (strip array brackets) for lookup
-                    let name = full_decl
-                        .split('[')
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
+                    let name = full_decl.split('[').next().unwrap_or("").to_string();
                     if !name.is_empty() {
                         // Store full declaration including array brackets for proper emission
                         let full_ty = if full_decl.contains('[') {
@@ -222,8 +220,6 @@ fn collect_from_source(
         }
     }
 }
-
-
 
 fn extract_material_key(line: &str) -> Option<String> {
     if let Some(comment_pos) = line.find("//") {
@@ -267,13 +263,91 @@ pub fn extract_type(rest: &str) -> Option<String> {
 /// Returns the array size, or 1 if not an array.
 pub fn extract_array_size(decl: &str) -> u32 {
     // Look for `[N]` after the variable name
-    if let Some(bracket_start) = decl.find('[') {
-        if let Some(bracket_end) = decl[bracket_start..].find(']') {
+    if let Some(bracket_start) = decl.find('[')
+        && let Some(bracket_end) = decl[bracket_start..].find(']') {
             let num_str = &decl[bracket_start + 1..bracket_start + bracket_end];
             if let Ok(n) = num_str.parse::<u32>() {
                 return n;
             }
         }
-    }
     1
+}
+
+// ---------------------------------------------------------------------------
+// std140 uniform layout helpers
+// ---------------------------------------------------------------------------
+
+pub(crate) fn align_up(val: u64, align: u64) -> u64 {
+    (val + align - 1) & !(align - 1)
+}
+
+/// Compute the total size of a uniform block given its declarations.
+pub(crate) fn compute_uniform_size(decls: &[(String, String)]) -> u64 {
+    let mut offset: u64 = 0;
+    for (_name, ty) in decls {
+        offset = align_up(offset, type_align(ty));
+        offset += type_size(ty);
+    }
+    align_up(offset, 16).max(16)
+}
+
+/// Parse a type string that may include array brackets, e.g. `"float [32]"`.
+/// Returns (base_type, array_size) where array_size is 1 for non-array types.
+fn parse_type(ty: &str) -> (&str, u64) {
+    let ty = ty.trim();
+    if let Some(bracket) = ty.find('[') {
+        let base = ty[..bracket].trim();
+        let array_part = &ty[bracket..];
+        // Parse the array size: [N] or [N][M] (multi-dimensional)
+        let mut total_size: u64 = 1;
+        let mut rest = array_part;
+        while let Some(inner_start) = rest.find('[') {
+            if let Some(inner_end) = rest[inner_start..].find(']') {
+                let num_str = &rest[inner_start + 1..inner_start + inner_end];
+                if let Ok(n) = num_str.parse::<u64>() {
+                    total_size *= n;
+                }
+                rest = &rest[inner_start + inner_end + 1..];
+            } else {
+                break;
+            }
+        }
+        (base, total_size)
+    } else {
+        (ty, 1)
+    }
+}
+
+pub(crate) fn type_align(ty: &str) -> u64 {
+    let (base, array_size) = parse_type(ty);
+    let base_align = match base {
+        "mat4" | "mat3" | "vec4" | "vec3" => 16,
+        "vec2" => 8,
+        _ => 4,
+    };
+    if array_size > 1 {
+        // std140: array alignment is the element alignment rounded up to vec4 (16)
+        align_up(base_align, 16)
+    } else {
+        base_align
+    }
+}
+
+pub(crate) fn type_size(ty: &str) -> u64 {
+    let (base, array_size) = parse_type(ty);
+    let base_size = match base {
+        "mat4" => 64,
+        "mat3" => 48,
+        "vec4" => 16,
+        "vec3" => 12,
+        "vec2" => 8,
+        _ => 4,
+    };
+    if array_size > 1 {
+        // std140: array element stride is the base alignment rounded up to vec4 (16)
+        let stride = align_up(base_size, 16);
+        stride * array_size
+    } else {
+        base_size
+    }
 }

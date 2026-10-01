@@ -1,203 +1,324 @@
-//! Lazy-loading bucket wrappers that fall back to the Wallpaper Engine
-//! assets directory on disk when a requested asset is not found in memory.
+//! Typed asset store for Wallpaper Engine scenes.
 //!
-//! Usage:
+//! Every file in a `.pkg` (or the Wallpaper Engine `assets/` fallback
+//! directory) is classified into an [`AssetType`] and stored as a parsed
+//! [`Asset`]. Shaders are pre-parsed into [`ShaderProgram`]s when the scene is
+//! prepared, so pipeline compilation does not have to re-read or re-scan the
+//! sources.
 //!
-//! 1. Load a `.pkg` file normally via `Scene::new()` (populates buckets
-//!    from the package).
-//! 2. Call `scene.set_assets_path()` to point to the Wallpaper Engine
-//!    `assets/` directory.
-//! 3. When code calls `scene.textures.get(key)`, `scene.jsons.get(key)`,
-//!    etc., each wrapper first checks the in-memory map.  If the key is
-//!    missing, it reads the file from `{assets_path}/{key}`, parses it,
-//!    caches it in the map, and returns it.
-//!
-//! Expected assets directory layout:
-//!
-//! ```text
-//! assets/
-//! ├── effects/     # Effect JSON definitions
-//! ├── fonts/       # Font files
-//! ├── materials/   # .tex textures + material JSONs
-//! ├── models/      # .mdl puppet model files
-//! ├── particles/   # Particle system definitions
-//! ├── presets/     # Preset configurations
-//! ├── scenes/      # Scene configurations
-//! ├── scripts/     # JavaScript scripts
-//! ├── shaders/     # GLSL shader source files (.frag, .vert)
-//! └── zcompat/     # Compatibility layer files
-//! ```
+//! Callers use the typed accessors ([`AssetStore::texture`],
+//! [`AssetStore::json`], [`AssetStore::model`], [`AssetStore::shader`], …)
+//! rather than a catch-all byte bucket.
 
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    fs,
-    path::PathBuf,
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::BTreeMap, fs, path::PathBuf, rc::Rc};
 
 use pkg_parser::pkg_parser::{mdl_parser::MdlFile, tex_parser::Tex};
 
-/// Generic helper: check the in-memory cache, then lazy-load from disk.
-fn load_cached<T: Clone>(
-    map: &RefCell<BTreeMap<String, T>>,
-    assets_path: &Option<PathBuf>,
-    key: &str,
-    load: impl Fn(&[u8]) -> Option<T>,
-) -> Option<T> {
-    if let Some(val) = map.borrow().get(key) {
-        return Some(val.clone());
+use super::shader::{self, ShaderProgram};
+
+// ---------------------------------------------------------------------------
+// Asset classification
+// ---------------------------------------------------------------------------
+
+/// Every kind of asset a Wallpaper Engine scene can contain.
+///
+/// Classification is driven by the file extension, with JSON documents split
+/// out by their directory so callers can tell effects, materials, models,
+/// particles and presets apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssetType {
+    /// `scene.json`
+    Scene,
+    /// Effects definitions under `effects/`
+    Effect,
+    /// Material definitions under `materials/`
+    Material,
+    /// Puppet model binaries (`.mdl`)
+    Model,
+    /// Particle systems under `particles/`
+    Particle,
+    /// Presets under `presets/`
+    Preset,
+    /// GLSL shader sources and headers (`.frag`, `.vert`, `.h`, …)
+    Shader,
+    /// `.tex` textures
+    Texture,
+    /// Audio files (`.ogg`, `.mp3`, `.wav`, `.flac`)
+    Sound,
+    /// Font files (`.ttf`, `.otf`)
+    Font,
+    /// Video textures (`.mp4`, `.webm`, `.gif`, …)
+    Video,
+    /// JavaScript scripts (`.js`)
+    Script,
+    /// Any other JSON document
+    Json,
+    /// Anything else
+    Other,
+}
+
+impl AssetType {
+    /// Classify an asset by its package-relative path.
+    pub fn from_path(path: &str) -> Self {
+        let ext = path
+            .rsplit_once('.')
+            .map(|(_, e)| e)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        match ext.as_str() {
+            "tex" => Self::Texture,
+            "mdl" => Self::Model,
+            "frag" | "vert" | "h" | "glsl" | "wgsl" => Self::Shader,
+            "json" => Self::classify_json(path),
+            "ogg" | "mp3" | "wav" | "flac" => Self::Sound,
+            "ttf" | "otf" => Self::Font,
+            "mp4" | "webm" | "gif" | "avi" => Self::Video,
+            "js" => Self::Script,
+            _ => Self::Other,
+        }
     }
-    let file_path = assets_path.as_ref()?.join(key);
-    let bytes = fs::read(&file_path).ok()?;
-    let val = load(&bytes)?;
-    map.borrow_mut().insert(key.to_string(), val.clone());
-    Some(val)
+
+    fn classify_json(path: &str) -> Self {
+        if path.ends_with("scene.json") {
+            Self::Scene
+        } else if path.starts_with("effects/") {
+            Self::Effect
+        } else if path.starts_with("materials/") {
+            Self::Material
+        } else if path.starts_with("particles/") {
+            Self::Particle
+        } else if path.starts_with("presets/") {
+            Self::Preset
+        } else {
+            Self::Json
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Texture bucket
+// Parsed assets
 // ---------------------------------------------------------------------------
 
-/// Lazily-loaded bucket of `.tex` textures.
-pub struct TextureBucket {
-    pub(crate) map: RefCell<BTreeMap<String, Rc<Tex>>>,
+/// A single parsed asset.
+#[derive(Clone)]
+pub enum Asset {
+    Texture(Rc<Tex>),
+    Model(Rc<MdlFile>),
+    /// JSON-backed documents (scene, effects, materials, …).
+    Json(Rc<String>),
+    /// JavaScript sources.
+    Script(Rc<String>),
+    /// A pre-parsed shader program, keyed by its base path (no extension).
+    Shader(Rc<ShaderProgram>),
+    /// Shader source or header text that has not been paired into a program yet.
+    Text(Rc<String>),
+    Sound(Vec<u8>),
+    Font(Vec<u8>),
+    Video(Vec<u8>),
+    /// Unclassified binary payload.
+    Raw(Vec<u8>),
+}
+
+impl Asset {
+    /// Parse a raw byte payload according to its path.
+    pub fn parse(key: &str, bytes: &[u8]) -> Option<Self> {
+        match AssetType::from_path(key) {
+            AssetType::Texture => {
+                let mut tex = Tex::new(bytes)?;
+                tex.parse_to_rgba()?;
+                tex.build_mip_chain();
+                Some(Self::Texture(Rc::new(tex)))
+            }
+            AssetType::Model => Some(Self::Model(Rc::new(MdlFile::new(bytes)?))),
+            AssetType::Shader => Some(Self::Text(Rc::new(
+                String::from_utf8_lossy(bytes).into_owned(),
+            ))),
+            AssetType::Script => Some(Self::Script(Rc::new(
+                String::from_utf8_lossy(bytes).into_owned(),
+            ))),
+            AssetType::Sound => Some(Self::Sound(bytes.to_vec())),
+            AssetType::Font => Some(Self::Font(bytes.to_vec())),
+            AssetType::Video => Some(Self::Video(bytes.to_vec())),
+            AssetType::Other => Some(Self::Raw(bytes.to_vec())),
+            // Scene, effect, material, particle, preset and generic JSON.
+            _ => Some(Self::Json(Rc::new(
+                String::from_utf8_lossy(bytes).into_owned(),
+            ))),
+        }
+    }
+
+    fn as_bytes(&self) -> Option<Vec<u8>> {
+        match self {
+            Self::Raw(b) | Self::Sound(b) | Self::Font(b) | Self::Video(b) => Some(b.clone()),
+            Self::Text(t) | Self::Json(t) | Self::Script(t) => Some(t.as_bytes().to_vec()),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Asset store
+// ---------------------------------------------------------------------------
+
+/// Keyed store of parsed assets with lazy disk fallback and shader parsing.
+pub struct AssetStore {
+    map: RefCell<BTreeMap<String, Asset>>,
+    headers: RefCell<Option<Rc<BTreeMap<String, String>>>>,
     assets_path: Option<PathBuf>,
 }
 
-impl TextureBucket {
-    pub fn new(map: BTreeMap<String, Rc<Tex>>, assets_path: Option<PathBuf>) -> Self {
-        Self { map: RefCell::new(map), assets_path }
+impl AssetStore {
+    pub fn new(map: BTreeMap<String, Asset>, assets_path: Option<PathBuf>) -> Self {
+        Self {
+            map: RefCell::new(map),
+            headers: RefCell::new(None),
+            assets_path,
+        }
     }
 
     pub fn set_assets_path(&mut self, path: Option<PathBuf>) {
         self.assets_path = path;
+        *self.headers.borrow_mut() = None;
     }
 
-    pub fn get(&self, key: &str) -> Option<Rc<Tex>> {
-        load_cached(&self.map, &self.assets_path, key, |bytes| {
-            let mut tex = Tex::new(bytes)?;
-            tex.parse_to_rgba()?;
-            tex.build_mip_chain();
-            log::debug!("assets: loaded tex '{}' ({}x{}) mips={}", key, tex.dimension[0], tex.dimension[1], tex.mip_levels.len());
-            Some(Rc::new(tex))
-        })
-    }
-}
+    // -- general lookup ----------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// MDL bucket
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-pub struct MdlBucket {
-    pub(crate) map: RefCell<BTreeMap<String, Rc<MdlFile>>>,
-    assets_path: Option<PathBuf>,
-}
-
-#[allow(dead_code)]
-impl MdlBucket {
-    pub fn new(map: BTreeMap<String, Rc<MdlFile>>, assets_path: Option<PathBuf>) -> Self {
-        Self { map: RefCell::new(map), assets_path }
+    /// Look up an asset, lazily parsing it from the assets directory if needed.
+    pub fn get(&self, key: &str) -> Option<Asset> {
+        if let Some(asset) = self.map.borrow().get(key) {
+            return Some(asset.clone());
+        }
+        let bytes = self.read_disk(key)?;
+        let asset = Asset::parse(key, &bytes)?;
+        self.map.borrow_mut().insert(key.to_string(), asset.clone());
+        Some(asset)
     }
 
-    pub fn set_assets_path(&mut self, path: Option<PathBuf>) {
-        self.assets_path = path;
+    // -- typed accessors ---------------------------------------------------
+
+    pub fn texture(&self, key: &str) -> Option<Rc<Tex>> {
+        match self.get(key)? {
+            Asset::Texture(t) => Some(t),
+            _ => None,
+        }
     }
 
-    pub fn get(&self, key: &str) -> Option<Rc<MdlFile>> {
-        load_cached(&self.map, &self.assets_path, key, |bytes| {
-            let mdl = MdlFile::new(bytes)?;
-            log::debug!("assets: loaded mdl '{}'", key);
-            Some(Rc::new(mdl))
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// JSON bucket
-// ---------------------------------------------------------------------------
-
-pub struct JsonBucket {
-    pub(crate) map: RefCell<BTreeMap<String, Rc<String>>>,
-    assets_path: Option<PathBuf>,
-}
-
-impl JsonBucket {
-    pub fn new(map: BTreeMap<String, String>, assets_path: Option<PathBuf>) -> Self {
-        let map = map.into_iter().map(|(k, v)| (k, Rc::new(v))).collect();
-        Self { map: RefCell::new(map), assets_path }
+    pub fn model(&self, key: &str) -> Option<Rc<MdlFile>> {
+        match self.get(key)? {
+            Asset::Model(m) => Some(m),
+            _ => None,
+        }
     }
 
-    pub fn set_assets_path(&mut self, path: Option<PathBuf>) {
-        self.assets_path = path;
+    /// JSON-backed document (scene, effect, material, …).
+    pub fn json(&self, key: &str) -> Option<Rc<String>> {
+        match self.get(key)? {
+            Asset::Json(t) => Some(t),
+            // Shader/script text can still be requested as JSON by mistake;
+            // fall back to the text representation.
+            Asset::Text(t) | Asset::Script(t) => Some(t),
+            _ => None,
+        }
     }
 
-    pub fn get(&self, key: &str) -> Option<Rc<String>> {
-        load_cached(&self.map, &self.assets_path, key, |bytes| {
-            let text = String::from_utf8_lossy(bytes).into_owned();
-            log::debug!("assets: loaded json '{}' ({} bytes)", key, bytes.len());
-            Some(Rc::new(text))
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Misc bucket (binary files: shaders, audio, fonts, …)
-// ---------------------------------------------------------------------------
-
-pub struct MiscBucket {
-    pub(crate) map: RefCell<BTreeMap<String, Vec<u8>>>,
-    assets_path: Option<PathBuf>,
-}
-
-impl MiscBucket {
-    pub fn new(map: BTreeMap<String, Vec<u8>>, assets_path: Option<PathBuf>) -> Self {
-        Self { map: RefCell::new(map), assets_path }
+    /// Consume an audio asset, loading it from disk without caching.
+    pub fn take_sound(&self, key: &str) -> Option<Vec<u8>> {
+        if let Some(asset) = self.map.borrow_mut().remove(key)
+            && let Some(bytes) = asset.as_bytes() {
+                return Some(bytes);
+            }
+        self.read_disk(key)
     }
 
-    pub fn set_assets_path(&mut self, path: Option<PathBuf>) {
-        self.assets_path = path;
+    // -- shaders -----------------------------------------------------------
+
+    /// Return the pre-parsed shader program for a `.frag`/`.vert` pair.
+    ///
+    /// The program is parsed on first use (and eagerly by
+    /// [`AssetStore::preparse_shaders`]).
+    pub fn shader(&self, frag_path: &str, vert_path: &str) -> Option<Rc<ShaderProgram>> {
+        let base = frag_path.trim_end_matches(".frag");
+        if let Some(asset) = self.map.borrow().get(base)
+            && let Asset::Shader(program) = asset {
+                return Some(Rc::clone(program));
+            }
+
+        let vertex = self.source_text(vert_path).unwrap_or_default();
+        let fragment = self.source_text(frag_path).unwrap_or_default();
+        if vertex.is_empty() && fragment.is_empty() {
+            return None;
+        }
+
+        let program = Rc::new(ShaderProgram::parse(
+            vertex,
+            fragment,
+            self.shared_headers(),
+        ));
+        self.map
+            .borrow_mut()
+            .insert(base.to_string(), Asset::Shader(Rc::clone(&program)));
+        Some(program)
     }
 
-    pub fn get(&self, key: &str) -> Option<Vec<u8>> {
-        load_cached(&self.map, &self.assets_path, key, |bytes| {
-            log::debug!("assets: loaded misc '{}' ({} bytes)", key, bytes.len());
-            Some(bytes.to_vec())
-        })
+    /// Eagerly parse every shader pair present in the store.
+    pub fn preparse_shaders(&self) {
+        let keys: Vec<String> = self.map.borrow().keys().cloned().collect();
+        let mut bases: Vec<String> = Vec::new();
+        for key in keys {
+            if let Some(base) = key.strip_suffix(".frag")
+                && !bases.iter().any(|b| b == base) {
+                    bases.push(base.to_string());
+                }
+        }
+        for base in bases {
+            self.shader(&format!("{base}.frag"), &format!("{base}.vert"));
+        }
     }
 
-    /// Remove a file from the bucket (used for audio consumption).
-    pub fn remove(&self, key: &str) -> Option<Vec<u8>> {
-        // Try in-memory map first
+    /// Built-in shader headers, loaded once and shared across programs.
+    fn shared_headers(&self) -> Rc<BTreeMap<String, String>> {
         {
-            let mut map = self.map.borrow_mut();
-            if let Some(val) = map.remove(key) {
-                log::debug!("misc bucket: removed '{}' from cache (audio)", key);
-                return Some(val);
+            let cached = self.headers.borrow();
+            if let Some(headers) = cached.as_ref() {
+                return Rc::clone(headers);
             }
         }
+        let headers = Rc::new(shader::get_headers(|key| self.read_raw(key)));
+        *self.headers.borrow_mut() = Some(Rc::clone(&headers));
+        headers
+    }
 
-        // Lazy-load from disk, return without caching (caller takes ownership)
-        let assets_path = match self.assets_path.as_ref() {
-            Some(p) => p,
-            None => {
-                log::trace!("misc bucket: '{}' not found for remove (no assets path)", key);
-                return None;
-            }
-        };
-        let file_path = assets_path.join(key);
-        log::debug!("assets: loading misc (remove) '{}' from {}", key, file_path.display());
+    // -- internal helpers --------------------------------------------------
 
-        match fs::read(&file_path) {
-            Ok(bytes) => {
-                log::debug!("assets: loaded (remove) '{}' ({} bytes)", key, bytes.len());
-                Some(bytes)
-            }
-            Err(e) => {
-                log::warn!("assets: misc '{}' not found for remove at {}: {}", key, file_path.display(), e);
-                None
+    /// Read text for a shader source/header, caching it as [`Asset::Text`].
+    fn source_text(&self, key: &str) -> Option<String> {
+        if let Some(asset) = self.map.borrow().get(key) {
+            match asset {
+                Asset::Text(t) | Asset::Json(t) | Asset::Script(t) => return Some(t.to_string()),
+                Asset::Raw(b) => return Some(String::from_utf8_lossy(b).into_owned()),
+                _ => {}
             }
         }
+        let bytes = self.read_disk(key)?;
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        self.map
+            .borrow_mut()
+            .insert(key.to_string(), Asset::Text(Rc::new(text.clone())));
+        Some(text)
+    }
+
+    /// Raw bytes for a known key, checking parsed text before disk.
+    fn read_raw(&self, key: &str) -> Option<Vec<u8>> {
+        if let Some(bytes) = self.map.borrow().get(key).and_then(Asset::as_bytes) {
+            return Some(bytes);
+        }
+        self.read_disk(key)
+    }
+
+    fn read_disk(&self, key: &str) -> Option<Vec<u8>> {
+        let path = self.assets_path.as_ref()?.join(key);
+        fs::read(path).ok()
     }
 }
+

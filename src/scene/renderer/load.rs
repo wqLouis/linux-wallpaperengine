@@ -22,13 +22,16 @@ use rodio::{OutputStream, Source};
 impl WgpuApp {
     /// load assets
     pub fn load(&mut self) {
-        let mut scene = Scene::new(self.scene_path.clone(), self.show_progress);
+        let mut scene = Scene::new(self.scene_path.clone(), self.show_progress, self.no_mdl);
 
         // Enable lazy-loading fallback to Wallpaper Engine assets directory.
         if let Some(ref assets_path) = self.assets_path {
             log::info!("Using Wallpaper Engine assets path: {}", assets_path);
             scene.set_assets_path(std::path::PathBuf::from(assets_path));
         }
+
+        // Pre-parse shader programs and headers now that the assets path is set.
+        scene.prepare();
 
         let size = [
             scene.root.general.orthogonalprojection.width as u32,
@@ -40,7 +43,7 @@ impl WgpuApp {
 
         self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 
-        let (pipeline, copy_pipeline) = create_pipelines(&self, &post_process.layout);
+        let (pipeline, copy_pipeline) = create_pipelines(self, &post_process.layout);
         let objects = ObjectMap::with_clear_color(
             &scene.root.objects.clone(),
             &scene,
@@ -105,7 +108,7 @@ fn load_audios(audio_stream: &OutputStream, audios: Vec<AudioObject>, scene: &Sc
 
     for audio in audios {
         for sound in audio.sounds {
-            let Some(raw) = scene.misc.remove(&sound) else {
+            let Some(raw) = scene.assets.take_sound(&sound) else {
                 continue;
             };
 

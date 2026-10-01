@@ -4,14 +4,12 @@ use serde_json::Value;
 use wgpu::*;
 
 use crate::scene::{
-    loader::scene_loader::Scene,
+    loader::{
+        scene_loader::Scene,
+        shader::{EffectLayout, preprocess_pair_with_layout},
+    },
     renderer::{
-        post_processor::{
-            effect_param::UniformLayout,
-            pipeline_helpers,
-            shader_header,
-            transform::{EffectLayout, collect_layout, preprocess_pair},
-        },
+        post_processor::{effect_param::UniformLayout, pipeline_helpers},
         vertex::Vertex,
     },
 };
@@ -47,9 +45,9 @@ pub fn get_or_create_pipeline(
         return Some(Rc::clone(&data.pipeline));
     }
 
-    let effect_json: Value = serde_json::from_str(&scene.jsons.get(&effect_path)?[..]).ok()?;
+    let effect_json: Value = serde_json::from_str(&scene.assets.json(&effect_path)?[..]).ok()?;
     let material_path = effect_json["passes"][0]["material"].as_str()?;
-    let material_json: Value = serde_json::from_str(&scene.jsons.get(material_path)?[..]).ok()?;
+    let material_json: Value = serde_json::from_str(&scene.assets.json(material_path)?[..]).ok()?;
     let shader_name = material_json["passes"][0]["shader"].as_str()?;
 
     let data = compile_pipeline(
@@ -88,11 +86,18 @@ pub fn create_effect_pipeline_for_multipass(
         return Some(Rc::clone(&data.pipeline));
     }
 
-    let material_json: Value = serde_json::from_str(&scene.jsons.get(material_path)?[..]).ok()?;
+    let material_json: Value = serde_json::from_str(&scene.assets.json(material_path)?[..]).ok()?;
     let data = compile_pipeline(
-        device, frag_path, vert_path, material_json,
-        pass_textures, pass_combos, scene, projection_bgl,
-        has_immediates, has_subgroup,
+        device,
+        frag_path,
+        vert_path,
+        material_json,
+        pass_textures,
+        pass_combos,
+        scene,
+        projection_bgl,
+        has_immediates,
+        has_subgroup,
     )?;
     let rc = Rc::clone(&data.pipeline);
     pipelines.insert(cache_key, data);
@@ -134,15 +139,17 @@ fn compile_pipeline(
     has_immediates: bool,
     has_subgroup: bool,
 ) -> Option<EffectPipelineData> {
-    let frag_raw = &*scene.misc.get(frag_path)?;
-    let vert_raw = &*scene.misc.get(vert_path)?;
-    let frag_source = std::str::from_utf8(frag_raw).ok()?;
-    let vert_source = std::str::from_utf8(vert_raw).ok()?;
+    let program = scene.assets.shader(frag_path, vert_path)?;
+    let frag_source = &program.fragment;
+    let vert_source = &program.vertex;
 
     // Priority: shader defaults → material.json → scene pass
-    let mut defines = pipeline_helpers::collect_default_defines(vert_source, frag_source);
+    let mut defines = program.default_defines.clone();
 
-    if let Some(mat_combos) = material_json["passes"][0].get("combos").and_then(|c| c.as_object()) {
+    if let Some(mat_combos) = material_json["passes"][0]
+        .get("combos")
+        .and_then(|c| c.as_object())
+    {
         for (k, v) in mat_combos {
             if let Some(n) = v.as_i64() {
                 defines.insert(k.clone(), n.to_string());
@@ -156,40 +163,76 @@ fn compile_pipeline(
     }
     pipeline_helpers::apply_texture_combos(&mut defines, pass_textures);
 
-    let define_refs: Vec<(&str, &str)> = defines.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let headers = shader_header::get_headers(&scene.misc);
+    let define_refs: Vec<(&str, &str)> = defines
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let headers = &program.headers;
 
-    // First pass: collect layout to know uniform sizes.
-    let layout_pre = collect_layout(vert_source, frag_source, &headers);
+    // First pass: use the layout parsed at load time to know uniform sizes.
+    let layout_pre = &program.layout;
     let total_uniform_size = layout_pre.total_uniform_size();
     // Use immediates if available AND uniform block fits within immediate size limit.
     // Vulkan push constants are typically 128–256 bytes; wgpu reports via Limits::max_immediate_size.
-    let max_immediate = if has_immediates { device.limits().max_immediate_size } else { 0 };
-    let use_immediates = has_immediates && total_uniform_size > 0 && total_uniform_size <= max_immediate as u64;
+    let max_immediate = if has_immediates {
+        device.limits().max_immediate_size
+    } else {
+        0
+    };
+    let use_immediates =
+        has_immediates && total_uniform_size > 0 && total_uniform_size <= max_immediate as u64;
     if use_immediates {
         log::info!(
             "Shader {}: using immediates for {} bytes of uniforms (limit={})",
-            frag_path, total_uniform_size, max_immediate
+            frag_path,
+            total_uniform_size,
+            max_immediate
         );
     }
 
-    let (vert_processed, frag_processed, layout) =
-        preprocess_pair(vert_source, frag_source, &headers, &defines, has_subgroup, use_immediates);
+    // Merge the shader source macros with the runtime combo defines
+    // (combo defines take priority).
+    let mut merged_defines = program.source_defines.clone();
+    for (k, v) in &defines {
+        merged_defines.insert(k.clone(), v.clone());
+    }
+
+    let (vert_processed, frag_processed, layout) = preprocess_pair_with_layout(
+        vert_source,
+        frag_source,
+        headers,
+        &merged_defines,
+        layout_pre,
+        has_subgroup,
+        use_immediates,
+    );
 
     let vert_module = device.create_shader_module(ShaderModuleDescriptor {
         label: None,
-        source: ShaderSource::Glsl { shader: Cow::Owned(vert_processed), stage: naga::ShaderStage::Vertex, defines: &define_refs },
+        source: ShaderSource::Glsl {
+            shader: Cow::Owned(vert_processed),
+            stage: naga::ShaderStage::Vertex,
+            defines: &define_refs,
+        },
     });
     let frag_module = device.create_shader_module(ShaderModuleDescriptor {
         label: None,
-        source: ShaderSource::Glsl { shader: Cow::Owned(frag_processed), stage: naga::ShaderStage::Fragment, defines: &define_refs },
+        source: ShaderSource::Glsl {
+            shader: Cow::Owned(frag_processed),
+            stage: naga::ShaderStage::Fragment,
+            defines: &define_refs,
+        },
     });
 
     let effect_bgl = pipeline_helpers::create_effect_bindgroup_layout(device, &layout);
     // immediate_size must exactly match the data passed to set_immediates().
     // Use the UniformLayout computed here (shared with EffectPipelineData below).
     let uniform_layout = UniformLayout::new(&layout.uniform_decls);
-    let immediate_size = if use_immediates { uniform_layout.total_size() as u32 } else { 0 };
+    let immediate_size = if use_immediates {
+        uniform_layout.total_size() as u32
+    } else {
+        0
+    };
     let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: None,
         bind_group_layouts: &[&effect_bgl, projection_bgl],
@@ -198,12 +241,31 @@ fn compile_pipeline(
     let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
         label: None,
         layout: Some(&pipeline_layout),
-        vertex: VertexState { module: &vert_module, entry_point: Some("main"), compilation_options: Default::default(), buffers: &[Vertex::create_buffer_layout()] },
-        primitive: PrimitiveState { topology: PrimitiveTopology::TriangleList, strip_index_format: None, front_face: FrontFace::Ccw, cull_mode: Some(Face::Back), unclipped_depth: false, polygon_mode: PolygonMode::Fill, conservative: false },
+        vertex: VertexState {
+            module: &vert_module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            buffers: &[Vertex::create_buffer_layout()],
+        },
+        primitive: PrimitiveState {
+            topology: PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: FrontFace::Ccw,
+            cull_mode: Some(Face::Back),
+            unclipped_depth: false,
+            polygon_mode: PolygonMode::Fill,
+            conservative: false,
+        },
         depth_stencil: None,
-        multisample: MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+        multisample: MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         fragment: Some(FragmentState {
-            module: &frag_module, entry_point: Some("main"), compilation_options: Default::default(),
+            module: &frag_module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
             targets: &[Some(ColorTargetState {
                 format: TextureFormat::Rgba8UnormSrgb,
                 // Additive blend (One / One) over the cleared destination.
@@ -228,7 +290,8 @@ fn compile_pipeline(
                 write_mask: ColorWrites::all(),
             })],
         }),
-        multiview_mask: None, cache: None,
+        multiview_mask: None,
+        cache: None,
     });
 
     Some(EffectPipelineData {
@@ -249,27 +312,54 @@ pub fn load_mask_texture(
     path: &str,
 ) -> Option<(Texture, TextureView)> {
     let tex_key = format!("materials/{}.tex", path);
-    let tex = scene.textures.get(&tex_key)?;
+    let tex = scene.assets.texture(&tex_key)?;
 
     let (format, bytes_per_row) = match tex.extension.as_str() {
-        "r8" => (TextureFormat::R8Unorm, tex.dimension[0] * 1),
+        "r8" => (TextureFormat::R8Unorm, tex.dimension[0]),
         "rg88" => (TextureFormat::Rg8Unorm, tex.dimension[0] * 2),
-        "dxt1" => (TextureFormat::Bc1RgbaUnormSrgb, tex.dimension[0].div_ceil(4) * 8),
-        "dxt5" => (TextureFormat::Bc3RgbaUnormSrgb, tex.dimension[0].div_ceil(4) * 16),
+        "dxt1" => (
+            TextureFormat::Bc1RgbaUnormSrgb,
+            tex.dimension[0].div_ceil(4) * 8,
+        ),
+        "dxt5" => (
+            TextureFormat::Bc3RgbaUnormSrgb,
+            tex.dimension[0].div_ceil(4) * 16,
+        ),
         _ => (TextureFormat::Rgba8Unorm, tex.dimension[0] * 4),
     };
 
     let texture = device.create_texture(&TextureDescriptor {
         label: None,
-        size: Extent3d { width: tex.dimension[0], height: tex.dimension[1], depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1, dimension: TextureDimension::D2,
-        format, usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST, view_formats: &[],
+        size: Extent3d {
+            width: tex.dimension[0],
+            height: tex.dimension[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format,
+        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+        view_formats: &[],
     });
     queue.write_texture(
-        TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+        TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: Origin3d::ZERO,
+            aspect: TextureAspect::All,
+        },
         &tex.payload,
-        TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bytes_per_row), rows_per_image: None },
-        Extent3d { width: tex.dimension[0], height: tex.dimension[1], depth_or_array_layers: 1 },
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_row),
+            rows_per_image: None,
+        },
+        Extent3d {
+            width: tex.dimension[0],
+            height: tex.dimension[1],
+            depth_or_array_layers: 1,
+        },
     );
     let view = texture.create_view(&Default::default());
     Some((texture, view))

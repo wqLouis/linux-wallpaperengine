@@ -4,43 +4,40 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, Mutex},
-    thread::{self, JoinHandle},
+    sync::atomic::{AtomicUsize, Ordering},
+    thread,
 };
 
-use super::assets_loader::{JsonBucket, MdlBucket, MiscBucket, TextureBucket};
+use super::assets_loader::{Asset, AssetStore, AssetType};
 
 pub struct Scene {
     pub root: crate::scene::loader::scene::Root,
-    pub textures: TextureBucket,
-    pub mdls: MdlBucket,
-    pub jsons: JsonBucket,
-    pub misc: MiscBucket,
+    pub assets: AssetStore,
 }
 
 impl Scene {
     /// Load a wallpaper scene from a .pkg file.
     ///
-    /// Panics if the .pkg file is unreadable or `scene.json` is missing/
-    /// invalid — there is no meaningful fallback without a scene definition.
-    /// Individual asset failures (textures, etc.) are logged and skipped
-    /// gracefully.
+    /// The archive is trusted to be well-formed: an unreadable package, an
+    /// invalid asset or a missing/invalid `scene.json` is fatal.
     ///
     /// `show_progress` controls whether the extraction progress bar is
     /// drawn. Set it to `false` when debug/trace logging is enabled,
     /// because the progress bar's redraw would otherwise eat those logs.
-    pub fn new(path: String, show_progress: bool) -> Self {
+    ///
+    /// When `no_mdl` is set, `.mdl` files are not parsed at all (they are
+    /// unused without puppet meshes).
+    pub fn new(path: String, show_progress: bool, no_mdl: bool) -> Self {
         let path = Path::new(&path);
         let pkg = Pkg::new(path).unwrap_or_else(|e| {
             panic!("Failed to load PKG file '{}': {}", path.display(), e);
         });
 
-        let texs: Arc<Mutex<BTreeMap<String, Tex>>> = Arc::new(Mutex::new(BTreeMap::new()));
-        let mut mdls_map: BTreeMap<String, Rc<MdlFile>> = BTreeMap::new();
-        let mut jsons: BTreeMap<String, String> = BTreeMap::new();
-        let mut misc: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut assets: BTreeMap<String, Asset> = BTreeMap::new();
+        // Texture decoding is the expensive part, so collect the textures
+        // first and decode them in parallel below.
+        let mut textures: Vec<(String, Vec<u8>)> = Vec::new();
 
-        let mut handles: Vec<JoinHandle<()>> = Vec::new();
         // A no-op stand-in used when the progress bar is disabled. All
         // `pb.inc(1)` / `pb.finish_and_clear()` calls below then become
         // free no-ops without scattering `if show_progress` checks.
@@ -51,136 +48,124 @@ impl Scene {
         };
 
         for (key, val) in pkg.files.into_iter() {
-            let file_path = Path::new(&key);
-            let ext = file_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            match ext {
-                "tex" => {
-                    let key_clone = key.clone();
-                    let key_for_log = key.clone();
-                    let texs = Arc::clone(&texs);
+            match AssetType::from_path(&key) {
+                AssetType::Texture => textures.push((key, val)),
 
-                    let handle = thread::spawn(move || {
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut tex = match Tex::new(&val) {
-                                Some(t) => t,
-                                None => {
-                                    log::warn!("pkg: failed to parse texture: {}", key_clone);
-                                    return;
-                                }
-                            };
-
-                            match tex.parse_to_rgba() {
-                                Some(_) => {}
-                                None => {
-                                    log::warn!("pkg: failed to convert texture to RGBA: {}", key_clone);
-                                    return;
-                                }
-                            };
-
-                            tex.build_mip_chain();
-
-                            texs.lock().unwrap().insert(key_clone.clone(), tex);
-                            log::debug!("pkg: loaded tex: {}", key_clone);
-                        }));
-
-                        if let Err(e) = result {
-                            let msg = if let Some(s) = e.downcast_ref::<String>() {
-                                s.clone()
-                            } else if let Some(s) = e.downcast_ref::<&str>() {
-                                s.to_string()
-                            } else {
-                                "unknown panic".to_string()
-                            };
-                            log::warn!("pkg: texture thread panicked for '{}': {}", key_for_log, msg);
-                        }
-                    });
-
-                    log::debug!("pkg: enqueued tex: {}", key);
-                    handles.push(handle);
-                }
-
-                "mdl" => {
+                AssetType::Model => {
                     pb.inc(1);
+                    if no_mdl {
+                        log::debug!("pkg: skipping mdl (--no-mdl): {}", key);
+                        continue;
+                    }
+                    // The MDL format is only partially reverse-engineered, so the
+                    // parser is allowed to fail: log the broken file and skip it
+                    // rather than letting one model break the whole wallpaper.
                     match MdlFile::new(&val) {
                         Some(mdl) => {
-                            log::debug!("pkg: loaded mdl: {} ({} records, {} triangles)",
-                                key, mdl.data.records.len(), mdl.data.triangles.len());
-                            mdls_map.insert(key, Rc::new(mdl));
+                            log::debug!(
+                                "pkg: loaded mdl: {} ({} records, {} triangles)",
+                                key,
+                                mdl.data.records.len(),
+                                mdl.data.triangles.len()
+                            );
+                            assets.insert(key, Asset::Model(Rc::new(mdl)));
                         }
                         None => {
-                            log::warn!("pkg: failed to parse mdl: {}", key);
-                            // Keep raw bytes in misc as fallback
-                            misc.insert(key, val);
+                            log::error!(
+                                "pkg: failed to parse mdl '{}' ({} bytes) - skipping",
+                                key,
+                                val.len()
+                            );
                         }
                     }
                 }
-                "json" => {
-                    pb.inc(1);
-                    log::debug!("pkg: loaded json: {}", key);
-                    jsons.insert(key, String::from_utf8_lossy(&val).to_string());
-                }
+
                 _ => {
                     pb.inc(1);
-                    log::debug!("pkg: loaded misc: {}", key);
-                    misc.insert(key, val);
+                    let asset = Asset::parse(&key, &val)
+                        .unwrap_or_else(|| panic!("failed to parse asset: {}", key));
+                    assets.insert(key, asset);
                 }
             }
         }
 
-        for handle in handles {
-            match handle.join() {
-                Ok(()) => {}
-                Err(e) => {
-                    let msg = if let Some(s) = e.downcast_ref::<String>() {
-                        s.as_str()
-                    } else if let Some(s) = e.downcast_ref::<&str>() {
-                        s
-                    } else {
-                        "unknown panic"
-                    };
-                    log::warn!("pkg: texture thread panicked: {}", msg);
-                }
-            }
-            pb.inc(1);
+        for (key, tex) in parse_textures(textures, &pb) {
+            assets.insert(key, Asset::Texture(Rc::new(tex)));
         }
 
         pb.finish_and_clear();
 
-        let scene_string = jsons.get("scene.json")
+        let assets = AssetStore::new(assets, None);
+        let scene_string = assets
+            .json("scene.json")
             .unwrap_or_else(|| panic!("scene.json not found in PKG archive"));
-        let root: crate::scene::loader::scene::Root =
-            serde_json::from_str(scene_string)
-                .unwrap_or_else(|e| panic!("Failed to parse scene.json: {}", e));
+        let root: crate::scene::loader::scene::Root = serde_json::from_str(scene_string.as_str())
+            .unwrap_or_else(|e| panic!("Failed to parse scene.json: {}", e));
 
-        let mut texs_locked = texs.lock().unwrap();
-        let texs = std::mem::take(&mut *texs_locked)
-            .into_iter()
-            .map(|(k, v)| (k, Rc::new(v)))
-            .collect::<BTreeMap<String, Rc<Tex>>>();
-
-        Self {
-            root,
-            textures: TextureBucket::new(texs, None),
-            mdls: MdlBucket::new(mdls_map, None),
-            jsons: JsonBucket::new(jsons, None),
-            misc: MiscBucket::new(misc, None),
-        }
+        Self { root, assets }
     }
 
     /// Set the Wallpaper Engine assets directory for lazy-loading fallback.
     ///
-    /// When a requested asset is not found in the in-memory buckets
-    /// (populated from the `.pkg` file), the bucket wrappers will attempt
-    /// to read it from `{assets_path}/{key}` on disk, parse it, cache it,
-    /// and return it.
+    /// When a requested asset is not found in the store (populated from the
+    /// `.pkg` file), the store reads it from `{assets_path}/{key}` on disk,
+    /// parses it, caches it, and returns it.
     pub fn set_assets_path(&mut self, assets_path: PathBuf) {
-        let path = Some(assets_path);
-        self.textures.set_assets_path(path.clone());
-        self.mdls.set_assets_path(path.clone());
-        self.jsons.set_assets_path(path.clone());
-        self.misc.set_assets_path(path);
+        self.assets.set_assets_path(Some(assets_path));
     }
+
+    /// Pre-parse shader programs now that the assets directory is known.
+    pub fn prepare(&mut self) {
+        self.assets.preparse_shaders();
+    }
+}
+
+/// Decode textures with a bounded worker pool.
+///
+/// Uses one worker per available CPU core (capped at the number of textures)
+/// and hands work out through an atomic index, so threads stay busy even when
+/// individual textures decode at very different speeds.
+fn parse_textures(textures: Vec<(String, Vec<u8>)>, pb: &ProgressBar) -> Vec<(String, Tex)> {
+    if textures.is_empty() {
+        return Vec::new();
+    }
+
+    let workers = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(textures.len());
+    let next = AtomicUsize::new(0);
+
+    thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+
+        for _ in 0..workers {
+            let next = &next;
+            let textures = &textures;
+            handles.push(scope.spawn(move || {
+                let mut decoded = Vec::new();
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((key, val)) = textures.get(index) else {
+                        break;
+                    };
+
+                    let mut tex =
+                        Tex::new(val).unwrap_or_else(|| panic!("invalid texture: {}", key));
+                    tex.parse_to_rgba()
+                        .unwrap_or_else(|| panic!("failed to decode texture: {}", key));
+                    tex.build_mip_chain();
+
+                    pb.inc(1);
+                    decoded.push((key.clone(), tex));
+                }
+                decoded
+            }));
+        }
+
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("texture worker panicked"))
+            .collect()
+    })
 }

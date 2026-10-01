@@ -41,7 +41,7 @@ pub fn replace_texture_calls(line: &str, sampler_set: &HashSet<&str>) -> String 
 
 pub fn fix_implicit_truncation(line: &str, varying_types: &BTreeMap<String, String>) -> String {
     // Only handle simple assignments: `varying = expression;`
-    if !line.ends_with(';') || line.contains(|c: char| matches!(c, '*' | '+' | '-')) {
+    if !line.ends_with(';') || line.contains(['*', '+', '-']) {
         return line.to_string();
     }
     let Some((lhs, rhs)) = line.trim_end_matches(';').split_once('=') else {
@@ -51,7 +51,10 @@ pub fn fix_implicit_truncation(line: &str, varying_types: &BTreeMap<String, Stri
     if lhs.contains('.') {
         return line.to_string();
     }
-    let (Some(l_ty), Some(r_ty)) = (varying_types.get(lhs), varying_types.get(rhs.split('.').next().unwrap_or(rhs))) else {
+    let (Some(l_ty), Some(r_ty)) = (
+        varying_types.get(lhs),
+        varying_types.get(rhs.split('.').next().unwrap_or(rhs)),
+    ) else {
         return line.to_string();
     };
     if l_ty == r_ty || rhs.contains('.') {
@@ -155,7 +158,7 @@ pub fn replace_frac(line: &str) -> String {
 /// `sample` and `packed` are reserved GLSL keywords that may appear
 /// as variable names in Wallpaper Engine shaders.
 pub fn replace_reserved_identifiers(line: &str) -> String {
-    let mut result = replace_keyword_identifier(&line, "sample", "sampleColor");
+    let mut result = replace_keyword_identifier(line, "sample", "sampleColor");
     result = replace_keyword_identifier(&result, "packed", "packedValue");
     result
 }
@@ -177,13 +180,13 @@ fn replace_keyword_identifier(line: &str, keyword: &str, replacement: &str) -> S
             && result[..abs_start]
                 .chars()
                 .last()
-                .map_or(false, |c| c.is_alphanumeric() || c == '_');
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
 
         // Check following character: must be non-alphanumeric/non-underscore
         let followed_by_word = result[abs_end..]
             .chars()
             .next()
-            .map_or(false, |c| c.is_alphanumeric() || c == '_');
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
 
         if !preceded_by_word && !followed_by_word {
             // Skip if this is a function call like keyword()
@@ -251,9 +254,12 @@ pub fn replace_bool_arithmetic(line: &str) -> String {
 
         // Check if the expression inside contains comparison operators
         let inside = &result[open_pos + 1..close_pos];
-        let has_comparison = inside.contains('<') || inside.contains('>')
-            || inside.contains("==") || inside.contains("!=")
-            || inside.contains("<=") || inside.contains(">=");
+        let has_comparison = inside.contains('<')
+            || inside.contains('>')
+            || inside.contains("==")
+            || inside.contains("!=")
+            || inside.contains("<=")
+            || inside.contains(">=");
 
         if !has_comparison {
             search_start = close_pos + 1;
@@ -263,12 +269,11 @@ pub fn replace_bool_arithmetic(line: &str) -> String {
         // Skip if this is a function call like float(…), clamp(…), if(…), etc.
         if open_pos > 0 {
             let before = result[..open_pos].trim_end();
-            if let Some(last_char) = before.chars().last() {
-                if last_char.is_alphanumeric() || last_char == '_' {
+            if let Some(last_char) = before.chars().last()
+                && (last_char.is_alphanumeric() || last_char == '_') {
                     search_start = close_pos + 1;
                     continue;
                 }
-            }
         }
 
         // Replace '(' with 'float(' — the existing ')' becomes the closing of float()
@@ -299,14 +304,18 @@ pub fn replace_float_as_bool(line: &str) -> String {
         }
 
         // Check if the condition is a parenthesized expression
-        if before.ends_with(')') {
-            if let Some(open_pos) = find_matching_open_paren(&result, before.len() - 1) {
+        if before.ends_with(')')
+            && let Some(open_pos) = find_matching_open_paren(&result, before.len() - 1) {
                 let inside = &result[open_pos + 1..before.len() - 1];
                 // If inside contains comparison operators, it's already a bool — skip
-                if inside.contains('<') || inside.contains('>')
-                    || inside.contains("==") || inside.contains("!=")
-                    || inside.contains("<=") || inside.contains(">=")
-                    || inside.contains("&&") || inside.contains("||")
+                if inside.contains('<')
+                    || inside.contains('>')
+                    || inside.contains("==")
+                    || inside.contains("!=")
+                    || inside.contains("<=")
+                    || inside.contains(">=")
+                    || inside.contains("&&")
+                    || inside.contains("||")
                 {
                     search_start = abs_q + 1;
                     continue;
@@ -321,21 +330,26 @@ pub fn replace_float_as_bool(line: &str) -> String {
                 search_start = abs_q + 5; // account for extra chars
                 continue;
             }
-        }
 
         // Check if the condition is a simple identifier (potential float variable)
-        if let Some(last_word) = before.rsplit(|c: char| !c.is_alphanumeric() && c != '_').next() {
-            if !last_word.is_empty()
+        if let Some(last_word) = before
+            .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+            .next()
+            && !last_word.is_empty()
                 && !last_word.starts_with(|c: char| c.is_ascii_digit())
                 && last_word != "true"
                 && last_word != "false"
             {
                 // Check this is a standalone identifier (not preceded by a comparison op)
                 let before_word = before[..before.len() - last_word.len()].trim_end();
-                let preceded_by_cmp = before_word.ends_with('<') || before_word.ends_with('>')
-                    || before_word.ends_with("==") || before_word.ends_with("!=")
-                    || before_word.ends_with("<=") || before_word.ends_with(">=")
-                    || before_word.ends_with("&&") || before_word.ends_with("||");
+                let preceded_by_cmp = before_word.ends_with('<')
+                    || before_word.ends_with('>')
+                    || before_word.ends_with("==")
+                    || before_word.ends_with("!=")
+                    || before_word.ends_with("<=")
+                    || before_word.ends_with(">=")
+                    || before_word.ends_with("&&")
+                    || before_word.ends_with("||");
 
                 if !preceded_by_cmp {
                     // Replace `identifier?` with `identifier != 0.0 ?`
@@ -349,7 +363,6 @@ pub fn replace_float_as_bool(line: &str) -> String {
                     }
                 }
             }
-        }
 
         search_start = abs_q + 1;
     }

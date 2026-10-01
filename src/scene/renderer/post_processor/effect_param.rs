@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::scene::loader::shader::{align_up, type_align, type_size};
+
 #[derive(Debug, Clone)]
 pub struct UniformLayout {
     offsets: BTreeMap<String, (u64, u64)>,
@@ -132,9 +134,7 @@ impl UniformLayout {
             // Resolve scene values that have a script/value wrapper:
             //   {"script": "...", "value": <inner>}  →  <inner>
             let resolved = match value {
-                serde_json::Value::Object(obj) => {
-                    obj.get("value").cloned()
-                }
+                serde_json::Value::Object(obj) => obj.get("value").cloned(),
                 _ => None,
             };
             let value = resolved.as_ref().unwrap_or(value);
@@ -155,11 +155,8 @@ impl UniformLayout {
                             let _ = self.write_vec2(buf, &uniform_name, [parts[0], parts[1]]);
                         }
                         3 => {
-                            let _ = self.write_vec3(
-                                buf,
-                                &uniform_name,
-                                [parts[0], parts[1], parts[2]],
-                            );
+                            let _ =
+                                self.write_vec3(buf, &uniform_name, [parts[0], parts[1], parts[2]]);
                         }
                         4 => {
                             let _ = self.write_vec4(
@@ -192,83 +189,6 @@ impl SystemUniforms {
             tex_resolutions: BTreeMap::new(),
             cursor_position: [0.0, 0.0],
         }
-    }
-}
-
-fn align_up(val: u64, align: u64) -> u64 {
-    (val + align - 1) & !(align - 1)
-}
-
-/// Compute the total size of a uniform block given its declarations.
-/// Replicates the logic used in `UniformLayout::new`.
-pub fn compute_uniform_size(decls: &[(String, String)]) -> u64 {
-    let mut offset: u64 = 0;
-    for (_name, ty) in decls {
-        offset = align_up(offset, type_align(ty));
-        let size = type_size(ty);
-        offset += size;
-    }
-    align_up(offset, 16).max(16)
-}
-
-/// Parse a type string that may include array brackets, e.g. `"float [32]"`.
-/// Returns (base_type, array_size) where array_size is 1 for non-array types.
-fn parse_type(ty: &str) -> (&str, u64) {
-    let ty = ty.trim();
-    if let Some(bracket) = ty.find('[') {
-        let base = ty[..bracket].trim();
-        let array_part = &ty[bracket..];
-        // Parse the array size: [N] or [N][M] (multi-dimensional)
-        let mut total_size: u64 = 1;
-        let mut rest = array_part;
-        while let Some(inner_start) = rest.find('[') {
-            if let Some(inner_end) = rest[inner_start..].find(']') {
-                let num_str = &rest[inner_start + 1..inner_start + inner_end];
-                if let Ok(n) = num_str.parse::<u64>() {
-                    total_size *= n;
-                }
-                rest = &rest[inner_start + inner_end + 1..];
-            } else {
-                break;
-            }
-        }
-        (base, total_size)
-    } else {
-        (ty, 1)
-    }
-}
-
-fn type_align(ty: &str) -> u64 {
-    let (base, array_size) = parse_type(ty);
-    let base_align = match base {
-        "mat4" | "mat3" | "vec4" | "vec3" => 16,
-        "vec2" => 8,
-        _ => 4,
-    };
-    if array_size > 1 {
-        // std140: array alignment is the element alignment rounded up to vec4 (16)
-        align_up(base_align, 16)
-    } else {
-        base_align
-    }
-}
-
-fn type_size(ty: &str) -> u64 {
-    let (base, array_size) = parse_type(ty);
-    let base_size = match base {
-        "mat4" => 64,
-        "mat3" => 48,
-        "vec4" => 16,
-        "vec3" => 12,
-        "vec2" => 8,
-        _ => 4,
-    };
-    if array_size > 1 {
-        // std140: array element stride is the base alignment rounded up to vec4 (16)
-        let stride = align_up(base_size, 16);
-        stride * array_size
-    } else {
-        base_size
     }
 }
 

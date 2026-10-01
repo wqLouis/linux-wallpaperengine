@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 
-use serde_json::Value;
 use wgpu::*;
 
-use super::transform::{EffectLayout, WM_SAMPLER_BINDING};
+use crate::scene::loader::shader::{EffectLayout, WM_SAMPLER_BINDING};
 
 pub fn apply_texture_combos(
     defines: &mut BTreeMap<String, String>,
@@ -23,36 +22,6 @@ pub fn apply_texture_combos(
             .entry("TIMEOFFSET".to_string())
             .or_insert_with(|| "1".to_string());
     }
-}
-
-pub fn collect_default_defines(vert_source: &str, frag_source: &str) -> BTreeMap<String, String> {
-    let mut defines = BTreeMap::new();
-
-    for source in &[vert_source, frag_source] {
-        for line in source.lines() {
-            let trimmed = line.trim();
-            if let Some(combo_start) = trimmed.find("[COMBO]") {
-                let json_str = trimmed[combo_start + 7..].trim();
-                let Ok(combo) = serde_json::from_str::<Value>(json_str) else {
-                    continue;
-                };
-                if let (Some(combo_key), Some(default_val)) = (
-                    combo.get("combo").and_then(|v: &Value| v.as_str()),
-                    combo.get("default"),
-                ) {
-                    let default_str = match default_val {
-                        Value::Number(n) => n.to_string(),
-                        Value::String(s) => s.clone(),
-                        Value::Bool(b) => (*b as i32).to_string(),
-                        _ => continue,
-                    };
-                    defines.entry(combo_key.to_string()).or_insert(default_str);
-                }
-            }
-        }
-    }
-
-    defines
 }
 
 pub fn create_effect_bindgroup_layout(device: &Device, layout: &EffectLayout) -> BindGroupLayout {

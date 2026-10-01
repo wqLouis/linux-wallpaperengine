@@ -95,6 +95,50 @@ pub struct Effect {
     pub visible: Value,
 }
 
+/// The kind of element an [`Object`] represents.
+///
+/// Wallpaper Engine stores every element in the same `objects` array, so the
+/// kind has to be inferred from the fields that are populated — mirroring how
+/// assets are classified by path in the loader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementType {
+    /// Texture-backed element (`image`).
+    Image,
+    /// Audio element (`sound`).
+    Sound,
+    /// Particle system (`particle`).
+    Particle,
+    /// Text element (`text` / `font`).
+    Text,
+    /// Light source (`light`).
+    Light,
+    /// Camera (`camera`).
+    Camera,
+    /// Transform-only element (parent for the hierarchy).
+    Node,
+}
+
+impl Object {
+    /// Classify this element by the fields Wallpaper Engine populated.
+    pub fn element_type(&self) -> ElementType {
+        if self.image.is_some() {
+            ElementType::Image
+        } else if !self.sound.is_empty() {
+            ElementType::Sound
+        } else if self.particle.is_some() {
+            ElementType::Particle
+        } else if self.text.is_some() || self.font.is_some() {
+            ElementType::Text
+        } else if self.light.is_some() {
+            ElementType::Light
+        } else if self.camera.is_some() {
+            ElementType::Camera
+        } else {
+            ElementType::Node
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pass {
@@ -105,8 +149,6 @@ pub struct Pass {
     pub combos: Option<BTreeMap<String, i64>>,
     pub usertextures: Option<(Value, Value)>,
 }
-
-
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
