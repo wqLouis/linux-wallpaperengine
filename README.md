@@ -42,7 +42,7 @@ https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
 ### Package Parsing (`pkg_parser`) | 套件解析
 - **`.pkg` file extraction and parsing** — reads packaged wallpaper files
 - **`.tex` texture parsing** — supports DXT1, DXT5, R8, RG88, PNG, JPEG formats with automatic format detection and LZ4 decompression. Can export to PNG or convert to RGBA for rendering
-- **`.mdl` puppet model parsing** — reads MDLV0023 format with control points, triangles, bones (MDLS), and animation (MDLA) sections. Serializes to JSON
+- **`.mdl` puppet model parsing** — reads the MDLV0021/0023 section chain: header + mesh (control points, triangles, draw batches), skeleton (MDLS), attachments (MDAT), animation clips/keyframes (MDLA) and bone matrices (MDLE). Serializes to JSON
 - **Video/GIF metadata parsing** — detects MP4, WebM, GIF formats and can extract GIF frames
 - **Dry-run mode** (`--dry-run`) to preview extraction without writing files
 
@@ -155,7 +155,7 @@ src/
 │       ├── parser.rs             # .pkg file format reading & extraction
 │       ├── tex_parser.rs         # .tex texture loading (LZ4, DXT, PNG, JPEG)
 │       ├── video_parser.rs       # Video/GIF metadata parsing & frame extraction
-│       └── mdl_parser.rs         # MDL puppet model parsing & JSON export
+│       └── mdl_parser/           # MDL puppet model parsing & JSON export
 └── scene/
     ├── mod.rs                    # Module declarations
     ├── loader/

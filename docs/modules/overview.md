@@ -10,7 +10,7 @@ src/
 │       ├── parser.rs                 # .pkg file reader
 │       ├── tex_parser.rs             # .tex texture parser
 │       ├── video_parser.rs           # Video/GIF metadata & frame extraction
-│       └── mdl_parser.rs             # .mdl puppet model parser
+│       └── mdl_parser/               # .mdl puppet model parser
 │   └── src/lib.rs
 └── scene/
     ├── mod.rs                        # Root module

@@ -29,7 +29,7 @@ https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
 ### 套件解析（`pkg_parser`）
 - **`.pkg` 檔案解壓與解析** — 讀取打包的桌布檔案
 - **`.tex` 紋理解析** — 支援 DXT1、DXT5、R8、RG88、PNG、JPEG 格式，自動偵測格式並支援 LZ4 解壓縮。可匯出為 PNG 或轉換為 RGBA 以供渲染
-- **`.mdl` 偶戲模型解析** — 讀取 MDLV0023 格式，解析控制點、三角形、骨骼（MDLS）及動畫（MDLA）區段。可序列化為 JSON
+- **`.mdl` 偶戲模型解析** — 讀取 MDLV0023 區段鏈：檔頭＋網格（控制點、三角形、批次）、骨骼（MDLS）、掛點（MDAT）、動畫片段與關鍵影格（MDLA）及骨骼矩陣（MDLE）。可序列化為 JSON
 - **影片/GIF 中繼資料解析** — 偵測 MP4、WebM、GIF 格式，並可擷取 GIF 幀
 
 ### 音頻
@@ -141,7 +141,7 @@ src/
 │       ├── parser.rs             # .pkg 檔案格式讀取與解壓
 │       ├── tex_parser.rs         # .tex 紋理載入（LZ4、DXT、PNG、JPEG）
 │       ├── video_parser.rs       # 影片/GIF 中繼資料解析與幀擷取
-│       └── mdl_parser.rs         # MDL 偶戲模型解析與 JSON 匯出
+│       └── mdl_parser/           # MDL 偶戲模型解析與 JSON 匯出
 └── scene/
     ├── mod.rs                    # 模組宣告
     ├── loader/

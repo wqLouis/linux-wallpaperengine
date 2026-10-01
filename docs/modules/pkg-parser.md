@@ -13,7 +13,15 @@ src/pkg_parser/
     ├── parser.rs          # .pkg file reader (Pkg struct)
     ├── tex_parser.rs      # .tex texture parser (Tex struct)
     ├── video_parser.rs    # Video/GIF format detection & frame extraction
-    └── mdl_parser.rs      # .mdl puppet model parser (MdlFile struct)
+    └── mdl_parser/        # .mdl puppet model parser (MdlFile struct)
+        ├── mod.rs             # Section walker + MdlFile
+        ├── reader.rs          # Bounds-checked little-endian readers
+        ├── header.rs          # MDLV header
+        ├── mesh.rs            # Control points, triangles, index batches
+        ├── skeleton.rs        # MDLS bones
+        ├── attachments.rs     # MDAT sockets
+        ├── animation.rs       # MDLA clips, tracks, keyframes
+        └── bone_matrices.rs   # MDLE matrices
 ```
 
 ---
@@ -181,21 +189,38 @@ Detects format from magic bytes and extracts info:
 Saves all frames of a GIF as separate PNG files. Returns `[(png_bytes, "stem_frame_0000.png"), ...]`.
 
 ---
-
 ## `mdl_parser` — Puppet Model Parser
 
-**File:** `mdl_parser.rs`
+**Directory:** `mdl_parser/` (one module per MDL section)
+
+An `.mdl` file is a chain of null-terminated sections: `MDLV` (header +
+mesh), `MDLS` (skeleton), and optionally `MDAT` (attachments), `MDLA`
+(animation) and `MDLE` (bone matrices), ending in a single `0x00` sentinel
+byte. Every section except `MDLV` is optional. The byte-level format is
+documented in `src/pkg_parser/src/pkg_parser/README.md`.
+
+| Module | Section | Contents |
+|--------|---------|----------|
+| `header.rs` | MDLV | Magic, type/sub-version fields, material path |
+| `mesh.rs` | MDLV | 80-byte control points, triangles, index batches, secondary positions |
+| `skeleton.rs` | MDLS | Bone hierarchy, bind-pose 4×4 matrices, JSON info, names |
+| `attachments.rs` | MDAT | Named sockets parented to bones (4×4 transform) |
+| `animation.rs` | MDLA | Clips → per-bone tracks → dense keyframes (36 bytes each) |
+| `bone_matrices.rs` | MDLE | One 4×4 matrix per bone |
+| `reader.rs` | — | Bounds-checked little-endian readers shared by all of the above |
 
 ### `MdlFile`
 
-Parsed MDL (puppet model) file with three sections.
+Parsed MDL (puppet model) file.
 
 ```rust
 pub struct MdlFile {
-    pub header: MdlvHeader,   // MDLV0023 section header
-    pub data: MdlvData,       // Control points and triangles
-    pub bones: Bones,         // MDLS skeleton/bone section
-    pub animation: Animation, // MDLA animation section
+    pub header: MdlvHeader,          // MDLV header
+    pub data: MdlvData,              // Control points, triangles, batches
+    pub bones: Bones,                // MDLS skeleton (+ undecoded trailing)
+    pub attachments: Attachments,    // MDAT sockets (empty if absent)
+    pub animation: Animation,        // MDLA clips (empty if absent)
+    pub bone_matrices: BoneMatrices, // MDLE matrices (empty if absent)
 }
 ```
 
@@ -203,13 +228,13 @@ pub struct MdlFile {
 
 ```rust
 pub struct MdlvHeader {
-    pub magic: String,          // "MDLV0023"
-    pub type_val: u32,
+    pub magic: String,          // "MDLV0021" / "MDLV0023"
+    pub type_val: u32,          // 0x01800009
     pub sub_version: u16,
     pub flags: u16,
     pub unknown_16: u32,
     pub material_path: String,  // Null-terminated path
-    pub header_size: usize,     // Size until data marker (0x80000F00)
+    pub header_size: usize,     // Bytes consumed by the header (string ends it)
 }
 ```
 
@@ -217,97 +242,44 @@ pub struct MdlvHeader {
 
 ```rust
 pub struct MdlvData {
-    pub marker_type: u32,           // 0x80000F00
-    pub record_block_size: u32,     // Total size of control point records
-    pub records: Vec<ControlPoint>, // 80-byte control point records
-    pub quads: Vec<Triangle>,       // Quad-derived triangles (index into control points)
-    pub triangles: Vec<Triangle>,   // Tessellated render triangles (higher vertex IDs)
+    pub records: Vec<ControlPoint>,   // 80-byte control points
+    pub triangles: Vec<Triangle>,     // u16 triplets indexing `records`
+    pub index_batches: Vec<IndexBatch>, // Draw batches partitioning `triangles`
+    pub alt_positions: Vec<[f32; 3]>, // Optional secondary vertex positions
 }
 ```
-
-The data section contains control points followed by a **gap** that holds two distinct triangle lists:
-
-1. **Quads** — triangle strip data from a quad topology. Vertex indices range within
-   `[0, num_records)` and reference control points directly.
-2. **Render triangles** — derived from tessellating the quads. Vertex indices far
-   exceed the control point count (e.g., up to ~65000 for 985 control points).
-
-The gap starts with a **5-byte header**:
-
-| Offset | Size | Description |
-|--------|------|-------------|
-| 0 | 1 byte | Section type (`0x3E` or `0x3F`) |
-| 1 | 4 bytes | `quads_size` (u32 LE) — byte length of the quads triangle data |
-
-Everything after `header[1..5]` bytes of quads data is the render triangles section.
-Trailing bytes that don't form complete 6-byte triangles are ignored.
 
 ### `ControlPoint`
 
-80-byte record. All coordinate pairs are stored as `i16` and normalized to `f32`
-in the range ≈ `[-1, 1]` by dividing by 32767.
+80-byte record; the four skinning slots always sum to `1.0`.
 
 ```rust
 pub struct ControlPoint {
-    pub index: u32,              // Sequential index (0..num_records-1)
-    pub pos_x: f32, pub pos_y: f32,        // Normalized position
-    pub tex_u: f32, pub tex_v: f32,        // Normalized texture UV
-    pub group_id: u32,                     // Mesh group identifier
-    pub sub_group: u32,                    // Sub-group index
-    pub sub_sub_group: u32,                // Sub-sub-group index
-    pub weight: f32,                       // Scalar weight/parameter [0, ~0.1]
-    pub handle_a_x: f32, pub handle_a_y: f32,  // Deformation handle A
-    pub handle_b_x: f32, pub handle_b_y: f32,  // Deformation handle B
-    pub handle_c_x: f32, pub handle_c_y: f32,  // Deformation handle C
+    pub index: u32,
+    pub pos_x: f32, pub pos_y: f32, pub pos_z: f32,
+    pub bones: [u32; 4],    // Bone index per skinning slot
+    pub weights: [f32; 4],  // Weights, sum == 1.0
+    pub tex_u: f32, pub tex_v: f32,
 }
 ```
 
-**80-byte layout:**
-
-| Offset | Size | Field | Type |
-|--------|------|-------|------|
-| 0 | 4 | `pos_x`, `pos_y` | 2× i16 → f32 |
-| 4 | 4 | `tex_u`, `tex_v` | 2× i16 → f32 |
-| 8 | 4 | `group_id` | u32 |
-| 12 | 4 | — | padding (always 0) |
-| 16 | 4 | — | padding (always 0) |
-| 20 | 4 | — | marker (always `0x80000000`) |
-| 24 | 4 | — | marker (~`0x8000003F`) |
-| 28 | 4 | `handle_a_x`, `handle_a_y` | 2× i16 → f32 |
-| 32 | 4 | `sub_group` | u32 |
-| 36 | 4 | — | marker (always `0x80000000`) |
-| 40 | 2 | `weight` | i16 → f32 |
-| 42 | 14 | — | padding (always 0) |
-| 56 | 4 | — | marker (always `0x80000000`) |
-| 60 | 4 | — | constant (always `0x0000003F` = 63) |
-| 64 | 4 | `sub_sub_group` | u32 |
-| 68 | 4 | — | padding (always 0) |
-| 72 | 4 | `handle_b_x`, `handle_b_y` | 2× i16 → f32 |
-| 76 | 4 | `handle_c_x`, `handle_c_y` | 2× i16 → f32 |
-
-### `Triangle`
-
-```rust
-pub struct Triangle {
-    pub a: u16, pub b: u16, pub c: u16,  // Vertex indices
-}
-```
-
-### `Bones`
+### `Bones` / `BoneEntry`
 
 ```rust
 pub struct Bones {
-    pub header: String,             // "MDLS"
+    pub header: String,        // "MDLS0004"
+    pub next_offset: u32,      // Start of the next section
     pub bones: Vec<BoneEntry>,
+    pub trailing: Vec<u8>,     // Undecoded metadata between bones and next section
 }
 
 pub struct BoneEntry {
     pub index: u32,
-    pub tmp: u8,
     pub bone_type: u32,
-    pub unk1: u32,
-    pub matrix: [f32; 16],         // 4×4 transformation matrix
-    pub info: String,              // Bone name/description
+    pub parent_index: u32,     // 0xFFFFFFFF = root
+    pub matrix: [f32; 16],     // Bind pose, row-major, translation in row 3
+    pub info: String,          // JSON metadata (tp = pin position, tm = multiplier)
+    pub name: String,          // e.g. "legs" (often empty)
 }
 ```
 
@@ -315,32 +287,66 @@ pub struct BoneEntry {
 
 ```rust
 pub struct Animation {
-    pub header: String,             // "MDLA"
-    pub end_offset: u32,
+    pub header: String,          // "MDLA0006"
+    pub end_offset: u32,         // Start of the next section
     pub num_animations: u32,
-    pub num_frames: u32,
-    pub animation_name: String,
-    pub loop_mode: String,          // e.g. "loop", "once"
-    pub animation_data: Vec<u8>,    // Raw animation keyframe data
+    pub num_frames: u32,         // Opaque section field (not the timeline length)
+    pub animation_name: String,  // First clip's name (compat)
+    pub loop_mode: String,       // First clip's loop mode (compat)
+    pub clips: Vec<AnimationClip>,
+}
+
+pub struct AnimationClip {
+    pub name: String,
+    pub loop_mode: String,       // "loop"
+    pub fps: f32,
+    pub frame_count: u32,        // Tracks hold frame_count + 1 keyframes
+    pub tracks: Vec<Track>,      // One track per bone, in bone order
+}
+
+pub struct Track { pub keyframes: Vec<Keyframe> }
+
+pub struct Keyframe { pub tx: f32, pub ty: f32, pub tz: f32,
+                      pub rx: f32, pub ry: f32, pub rz: f32,
+                      pub sx: f32, pub sy: f32, pub sz: f32 }
+```
+
+Keyframes are dense (one per frame, 36 bytes = translation + rotation in
+radians + scale); frame 0 reproduces the bone's bind pose.
+
+### `Attachments` / `BoneMatrices`
+
+```rust
+pub struct Attachments {
+    pub header: String,       // "MDAT0001"
+    pub next_offset: u32,
+    pub entries: Vec<Attachment>,  // bone_index + name + 4×4 transform
+}
+
+pub struct BoneMatrices {
+    pub header: String,       // "MDLE0002"
+    pub end_offset: u32,
+    pub matrices: Vec<[f32; 16]>,  // One per bone
 }
 ```
 
 ### `MdlFile::new(bytes: &[u8]) -> Option<MdlFile>`
 
-Parses an MDL file from raw bytes. **Fail-safe** — returns `None` on any malformed
-or truncated data instead of panicking.
+Parses an MDL file from raw bytes. **Strict** — returns `None` when the
+bytes are not an MDL (bad magic), when the mesh block isn't exactly where
+the header says, or when a present section doesn't match the documented
+layout. Absent sections are skipped (empty default); a truncated buffer
+never panics.
 
-1. **Header:** Reads magic `MDLV0023`, type, sub-version, flags, material path.
-   Finds data start by locating the `0x00 0x0F 0x00 0x80` marker via byte scanning.
-2. **Data:** At the marker (`0x80000F00`), reads the 3-byte record block size,
-   parses 80-byte control point records (with bounds checks), then splits the gap
-   between records and `MDLS` into quads and render triangles using the 5-byte
-   section header.
-3. **Bones (MDLS):** Reads the `MDLS0004` section: bone count, per-bone 4×4
-   transformation matrices, and bone names.
-4. **Animation (MDLA):** Reads frame count, animation name, loop mode, and raw
-   animation keyframe data. If `pos` overruns, returns empty data instead of
-   panicking.
+1. **Header (MDLV):** validates the magic and reads the material path.
+2. **Mesh:** reads the block at the offset derived from the header
+   (verified by its `0x0180000F` tag — no byte scan), then parses the
+   trailer (secondary positions + index batches), whose end is the exact
+   offset of the next section.
+3. **Section walk:** `MDLS` → `MDAT` → `MDLA` → `MDLE` are parsed at the
+   offsets the format provides (each section carries the next offset);
+   a model may legitimately lack any of them. An unknown magic ends the
+   walk instead of being searched for.
 
 ### `MdlFile::to_json() -> Result<String>`
 

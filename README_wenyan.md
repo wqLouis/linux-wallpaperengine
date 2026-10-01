@@ -133,7 +133,7 @@ src/
 │   ├── parser.rs        # .pkg讀取
 │   ├── tex_parser.rs    # .tex紋理
 │   ├── video_parser.rs  # 視訊解析
-│   └── mdl_parser.rs    # .mdl模型
+│   └── mdl_parser/    # .mdl模型
 └── scene/
     ├── loader/          # 場景載入
     ├── renderer/        # 渲染器
