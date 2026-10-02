@@ -126,18 +126,7 @@ impl Buffers {
         // Transform each vertex: [0,1] → [-half, +half] → model matrix.
         let transformed: Vec<Vertex> = vertices
             .iter()
-            .map(|v| {
-                let local = Vec3::new(
-                    v.pos[0] * size.x - half.x,
-                    v.pos[1] * size.y - half.y,
-                    0.0,
-                );
-                let world = model.transform_point3(local);
-                Vertex {
-                    pos: [world.x, world.y, z],
-                    uv: v.uv,
-                }
-            })
+            .map(|v| place_vertex(v, model, z, size, half))
             .collect();
 
         // Offset indices by the current vertex count
@@ -162,5 +151,51 @@ impl Buffers {
         self.index_len += indices.len() as u32;
 
         [index_start, self.index_len]
+    }
+
+    /// Rewrite an existing vertex range with freshly skinned positions.
+    ///
+    /// Positions use the same `[0, 1]` convention as [`draw_mesh`], so the
+    /// caller can hand back the output of
+    /// [`crate::scene::loader::mdl::PuppetMesh::skinned_vertices`].  The
+    /// index buffer is untouched — only the vertex positions change each
+    /// frame.
+    pub fn update_mesh(
+        &self,
+        queue: &Queue,
+        vertex_offset: u32,
+        vertices: &[Vertex],
+        model: glam::Mat4,
+        z: f32,
+        size: Vec2,
+    ) {
+        let half = Vec2::new(size.x / 2.0, size.y / 2.0);
+        let transformed: Vec<Vertex> = vertices
+            .iter()
+            .map(|v| place_vertex(v, model, z, size, half))
+            .collect();
+
+        queue.write_buffer(
+            &self.vertex,
+            std::mem::size_of::<Vertex>() as BufferAddress * vertex_offset as BufferAddress,
+            bytemuck::cast_slice(&transformed),
+        );
+    }
+}
+
+/// Map a normalised `[0, 1]` vertex into world space.
+///
+/// The vertex is scaled by `size`, recentred around the object origin and
+/// then placed with `model`; `z` is the fixed depth used for 2D layers.
+fn place_vertex(v: &Vertex, model: glam::Mat4, z: f32, size: Vec2, half: Vec2) -> Vertex {
+    let local = Vec3::new(
+        v.pos[0] * size.x - half.x,
+        v.pos[1] * size.y - half.y,
+        0.0,
+    );
+    let world = model.transform_point3(local);
+    Vertex {
+        pos: [world.x, world.y, z],
+        uv: v.uv,
     }
 }

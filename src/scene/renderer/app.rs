@@ -13,7 +13,7 @@ use wgpu::*;
 use crate::MAX_TEXTURE;
 
 use super::{
-    buffer::Buffers, draw::DrawQueue, intermediate_pass, post_process::PostProcess,
+    buffer::Buffers, draw::{self, DrawQueue}, intermediate_pass, post_process::PostProcess,
     projection::ProjectionBindGroups, render_pass, surface::AppSurface,
 };
 
@@ -183,6 +183,11 @@ impl WgpuApp {
 
         let mut params = self.user_params.clone();
         params.cursor_position = self.compute_parallax_cursor();
+
+        // Re-skin animated puppets before this frame is recorded.
+        if let Some(buffers) = self.buffers.as_mut() {
+            draw::update_animated_meshes(&self.queue, buffers, draw_queue, elapsed);
+        }
 
         render_pass::write_effect_uniforms(
             &self.queue,

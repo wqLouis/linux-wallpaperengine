@@ -5,7 +5,7 @@ use pkg_parser::pkg_parser::tex_parser::Tex;
 use serde_json::Value;
 
 use crate::scene::loader::{
-    mdl::{self, PuppetMesh},
+    mdl::{self, PuppetAnimation, PuppetMesh},
     model::Model,
     scene::{Effect, ElementType, Object, Vectors},
     scene_loader::Scene,
@@ -31,6 +31,10 @@ pub struct TextureObject {
     pub visible: bool,
     /// Optional puppet mesh extracted from a `.mdl` file.
     pub mesh: Option<PuppetMesh>,
+    /// Optional animation layers selected from the mesh's MDL.
+    pub animations: Vec<PuppetAnimation>,
+    /// Wallpaper Engine `attachment` socket name this object is parented to.
+    pub attachment: Option<String>,
 }
 
 pub struct AudioObject {
@@ -127,11 +131,20 @@ impl ObjectMap {
             // Look up the parent's world model matrix.  Since the parent
             // has already been processed (topological order), its `model`
             // already includes all ancestor transforms.
+            let mut socket: Option<glam::Mat4> = None;
             let parent_model: Option<glam::Mat4> =
                 if let Some(parent_rc) = texture_map.get(&parent_id) {
                     let parent = parent_rc.borrow();
                     if !parent.visible {
                         texture.visible = false;
+                    }
+                    // Objects parented to a puppet attachment socket are placed
+                    // at that socket (from the parent's MDL) before their own
+                    // local transform is applied.
+                    if let (Some(name), Some(mesh)) =
+                        (texture.attachment.as_deref(), parent.mesh.as_ref())
+                    {
+                        socket = mesh.attachment_world(name);
                     }
                     Some(parent.model)
                 } else {
@@ -141,8 +154,12 @@ impl ObjectMap {
                 };
 
             if let Some(pm) = parent_model {
+                let local = match socket {
+                    Some(socket) => socket * texture.model,
+                    None => texture.model,
+                };
                 // M_child_world = M_parent_world * M_child_local
-                texture.model = compose(pm, texture.model);
+                texture.model = compose(pm, local);
             }
         }
 
@@ -381,7 +398,7 @@ impl ObjectMap {
                             );
                             scene.assets.model(puppet_path)
                         })
-                        .and_then(|mdl_rc| mdl::extract_mesh(&mdl_rc, obj_dims))
+                        .and_then(|mdl_rc| mdl::extract_mesh(mdl_rc, obj_dims))
                 };
 
                 if let Some(mesh) = &mesh {
@@ -390,6 +407,20 @@ impl ObjectMap {
                         object.name,
                         mesh.vertices.len(),
                         mesh.indices.len(),
+                    );
+                }
+
+                // Pick the animation layers this object should play.
+                let animations = mesh
+                    .as_ref()
+                    .map(|mesh| select_animations(&mesh.mdl, object))
+                    .unwrap_or_default();
+
+                if !animations.is_empty() {
+                    log::info!(
+                        "animations for '{}': {} layer(s)",
+                        object.name,
+                        animations.len(),
                     );
                 }
 
@@ -408,6 +439,8 @@ impl ObjectMap {
                     effects: object.effects.clone(),
                     visible,
                     mesh,
+                    animations,
+                    attachment: object.attachment.clone(),
                 }));
             }
 
@@ -435,6 +468,46 @@ impl ObjectMap {
             parent: object.parent,
         }))
     }
+}
+
+/// Pick the animation layers an object should play.
+///
+/// Wallpaper Engine stores one layer per animation; layer order matches the
+/// MDL clip order (`asuna body` → `eyes`, `breathing` ↔ `eyes`,
+/// `Animation 2`).  Layer names usually match the clip name, but not always
+/// (`breathing` does not), so an exact name match wins and the layer's
+/// position is the fallback.  Invisible layers are skipped.
+fn select_animations(
+    mdl: &pkg_parser::pkg_parser::mdl_parser::MdlFile,
+    object: &Object,
+) -> Vec<PuppetAnimation> {
+    let clips = &mdl.animation.clips;
+    if clips.is_empty() {
+        return Vec::new();
+    }
+
+    let mut animations = Vec::new();
+    for (index, layer) in object.animationlayers.iter().enumerate() {
+        if let Some(false) = layer.visible.as_bool() {
+            continue;
+        }
+        let clip_index = clips
+            .iter()
+            .position(|clip| clip.name == layer.name)
+            .unwrap_or(index);
+        if clips.get(clip_index).is_none() {
+            continue;
+        }
+
+        animations.push(PuppetAnimation {
+            clip_index,
+            rate: layer.rate.as_f64().unwrap_or(1.0) as f32,
+            blend: layer.blend.as_f64().unwrap_or(1.0) as f32,
+            additive: layer.additive,
+        });
+    }
+
+    animations
 }
 
 /// Parse a scene.json `alignment` string into a typed [`Alignment`].

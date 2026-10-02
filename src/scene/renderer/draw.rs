@@ -10,7 +10,11 @@ use std::{collections::BTreeMap, rc::Rc};
 use wgpu::*;
 
 use crate::scene::{
-    loader::{mip_loader::MipChainGenerator, object_loader::TextureObject},
+    loader::{
+        mdl::{PuppetAnimation, PuppetMesh},
+        mip_loader::MipChainGenerator,
+        object_loader::TextureObject,
+    },
     renderer::{
         buffer::Buffers,
         ping_pong::PingPongTextures,
@@ -29,6 +33,23 @@ pub struct DrawObject {
     /// Named FBOs allocated for multi-pass effect chains.
     pub fbos: BTreeMap<String, FboTexture>,
     pub intermediates: Option<PingPongTextures>,
+    /// Per-frame CPU-skinning state, present only for animated puppets.
+    pub skinning: Option<SkinningState>,
+}
+
+/// Everything needed to re-skin one puppet object every frame.
+///
+/// The rest mesh and index buffer already live in the shared GPU buffers;
+/// only the vertex positions are rewritten by
+/// [`update_animated_meshes`].
+pub struct SkinningState {
+    pub mesh: PuppetMesh,
+    pub animations: Vec<PuppetAnimation>,
+    /// First vertex of this object's range in the shared vertex buffer.
+    pub vertex_offset: u32,
+    pub model: glam::Mat4,
+    pub z: f32,
+    pub size: glam::Vec2,
 }
 
 /// Context for building the draw queue and its effect pipelines.
@@ -78,7 +99,7 @@ impl DrawObject {
     fn build(
         ctx: &DrawContext,
         buffers: &mut Buffers,
-        texture_object: TextureObject,
+        mut texture_object: TextureObject,
         pipelines: &mut PipelineMap,
     ) -> Self {
         let effects = &ctx.effects;
@@ -149,29 +170,44 @@ impl DrawObject {
             pp.cache_final_bindgroup(device, &post_process.layout, &post_process.sampler);
         }
 
-        let index_range = if let Some(ref mesh) = texture_object.mesh {
+        let z = texture_object.transform.position.z - 1.0;
+        let vertex_offset = buffers.vertex_len;
+        let (index_range, skinning) = if let Some(mesh) = texture_object.mesh.take() {
             log::debug!(
                 "drawing mesh: {} verts, {} indices",
                 mesh.vertices.len(),
                 mesh.indices.len(),
             );
-            buffers.draw_mesh(
+            let range = buffers.draw_mesh(
                 queue,
                 &mesh.vertices,
                 &mesh.indices,
                 texture_object.model,
-                texture_object.transform.position.z - 1.0,
+                z,
                 texture_object.size,
-            )
+            );
+            let skinning = if texture_object.animations.is_empty() {
+                None
+            } else {
+                Some(SkinningState {
+                    mesh,
+                    animations: texture_object.animations,
+                    vertex_offset,
+                    model: texture_object.model,
+                    z,
+                    size: texture_object.size,
+                })
+            };
+            (range, skinning)
         } else {
             buffers.draw_texture(
                 queue,
                 texture_object.model,
-                texture_object.transform.position.z - 1.0,
+                z,
                 texture_object.size,
                 texture_object.uv_scale,
             );
-            [index_start, buffers.index_len]
+            ([index_start, buffers.index_len], None)
         };
 
         Self {
@@ -180,6 +216,7 @@ impl DrawObject {
             effect_steps,
             fbos,
             intermediates,
+            skinning,
         }
     }
 
@@ -337,5 +374,37 @@ impl DrawObject {
         }
 
         texture
+    }
+}
+
+/// CPU-skin every animated puppet and rewrite its vertex range in the
+/// shared buffer.
+///
+/// Called once per frame before the render pass.  `elapsed` is the global
+/// wall-clock time in seconds; each object scales it by its own playback
+/// rate.  Objects without an animation keep their baked rest mesh.
+pub fn update_animated_meshes(
+    queue: &Queue,
+    buffers: &Buffers,
+    draw_queue: &DrawQueue,
+    elapsed: f32,
+) {
+    for draw_object in draw_queue.queue.iter() {
+        let Some(skinning) = &draw_object.skinning else {
+            continue;
+        };
+        let vertices = skinning.mesh.skinned_vertices(
+            &skinning.animations,
+            elapsed,
+            [skinning.size.x, skinning.size.y],
+        );
+        buffers.update_mesh(
+            queue,
+            skinning.vertex_offset,
+            &vertices,
+            skinning.model,
+            skinning.z,
+            skinning.size,
+        );
     }
 }
