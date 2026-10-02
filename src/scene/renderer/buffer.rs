@@ -42,7 +42,7 @@ impl Buffers {
         }
     }
 
-    pub fn draw_rect(&mut self, queue: &Queue, pos: [Vec3; 4]) {
+    pub fn draw_rect(&mut self, queue: &Queue, pos: [Vec3; 4], uv_max: Vec2) {
         let rect = [
             Vertex {
                 pos: pos[0].to_array(),
@@ -50,15 +50,15 @@ impl Buffers {
             },
             Vertex {
                 pos: pos[1].to_array(),
-                uv: [1.0, 0.0],
+                uv: [uv_max.x, 0.0],
             },
             Vertex {
                 pos: pos[2].to_array(),
-                uv: [1.0, 1.0],
+                uv: [uv_max.x, uv_max.y],
             },
             Vertex {
                 pos: pos[3].to_array(),
-                uv: [0.0, 1.0],
+                uv: [0.0, uv_max.y],
             },
         ];
 
@@ -86,6 +86,7 @@ impl Buffers {
         model: glam::Mat4,
         z: f32,
         size: Vec2,
+        uv_max: Vec2,
     ) {
         let half = Vec2::new(size.x / 2.0, size.y / 2.0);
         let corners = [
@@ -100,7 +101,7 @@ impl Buffers {
             Vec3::new(p.x, p.y, z)
         });
 
-        self.draw_rect(queue, rect);
+        self.draw_rect(queue, rect, uv_max);
     }
 
     /// Upload an arbitrary triangle mesh to the GPU vertex/index buffers.

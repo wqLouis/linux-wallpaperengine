@@ -21,6 +21,11 @@ pub struct TextureObject {
     /// chain.  This is the matrix the renderer should use.
     pub model: glam::Mat4,
     pub size: Vec2,
+    /// UV scale applied to plain quads: `real_dimension / storage_dimension`.
+    /// Wallpaper Engine only samples the real (non-padded) top-left region of
+    /// the stored texture, so quads must clamp their UVs accordingly.  Always
+    /// `(1, 1)` for puppet meshes, which carry their own UVs.
+    pub uv_scale: Vec2,
     pub parent: Option<i64>,
     pub effects: Vec<Effect>,
     pub visible: bool,
@@ -226,6 +231,7 @@ impl ObjectMap {
                 size: 4,
                 actual_mip_count: 1,
                 dimension: [1, 1],
+                real_dimension: [1, 1],
                 image_count: 1,
                 mipmap_count: 1,
                 lz4: false,
@@ -391,6 +397,12 @@ impl ObjectMap {
                     transform,
                     model: build_model_matrix(&transform, size),
                     size,
+                    uv_scale: Vec2::new(
+                        texture.real_dimension[0] as f32
+                            / texture.dimension[0].max(1) as f32,
+                        texture.real_dimension[1] as f32
+                            / texture.dimension[1].max(1) as f32,
+                    ),
                     parent: object.parent,
                     texture: Rc::clone(&texture),
                     effects: object.effects.clone(),

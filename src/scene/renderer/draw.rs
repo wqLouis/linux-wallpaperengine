@@ -169,6 +169,7 @@ impl DrawObject {
                 texture_object.model,
                 texture_object.transform.position.z - 1.0,
                 texture_object.size,
+                texture_object.uv_scale,
             );
             [index_start, buffers.index_len]
         };
