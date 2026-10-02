@@ -205,7 +205,16 @@ impl DrawObject {
         // will generate on the GPU. `mipmap_count` is 0 for legacy
         // TEXB0001/0002/0003 headers, in which case we fall back to a
         // single level.
-        let mip_level_count = tex_obj.texture.mipmap_count.max(1);
+        //
+        // BCn textures cannot be rendered into, so the GPU mip generator
+        // cannot fill the missing levels; sampling them would read
+        // undefined memory (black/transparent). Allocate only the levels
+        // the parser actually extracted for BCn.
+        let mip_level_count = if is_bcn {
+            tex_obj.texture.actual_mip_count().max(1)
+        } else {
+            tex_obj.texture.mipmap_count.max(1)
+        };
 
         log::debug!(
             "upload_texture: {}x{} fmt={:?} mips={} (advertised={}, actual={}, missing={})",
