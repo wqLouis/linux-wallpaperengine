@@ -108,23 +108,14 @@ impl ProjectionBindGroups {
 
 impl Projection {
     pub fn new(root: &Root) -> Self {
+        let center = root.camera.center.parse().unwrap_or_default();
+        let eye = root.camera.eye.parse().unwrap_or_default();
+        let up = root.camera.up.parse().unwrap_or_default();
+
         Projection {
-            // Very rough may breaks
-            center: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: root.camera.center.parse().unwrap()[2],
-            },
-            eye: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: root.camera.eye.parse().unwrap()[2],
-            },
-            up: Vec3 {
-                x: root.camera.up.parse().unwrap()[0],
-                y: root.camera.up.parse().unwrap()[1],
-                z: root.camera.up.parse().unwrap()[2],
-            },
+            center,
+            eye,
+            up,
             width: root.general.orthogonalprojection.width as f32,
             height: root.general.orthogonalprojection.height as f32,
             nearz: root.general.nearz as f32,
@@ -134,13 +125,32 @@ impl Projection {
     }
 
     pub fn create_camera_uniform(&self) -> CameraUniform {
+        // Wallpaper Engine builds its view-projection as
+        //   ortho(-w/2, w/2, -h/2, h/2) * translate(eye) * lookAt(eye, center, up)
+        // The eye translation cancels the lookAt translation, so the net
+        // effect is the plain centered orthographic matrix with the
+        // camera's rotation (identity when eye and center share x/y).
+        //
+        // Our model matrices place objects in uncentered [0,w]x[0,h]
+        // coordinates, so shift them into WE's centered space first.
         let view = Mat4::look_at_rh(self.eye, self.center, self.up);
-
-        let projection =
-            Mat4::orthographic_rh(0.0, self.width, 0.0, self.height, self.nearz, self.farz);
+        let ortho = Mat4::orthographic_rh(
+            -self.width * 0.5,
+            self.width * 0.5,
+            -self.height * 0.5,
+            self.height * 0.5,
+            self.nearz,
+            self.farz,
+        );
+        let eye_translate = Mat4::from_translation(self.eye);
+        let to_centered = Mat4::from_translation(Vec3::new(
+            -self.width * 0.5,
+            -self.height * 0.5,
+            0.0,
+        ));
 
         CameraUniform {
-            projection: (projection * view).to_cols_array_2d(),
+            projection: (ortho * eye_translate * view * to_centered).to_cols_array_2d(),
         }
     }
 }
