@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
 
 use serde_json::Value;
 use wgpu::*;
+use crate::collections::{Map};
 
 use crate::scene::{
     loader::shader::WM_SAMPLER_BINDING,
@@ -16,9 +16,9 @@ use crate::scene::{
 pub struct EffectBindGroup {
     pub uniform_buffer: Option<Buffer>,
     pub uniform_layout: effect_param::UniformLayout,
-    pub material_keys: BTreeMap<String, String>,
-    pub constants: BTreeMap<String, Value>,
-    pub tex_resolutions: BTreeMap<String, [f32; 4]>,
+    pub material_keys: Map<String, String>,
+    pub constants: Map<String, Value>,
+    pub tex_resolutions: Map<String, [f32; 4]>,
     pub blank_view: TextureView,
     pub mask_view: Option<TextureView>,
     pub noise_view: Option<TextureView>,
@@ -32,9 +32,9 @@ impl EffectBindGroup {
         post_process: &PostProcess,
         pipedata: &EffectPipelineData,
         textures: EffectTextures,
-        material_keys: BTreeMap<String, String>,
-        constants: BTreeMap<String, Value>,
-        tex_resolutions: BTreeMap<String, [f32; 4]>,
+        material_keys: Map<String, String>,
+        constants: Map<String, Value>,
+        tex_resolutions: Map<String, [f32; 4]>,
     ) -> Option<Self> {
         let EffectTextures {
             source_view,

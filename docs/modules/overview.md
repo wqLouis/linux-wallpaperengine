@@ -5,6 +5,7 @@
 ```
 src/
 ├── main.rs                           # CLI entry point
+├── collections.rs                    # Shared hashbrown + ahash map/set aliases
 ├── pkg_parser/                       # Package file parsing (git submodule)
 │   └── src/pkg_parser/
 │       ├── parser.rs                 # .pkg file reader
@@ -91,6 +92,24 @@ Scene::new  ObjectMap   PostProcess
 ```
 
 ## Key Concepts
+
+### Hash Tables
+
+Assets, effects, bind groups and shader symbols are looked up by name in
+tight loops, so the crate uses [`hashbrown`](https://docs.rs/hashbrown)'s
+SwissTable with [`ahash`](https://docs.rs/ahash)'s fast hasher instead of
+the standard library's SipHash-based maps. The aliases live in
+`src/collections.rs`:
+
+```rust
+pub type Map<K, V> = hashbrown::HashMap<K, V, ahash::RandomState>;
+pub type Set<T> = hashbrown::HashSet<T, ahash::RandomState>;
+```
+
+Hash maps have no inherent order, so wherever the iteration order is
+observable — generated shader source, pipeline cache keys, uniform
+declarations — the entries are visited in sorted key order (`sorted_entries`
+/ `sorted_keys`) to keep the output deterministic.
 
 ### Two Display Modes
 

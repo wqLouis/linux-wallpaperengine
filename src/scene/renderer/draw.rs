@@ -5,9 +5,10 @@
 //! [`EffectStep`]s (unifying single-pass and multi-pass effects), and
 //! optional ping-pong intermediate textures for post-processing.
 
-use std::{collections::BTreeMap, rc::Rc};
+use std::{rc::Rc};
 
 use wgpu::*;
+use crate::collections::{Map, new_map, new_map_with_capacity};
 
 use crate::scene::{
     loader::{
@@ -22,6 +23,7 @@ use crate::scene::{
             context::{EffectContext, EffectTarget, PipelineMap},
             effect_step::{self, EffectStep, FboTexture},
         },
+        vertex::Vertex,
     },
 };
 
@@ -31,10 +33,33 @@ pub struct DrawObject {
     /// All effect steps (single-pass and multi-pass flattened together).
     pub effect_steps: Vec<EffectStep>,
     /// Named FBOs allocated for multi-pass effect chains.
-    pub fbos: BTreeMap<String, FboTexture>,
+    pub fbos: Map<String, FboTexture>,
     pub intermediates: Option<PingPongTextures>,
     /// Per-frame CPU-skinning state, present only for animated puppets.
     pub skinning: Option<SkinningState>,
+    /// Set when the object is attached to a bone socket of a puppet parent.
+    pub attachment: Option<AttachmentState>,
+}
+
+/// An object that is attached to a bone socket of a puppet parent.
+///
+/// Wallpaper Engine builds the socket matrix from the puppet's *runtime*
+/// bone matrices, so the attached object follows the animation.  The port
+/// re-places the object's quad every frame with the animated socket matrix.
+pub struct AttachmentState {
+    /// The socket name in the parent's MDL (`MDAT` attachment).
+    pub socket: String,
+    /// The parent's object id (the puppet).
+    pub parent_id: i64,
+    /// Index of the parent's draw object in the draw queue.
+    pub parent: usize,
+    /// The object's object-local vertices (positions + UVs).
+    pub local: Vec<Vertex>,
+    /// The object's own model matrix (origin/rotation/scale/alignment),
+    /// i.e. the offset from the socket.
+    pub local_model: glam::Mat4,
+    /// First vertex of this object's range in the shared vertex buffer.
+    pub vertex_offset: u32,
 }
 
 /// Everything needed to re-skin one puppet object every frame.
@@ -48,8 +73,6 @@ pub struct SkinningState {
     /// First vertex of this object's range in the shared vertex buffer.
     pub vertex_offset: u32,
     pub model: glam::Mat4,
-    pub z: f32,
-    pub size: glam::Vec2,
 }
 
 /// Context for building the draw queue and its effect pipelines.
@@ -79,12 +102,25 @@ impl DrawQueue {
         image_pipeline: RenderPipeline,
         copy_pipeline: RenderPipeline,
     ) -> Self {
-        let mut render_pipelines = PipelineMap::new();
+        let mut render_pipelines = new_map();
 
-        let draw_objects: Vec<DrawObject> = texture_objects
-            .into_iter()
-            .map(|tex_obj| DrawObject::build(ctx, buffers, tex_obj, &mut render_pipelines))
-            .collect();
+        let mut draw_objects: Vec<DrawObject> = Vec::with_capacity(texture_objects.len());
+        let mut id_to_index: Map<i64, usize> = new_map_with_capacity(texture_objects.len());
+        for tex_obj in texture_objects {
+            let id = tex_obj.id;
+            let obj = DrawObject::build(ctx, buffers, tex_obj, &mut render_pipelines);
+            id_to_index.insert(id, draw_objects.len());
+            draw_objects.push(obj);
+        }
+
+        // Resolve the attachment parents now that every object has an index.
+        for obj in draw_objects.iter_mut() {
+            if let Some(att) = &mut obj.attachment
+                && let Some(&index) = id_to_index.get(&att.parent_id)
+            {
+                att.parent = index;
+            }
+        }
 
         Self {
             queue: Rc::new(draw_objects),
@@ -170,8 +206,31 @@ impl DrawObject {
             pp.cache_final_bindgroup(device, &post_process.layout, &post_process.sampler);
         }
 
-        let z = texture_object.transform.position.z - 1.0;
         let vertex_offset = buffers.vertex_len;
+
+        // An object attached to a bone socket of its puppet parent: the
+        // socket matrix is re-evaluated every frame (see
+        // `update_animated_meshes`), so keep the local vertices around.
+        let attachment = match (
+            texture_object.attachment.as_deref(),
+            texture_object.parent,
+            texture_object.mesh.is_none(),
+        ) {
+            (Some(socket), Some(parent_id), true) => Some(AttachmentState {
+                socket: socket.to_string(),
+                parent_id,
+                parent: usize::MAX,
+                local: Buffers::quad_vertices(
+                    texture_object.size,
+                    texture_object.uv_scale,
+                )
+                .to_vec(),
+                local_model: texture_object.local_model,
+                vertex_offset,
+            }),
+            _ => None,
+        };
+
         let (index_range, skinning) = if let Some(mesh) = texture_object.mesh.take() {
             log::debug!(
                 "drawing mesh: {} verts, {} indices",
@@ -183,8 +242,6 @@ impl DrawObject {
                 &mesh.vertices,
                 &mesh.indices,
                 texture_object.model,
-                z,
-                texture_object.size,
             );
             let skinning = if texture_object.animations.is_empty() {
                 None
@@ -194,8 +251,6 @@ impl DrawObject {
                     animations: texture_object.animations,
                     vertex_offset,
                     model: texture_object.model,
-                    z,
-                    size: texture_object.size,
                 })
             };
             (range, skinning)
@@ -203,7 +258,6 @@ impl DrawObject {
             buffers.draw_texture(
                 queue,
                 texture_object.model,
-                z,
                 texture_object.size,
                 texture_object.uv_scale,
             );
@@ -217,6 +271,7 @@ impl DrawObject {
             fbos,
             intermediates,
             skinning,
+            attachment,
         }
     }
 
@@ -389,22 +444,47 @@ pub fn update_animated_meshes(
     draw_queue: &DrawQueue,
     elapsed: f32,
 ) {
-    for draw_object in draw_queue.queue.iter() {
+    // The animated bone sockets of every puppet, indexed like the draw
+    // queue.  `None` for objects that are not animated puppets.
+    let mut sockets: Vec<Vec<(String, glam::Mat4)>> = vec![Vec::new(); draw_queue.queue.len()];
+
+    for (index, draw_object) in draw_queue.queue.iter().enumerate() {
         let Some(skinning) = &draw_object.skinning else {
             continue;
         };
-        let vertices = skinning.mesh.skinned_vertices(
-            &skinning.animations,
-            elapsed,
-            [skinning.size.x, skinning.size.y],
-        );
-        buffers.update_mesh(
-            queue,
-            skinning.vertex_offset,
-            &vertices,
-            skinning.model,
-            skinning.z,
-            skinning.size,
-        );
+        let vertices = skinning.mesh.skinned_vertices(&skinning.animations, elapsed);
+        buffers.update_mesh(queue, skinning.vertex_offset, &vertices, skinning.model);
+
+        sockets[index] = skinning
+            .mesh
+            .animated_attachment_worlds(&skinning.animations, elapsed);
+    }
+
+    // Objects attached to a bone socket follow the puppet's bones.
+    for draw_object in draw_queue.queue.iter() {
+        let Some(attachment) = &draw_object.attachment else {
+            continue;
+        };
+        if attachment.parent >= sockets.len() {
+            continue;
+        }
+        let Some(parent) = draw_queue.queue[attachment.parent].skinning.as_ref() else {
+            // The parent is not an animated puppet: the socket stays in the
+            // bind pose (which is where it was placed at load time).
+            continue;
+        };
+        let Some((_, socket)) = sockets[attachment.parent]
+            .iter()
+            .find(|(name, _)| *name == attachment.socket)
+        else {
+            continue;
+        };
+
+        // The socket matrix is in the puppet's local space — compose it
+        // with the puppet's world matrix and the object's own offset from the
+        // socket, exactly like the loader does:
+        //     M_world(child) = M_world(parent) * M_socket * M_local
+        let model = parent.model * (*socket * attachment.local_model);
+        buffers.update_mesh(queue, attachment.vertex_offset, &attachment.local, model);
     }
 }

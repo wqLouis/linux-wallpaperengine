@@ -1122,7 +1122,10 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.1.5",
+ "serde",
 ]
 
 [[package]]
@@ -1415,10 +1418,12 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 name = "linux-wallpaper-engine"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "bytemuck",
  "clap",
  "env_logger",
  "glam",
+ "hashbrown 0.15.5",
  "indicatif",
  "log",
  "pkg_parser",
@@ -2106,7 +2111,9 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 name = "pkg_parser"
 version = "1.2.0"
 dependencies = [
+ "ahash",
  "bcndecode",
+ "hashbrown 0.15.5",
  "image",
  "log",
  "lz4_flex",

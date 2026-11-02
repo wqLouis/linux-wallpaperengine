@@ -40,7 +40,7 @@ Called by `DrawQueue::new()` for each texture object:
 ```rust
 pub struct DrawQueue {
     pub queue: Rc<Vec<DrawObject>>,                       // Ordered draw list
-    pub render_pipelines: BTreeMap<String, EffectPipelineData>, // Effect cache
+    pub render_pipelines: Map<String, EffectPipelineData>, // Effect cache
     pub image_pipeline: RenderPipeline,                   // Default image shader
 }
 ```
@@ -117,9 +117,9 @@ pub struct EffectBindGroup {
     pub bindgroup: BindGroup,                   // Textures + sampler + uniforms
     pub uniform_buffer: Option<Buffer>,         // Effect parameter uniform buffer
     pub uniform_layout: UniformLayout,          // Layout for uniform writes
-    pub material_keys: BTreeMap<String, String>, // material key → uniform name mapping
-    pub constants: BTreeMap<String, Value>,     // Material constant overrides
-    pub tex_resolutions: BTreeMap<String, [f32; 4]>, // g_TextureNResolution values
+    pub material_keys: Map<String, String>, // material key → uniform name mapping
+    pub constants: Map<String, Value>,     // Material constant overrides
+    pub tex_resolutions: Map<String, [f32; 4]>, // g_TextureNResolution values
     pub blank_view: TextureView,                // Fallback view for unused sampler slots
     pub mask_view: Option<TextureView>,         // Mask texture view (slot 1)
     pub noise_view: Option<TextureView>,        // Noise texture view (slot 2)

@@ -1,17 +1,17 @@
-use std::collections::BTreeMap;
 
+use crate::collections::{Map, new_map, sorted_entries};
 #[derive(Debug, Clone)]
 pub struct EffectLayout {
     pub sampler_names: Vec<String>,
     pub uniform_decls: Vec<(String, String)>,
-    pub uniform_material_keys: BTreeMap<String, String>,
+    pub uniform_material_keys: Map<String, String>,
     pub uniform_binding: u32,
-    pub varying_locations: BTreeMap<String, u32>,
-    pub varying_types: BTreeMap<String, String>,
+    pub varying_locations: Map<String, u32>,
+    pub varying_types: Map<String, String>,
     /// Varyings that exist in the vertex shader source (includes conditional ones).
     /// Fragment shader `in` declarations are only emitted for varyings in this set.
     pub vertex_varyings: Vec<String>,
-    pub attribute_locations: BTreeMap<String, u32>,
+    pub attribute_locations: Map<String, u32>,
     /// Whether this shader uses immediates (push constants) for uniforms.
     /// Set by the pipeline handler after computing the total uniform size.
     pub use_immediates: bool,
@@ -32,7 +32,7 @@ impl EffectLayout {
 pub fn collect_layout(
     source1: &str,
     source2: &str,
-    headers: &BTreeMap<String, String>,
+    headers: &Map<String, String>,
 ) -> EffectLayout {
     let mut collector = LayoutCollector::default();
 
@@ -47,12 +47,17 @@ pub fn collect_layout(
     collector.sampler_names.sort();
     collector.sampler_names.dedup();
 
-    let uniform_decls: Vec<(String, String)> = collector.uniform_map.into_iter().collect();
+    // Sorted by name: the declaration order fixes the std140 offsets of
+    // the uniform block, so it has to be stable across runs.
+    let uniform_decls: Vec<(String, String)> = sorted_entries(&collector.uniform_map)
+        .into_iter()
+        .map(|(name, ty)| (name.clone(), ty.clone()))
+        .collect();
     let uniform_binding = collector.sampler_names.len() as u32 * 2 + 2;
 
     let mut varying_names: Vec<String> = collector.varying_set.keys().cloned().collect();
     varying_names.sort();
-    let mut varying_locations: BTreeMap<String, u32> = BTreeMap::new();
+    let mut varying_locations: Map<String, u32> = new_map();
     let mut next_location: u32 = 0;
     for name in &varying_names {
         let array_size = collector
@@ -66,7 +71,7 @@ pub fn collect_layout(
 
     let mut attribute_names: Vec<String> = collector.attribute_set.keys().cloned().collect();
     attribute_names.sort();
-    let attribute_locations: BTreeMap<String, u32> = attribute_names
+    let attribute_locations: Map<String, u32> = attribute_names
         .iter()
         .enumerate()
         .map(|(i, name)| (name.clone(), i as u32))
@@ -93,16 +98,16 @@ pub fn collect_layout(
 #[derive(Default)]
 struct LayoutCollector {
     sampler_names: Vec<String>,
-    uniform_map: BTreeMap<String, String>,
-    varying_set: BTreeMap<String, u32>,
-    varying_types: BTreeMap<String, String>,
-    varying_array_sizes: BTreeMap<String, u32>,
-    attribute_set: BTreeMap<String, u32>,
-    material_keys: BTreeMap<String, String>,
+    uniform_map: Map<String, String>,
+    varying_set: Map<String, u32>,
+    varying_types: Map<String, String>,
+    varying_array_sizes: Map<String, u32>,
+    attribute_set: Map<String, u32>,
+    material_keys: Map<String, String>,
 }
 
 impl LayoutCollector {
-    fn collect(&mut self, source: &str, headers: &BTreeMap<String, String>) {
+    fn collect(&mut self, source: &str, headers: &Map<String, String>) {
         for line in source.lines() {
             let trimmed = line.trim();
 
@@ -188,6 +193,7 @@ impl LayoutCollector {
         }
     }
 }
+
 
 fn extract_material_key(line: &str) -> Option<String> {
     if let Some(comment_pos) = line.find("//") {
@@ -318,5 +324,31 @@ pub(crate) fn type_size(ty: &str) -> u64 {
         stride * array_size
     } else {
         base_size
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The uniform block layout is derived from the declaration order, so
+    /// the declarations have to be emitted in a stable order even though
+    /// they are collected in a hash map.
+    #[test]
+    fn uniform_declarations_are_sorted_by_name() {
+        let source = "uniform float g_Beta;\nuniform vec4 g_Alpha;\nuniform float g_Gamma;\n";
+        let layout = collect_layout(source, source, &new_map());
+
+        let names: Vec<&str> = layout
+            .uniform_decls
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(names, ["g_Alpha", "g_Beta", "g_Gamma"]);
+
+        // The layout must not depend on the hash seed, so collecting the
+        // same source twice has to yield the same declaration order.
+        let again = collect_layout(source, source, &new_map());
+        assert_eq!(again.uniform_decls, layout.uniform_decls);
     }
 }

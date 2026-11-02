@@ -4,19 +4,19 @@
 //! sizes), then fills and uploads the buffer each frame with system values
 //! (time, projection, cursor) and material constants.
 
-use std::collections::BTreeMap;
 
 use crate::scene::loader::shader::{align_up, type_align, type_size};
+use crate::collections::{Map, new_map};
 
 #[derive(Debug, Clone)]
 pub struct UniformLayout {
-    offsets: BTreeMap<String, (u64, u64)>,
+    offsets: Map<String, (u64, u64)>,
     total_size: u64,
 }
 
 impl UniformLayout {
     pub fn new(decls: &[(String, String)]) -> Self {
-        let mut offsets = BTreeMap::new();
+        let mut offsets = new_map();
         let mut offset: u64 = 0;
 
         for (name, ty) in decls {
@@ -86,8 +86,8 @@ impl UniformLayout {
     pub fn populate_effect_params(
         &self,
         buf: &mut [u8],
-        constants: &BTreeMap<String, serde_json::Value>,
-        material_keys: &BTreeMap<String, String>,
+        constants: &Map<String, serde_json::Value>,
+        material_keys: &Map<String, String>,
         time: f32,
         projection: &[[f32; 4]; 4],
         sys: &SystemUniforms,
@@ -176,7 +176,7 @@ impl UniformLayout {
 
 pub struct SystemUniforms {
     pub screen_resolution: [u32; 2],
-    pub tex_resolutions: BTreeMap<String, [f32; 4]>,
+    pub tex_resolutions: Map<String, [f32; 4]>,
     /// Normalized cursor position in [0, 1] range, (0,0) = top-left (UV space)
     pub cursor_position: [f32; 2],
 }
@@ -186,7 +186,7 @@ impl SystemUniforms {
     pub fn with_resolution(res: [u32; 2]) -> Self {
         SystemUniforms {
             screen_resolution: res,
-            tex_resolutions: BTreeMap::new(),
+            tex_resolutions: new_map(),
             cursor_position: [0.0, 0.0],
         }
     }
@@ -217,8 +217,8 @@ mod tests {
 
         layout.populate_effect_params(
             &mut buf,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
+            &new_map(),
+            &new_map(),
             1.5,
             &[
                 [1.0, 0.0, 0.0, 0.0],

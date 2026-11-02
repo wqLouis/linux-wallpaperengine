@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use glam::{Vec2, Vec3};
 use pkg_parser::pkg_parser::tex_parser::Tex;
@@ -11,15 +11,28 @@ use crate::scene::loader::{
     scene_loader::Scene,
 };
 use crate::scene::renderer::transform::{Alignment, Transform, build_model_matrix, compose};
+use crate::collections::{Map, new_map};
 
 #[derive(Debug, Clone)]
 pub struct TextureObject {
+    /// The scene.json object id — used to resolve parent/attachment links.
+    pub id: i64,
     pub texture: Rc<Tex>,
-    /// Local transform (position, rotation, scale, pivot, alignment).
+    /// Local transform (position, rotation, scale, alignment).
+    ///
+    /// Kept for reference — the world matrix is pre-computed in
+    /// [`TextureObject::model`].
+    #[allow(dead_code)]
     pub transform: Transform,
     /// World-space model matrix, computed by composing with the parent
     /// chain.  This is the matrix the renderer should use.
     pub model: glam::Mat4,
+    /// The object's own model matrix (before the parent chain is applied).
+    ///
+    /// Needed for objects attached to a bone socket: the socket matrix is
+    /// composed with this local matrix every frame, so the animated socket
+    /// can replace the bind-pose one.
+    pub local_model: glam::Mat4,
     pub size: Vec2,
     /// UV scale applied to plain quads: `real_dimension / storage_dimension`.
     /// Wallpaper Engine only samples the real (non-padded) top-left region of
@@ -58,7 +71,10 @@ pub enum PlaybackMode {
 }
 
 enum ObjectType {
-    Texture(TextureObject),
+    /// Boxed: a [`TextureObject`] is far bigger than the other variants
+    /// (it carries the optional puppet mesh), so keeping it inline would
+    /// make every enum value that large.
+    Texture(Box<TextureObject>),
     Audio(AudioObject),
     Node(Node),
 }
@@ -72,9 +88,9 @@ impl ObjectMap {
     ) -> Self {
         let mut render_sequence: Vec<i64> = vec![];
 
-        let mut texture_map: BTreeMap<i64, Rc<RefCell<TextureObject>>> = BTreeMap::new();
+        let mut texture_map: Map<i64, Rc<RefCell<TextureObject>>> = new_map();
         let mut audio_vec: Vec<AudioObject> = Vec::new();
-        let mut node_map: BTreeMap<i64, Node> = BTreeMap::new();
+        let mut node_map: Map<i64, Node> = new_map();
 
         for object in objects {
             let Some(loaded_object) = Self::load_object(object, scene, clear_color, no_mdl) else {
@@ -86,7 +102,7 @@ impl ObjectMap {
                 }
                 ObjectType::Texture(texture_object) => {
                     render_sequence.push(object.id);
-                    texture_map.insert(object.id, Rc::new(RefCell::new(texture_object)));
+                    texture_map.insert(object.id, Rc::new(RefCell::new(*texture_object)));
                 }
                 ObjectType::Node(node) => {
                     node_map.insert(object.id, node);
@@ -114,7 +130,10 @@ impl ObjectMap {
                 depth += 1;
                 cur = parent_of(pid);
             }
-            depth
+            // Depth first, then the object id: the tie-break keeps the
+            // propagation order stable now that the map has no inherent
+            // order of its own.
+            (depth, *id)
         });
 
         for id in ids {
@@ -154,9 +173,19 @@ impl ObjectMap {
                 };
 
             if let Some(pm) = parent_model {
+                // An object attached to a bone socket is placed *relative* to
+                // that socket: the socket matrix is the base and the
+                // object's own origin/angles/scale are the offset from it
+                // (`M_world(child) = M_world(parent) * M_socket * M_local`).
+                //
+                // The scene data confirms it: a puppet's face is attached to
+                // the controller's "Attachment" socket (which sits at the
+                // controller's origin, i.e. at the character's feet) with an
+                // origin of ~750 px — the origin has to be applied on top of
+                // the socket, otherwise the face would end up at the feet.
                 let local = match socket {
-                    Some(socket) => socket * texture.model,
-                    None => texture.model,
+                    Some(socket) => socket * texture.local_model,
+                    None => texture.local_model,
                 };
                 // M_child_world = M_parent_world * M_child_local
                 texture.model = compose(pm, local);
@@ -316,16 +345,9 @@ impl ObjectMap {
             .unwrap_or(&Vectors::Scaler(1.0))
             .parse()
             .unwrap_or_default();
-        let pivot = object
-            .pivot
-            .as_ref()
-            .and_then(|v| v.parse())
-            .unwrap_or_default();
         let alignment = parse_alignment(object.alignment.as_deref());
 
-        let transform = Transform::new(position, rotation, scale)
-            .with_pivot(pivot)
-            .with_alignment(alignment);
+        let transform = Transform::new(position, rotation, scale).with_alignment(alignment);
 
         match object.element_type() {
             ElementType::Image => {
@@ -383,7 +405,14 @@ impl ObjectMap {
 
                 // Load puppet mesh if the model references a .mdl file
                 // (unless --no-mdl was passed).
-                let obj_dims = [size.x, size.y];
+                //
+                // The mesh's UVs are relative to the texture's *real*
+                // (non-padded) region, so they carry the same UV scale the
+                // plain quads use.
+                let uv_scale = Vec2::new(
+                    texture.real_dimension[0] as f32 / texture.dimension[0].max(1) as f32,
+                    texture.real_dimension[1] as f32 / texture.dimension[1].max(1) as f32,
+                );
                 let mesh = if no_mdl {
                     None
                 } else {
@@ -398,7 +427,7 @@ impl ObjectMap {
                             );
                             scene.assets.model(puppet_path)
                         })
-                        .and_then(|mdl_rc| mdl::extract_mesh(mdl_rc, obj_dims))
+                        .and_then(|mdl_rc| mdl::extract_mesh(mdl_rc, uv_scale))
                 };
 
                 if let Some(mesh) = &mesh {
@@ -424,16 +453,15 @@ impl ObjectMap {
                     );
                 }
 
-                return Some(ObjectType::Texture(TextureObject {
+                let local_model = build_model_matrix(&transform, size);
+
+                return Some(ObjectType::Texture(Box::new(TextureObject {
+                    id: object.id,
                     transform,
-                    model: build_model_matrix(&transform, size),
+                    model: local_model,
+                    local_model,
                     size,
-                    uv_scale: Vec2::new(
-                        texture.real_dimension[0] as f32
-                            / texture.dimension[0].max(1) as f32,
-                        texture.real_dimension[1] as f32
-                            / texture.dimension[1].max(1) as f32,
-                    ),
+                    uv_scale,
                     parent: object.parent,
                     texture: Rc::clone(&texture),
                     effects: object.effects.clone(),
@@ -441,7 +469,7 @@ impl ObjectMap {
                     mesh,
                     animations,
                     attachment: object.attachment.clone(),
-                }));
+                })));
             }
 
             ElementType::Sound => {

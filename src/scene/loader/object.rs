@@ -1,15 +1,14 @@
-use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::scene::Vectors;
+use crate::collections::{Map};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Object {
     pub alignment: Option<String>,
-    pub pivot: Option<Vectors>,
     pub alpha: Option<Value>,
     pub angles: Option<Vectors>,
     pub brightness: Option<f64>,
@@ -142,11 +141,11 @@ impl Object {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pass {
-    pub constantshadervalues: Option<BTreeMap<String, Value>>,
+    pub constantshadervalues: Option<Map<String, Value>>,
     pub id: i64,
     #[serde(default)]
     pub textures: Vec<Option<String>>,
-    pub combos: Option<BTreeMap<String, i64>>,
+    pub combos: Option<Map<String, i64>>,
     pub usertextures: Option<(Value, Value)>,
 }
 
@@ -166,7 +165,7 @@ pub struct Instanceoverride {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Instance {
-    pub combos: BTreeMap<String, Value>,
+    pub combos: Map<String, Value>,
     pub id: i64,
     pub textures: Vec<String>,
     #[serde(default)]

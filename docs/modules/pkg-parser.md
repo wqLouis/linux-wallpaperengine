@@ -37,7 +37,7 @@ The top-level package container.
 ```rust
 pub struct Pkg {
     pub header: Header,                    // Package metadata
-    pub files: HashMap<String, Vec<u8>>,   // All files by path
+    pub files: FileMap,   // All files by path
 }
 ```
 

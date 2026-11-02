@@ -29,7 +29,7 @@ Manages GPU uniform buffer layout for effect shaders.
 
 ```rust
 pub struct UniformLayout {
-    offsets: BTreeMap<String, (u64, u64)>,  // (offset, size)
+    offsets: Map<String, (u64, u64)>,  // (offset, size)
     total_size: u64,
 }
 ```
@@ -80,7 +80,7 @@ Fills a uniform buffer with all system + material values:
 ```rust
 pub struct SystemUniforms {
     pub screen_resolution: [u32; 2],
-    pub tex_resolutions: BTreeMap<String, [f32; 4]>,
+    pub tex_resolutions: Map<String, [f32; 4]>,
     /// Normalized cursor position in [0, 1] range, (0,0) = top-left (UV space)
     pub cursor_position: [f32; 2],
 }
@@ -150,7 +150,7 @@ Loads a mask or noise texture from `scene.assets`, uploaded with the correct GPU
 
 **File:** `pipeline_helpers.rs`
 
-### `collect_default_defines(vert_source, frag_source) -> BTreeMap<String, String>`
+### `collect_default_defines(vert_source, frag_source) -> Map<String, String>`
 
 Scans both shader sources for `// [COMBO] {"combo":"NAME","default":N}` JSON annotations and extracts default values.
 
@@ -210,12 +210,12 @@ pub struct EffectLayout {
     pub sampler_names: Vec<String>,                    // e.g. ["g_Texture0", "g_Texture1"]
     pub sampler_bindings: Vec<u32>,                   // Binding points (0, 2, 4, ...)
     pub uniform_decls: Vec<(String, String)>,          // (name, type) pairs
-    pub uniform_material_keys: BTreeMap<String, String>, // material key → uniform name
+    pub uniform_material_keys: Map<String, String>, // material key → uniform name
     pub uniform_binding: u32,                          // Offset after samplers (= sampler_count * 2 + 2)
-    pub varying_locations: BTreeMap<String, u32>,     // Varying → location mapping
-    pub varying_types: BTreeMap<String, String>,       // e.g. "v_TexCoord" → "vec4"
+    pub varying_locations: Map<String, u32>,     // Varying → location mapping
+    pub varying_types: Map<String, String>,       // e.g. "v_TexCoord" → "vec4"
     pub vertex_varyings: Vec<String>,                  // Varyings found in vertex shader source
-    pub attribute_locations: BTreeMap<String, u32>,    // Attribute → location mapping
+    pub attribute_locations: Map<String, u32>,    // Attribute → location mapping
 }
 ```
 
@@ -265,7 +265,7 @@ Introsects both vertex (source1) and fragment (source2) shaders, collecting:
 
 **File:** `shader/header.rs`
 
-#### `get_headers(load: impl Fn(&str) -> Option<Vec<u8>>) -> BTreeMap<String, String>`
+#### `get_headers(load: impl Fn(&str) -> Option<Vec<u8>>) -> Map<String, String>`
 
 Loads shader header files through the supplied byte loader (the scene's `AssetStore`). Headers are stored under `shaders/common*.h` paths.
 

@@ -1,15 +1,15 @@
 //! Shared context types for effect-pipeline construction.
 
-use std::collections::BTreeMap;
 
 use wgpu::{BindGroupLayout, Device, Queue, Texture, TextureView};
 
 use crate::scene::{loader::scene_loader::Scene, renderer::post_process::PostProcess};
 
 use super::pipeline_handler::EffectPipelineData;
+use crate::collections::{Map};
 
 /// Cache of compiled effect pipelines, keyed by effect/material + combos.
-pub type PipelineMap = BTreeMap<String, EffectPipelineData>;
+pub type PipelineMap = Map<String, EffectPipelineData>;
 
 /// Immutable scene/GPU context shared by every effect-pipeline builder.
 pub struct EffectContext<'a> {

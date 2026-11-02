@@ -1,7 +1,6 @@
 use indicatif::ProgressBar;
 use pkg_parser::pkg_parser::{mdl_parser::MdlFile, parser::Pkg, tex_parser::Tex};
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
@@ -9,6 +8,7 @@ use std::{
 };
 
 use super::assets_loader::{Asset, AssetStore, AssetType};
+use crate::collections::{Map, new_map};
 
 pub struct Scene {
     pub root: crate::scene::loader::scene::Root,
@@ -33,7 +33,7 @@ impl Scene {
             panic!("Failed to load PKG file '{}': {}", path.display(), e);
         });
 
-        let mut assets: BTreeMap<String, Asset> = BTreeMap::new();
+        let mut assets: Map<String, Asset> = new_map();
         // Texture decoding is the expensive part, so collect the textures
         // first and decode them in parallel below.
         let mut textures: Vec<(String, Vec<u8>)> = Vec::new();
@@ -57,7 +57,7 @@ impl Scene {
                         log::debug!("pkg: skipping mdl (--no-mdl): {}", key);
                         continue;
                     }
-                    // The MDL format is only partially reverse-engineered, so the
+                    // The MDL format is only partially documented, so the
                     // parser is allowed to fail: log the broken file and skip it
                     // rather than letting one model break the whole wallpaper.
                     match MdlFile::new(&val) {
@@ -169,3 +169,4 @@ fn parse_textures(textures: Vec<(String, Vec<u8>)>, pb: &ProgressBar) -> Vec<(St
             .collect()
     })
 }
+

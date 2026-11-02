@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
 
+use crate::collections::{Map, new_map};
 pub const WM_SAMPLER_BINDING: u32 = 1;
 
 pub const HEADER_NAMES: &[&str] = &[
@@ -23,8 +23,8 @@ pub const HEADER_NAMES: &[&str] = &[
 /// etc. in the scene package (or the Wallpaper Engine assets directory).
 /// Returns a map of bare filename → file content. Any header reported missing
 /// by `load` is skipped with a warning.
-pub fn get_headers(load: impl Fn(&str) -> Option<Vec<u8>>) -> BTreeMap<String, String> {
-    let mut map = BTreeMap::new();
+pub fn get_headers(load: impl Fn(&str) -> Option<Vec<u8>>) -> Map<String, String> {
+    let mut map = new_map();
 
     for name in HEADER_NAMES {
         let key = format!("shaders/{}", name);

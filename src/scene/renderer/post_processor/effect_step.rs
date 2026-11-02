@@ -1,10 +1,11 @@
 //! Unified effect step model. Single-pass and multi-pass effects are
 //! flattened into [`EffectStep`]s with named FBOs allocated per-effect.
 
-use std::{collections::BTreeMap, rc::Rc};
+use std::{rc::Rc};
 
 use serde::Deserialize;
 use wgpu::*;
+use crate::collections::{Map, new_map};
 
 use crate::scene::{
     loader::{object::Effect, scene_loader::Scene, shader::WM_SAMPLER_BINDING},
@@ -82,13 +83,13 @@ pub fn build_effect_steps(
     pipelines: &mut PipelineMap,
     target: &EffectTarget,
     no_effects: bool,
-) -> (Vec<EffectStep>, BTreeMap<String, FboTexture>, bool) {
+) -> (Vec<EffectStep>, Map<String, FboTexture>, bool) {
     if no_effects {
-        return (vec![], BTreeMap::new(), false);
+        return (vec![], new_map(), false);
     }
 
     let mut steps = Vec::new();
-    let mut fbos = BTreeMap::new();
+    let mut fbos = new_map();
 
     for effect in effects {
         let raw = match ctx.scene.assets.json(&effect.file) {
@@ -281,7 +282,7 @@ fn build_tex_resolutions(
     sh: u32,
     mask: Option<&Texture>,
     noise: Option<&Texture>,
-) -> BTreeMap<String, [f32; 4]> {
+) -> Map<String, [f32; 4]> {
     let (sw, sh) = (sw as f32, sh as f32);
     pipedata
         .layout
@@ -311,7 +312,7 @@ impl EffectStep {
         device: &Device,
         view_a: &TextureView,
         view_b: &TextureView,
-        fbos: &BTreeMap<String, FboTexture>,
+        fbos: &Map<String, FboTexture>,
         sampler: &Sampler,
     ) {
         self.cached_bg_a = Some(build_step_bindgroup(device, self, view_a, fbos, sampler));
@@ -327,7 +328,7 @@ fn build_step_bindgroup(
     device: &Device,
     step: &EffectStep,
     source_view: &TextureView,
-    fbos: &BTreeMap<String, FboTexture>,
+    fbos: &Map<String, FboTexture>,
     sampler: &Sampler,
 ) -> BindGroup {
     let n = step.pipedata.layout.sampler_count();
@@ -362,7 +363,7 @@ pub fn make_step_bindgroup(
     device: &Device,
     step: &EffectStep,
     source_view: &TextureView,
-    fbos: &BTreeMap<String, FboTexture>,
+    fbos: &Map<String, FboTexture>,
     sampler: &Sampler,
 ) -> BindGroup {
     build_step_bindgroup(device, step, source_view, fbos, sampler)
@@ -372,7 +373,7 @@ fn resolve_texture<'a>(
     slot: u32,
     step: &'a EffectStep,
     source_view: &'a TextureView,
-    fbos: &'a BTreeMap<String, FboTexture>,
+    fbos: &'a Map<String, FboTexture>,
 ) -> &'a TextureView {
     if let Some((name, _)) = step.bind_inputs.iter().find(|(_, i)| *i == slot) {
         if name == "previous" {

@@ -172,7 +172,9 @@ Creates pre-allocated GPU buffers sized for maximum texture count.
 | Method | Description |
 |--------|-------------|
 | `Buffers::draw_rect(&mut self, queue, pos: [Vec3; 4])` | Appends a quad (4 vertices with UV `[0,0]`-`[1,1]`, 6 indices) |
-| `Buffers::draw_texture(&mut self, queue, origin, angles, scale, size)` | Creates a rotated quad from transform params (applies rotation via `Mat2::from_angle(angles.z)` around Z), delegates to `draw_rect` |
+| `Buffers::draw_texture(&mut self, queue, model, size, uv_max)` | Creates a quad from the layer's model matrix (position/rotation/scale/alignment anchor), delegates to `draw_rect` |
+| `Buffers::draw_mesh(&mut self, queue, vertices, indices, model)` | Uploads a puppet mesh (MDL units, verbatim) transformed by the model matrix |
+| `Buffers::update_mesh(&mut self, queue, vertex_offset, vertices, model)` | Rewrites a puppet's vertex range after CPU skinning |
 | `projection` | Buffer for `CameraUniform` struct (projection×view matrix) |
 
 ---
@@ -234,7 +236,21 @@ Extracts camera parameters from the scene root (center-eye-target Z, up vector, 
 Computes the view-projection matrix:
 - **View:** `Mat4::look_at_rh(eye, center, up)`
 - **Projection:** `Mat4::orthographic_rh(0, w, 0, h, nearz, farz)`
-- Result: `(projection × view)` as column-major 4×4 array
+- Result: `(ortho × translate(eye) × view)` as column-major 4×4 array
+
+The eye translation cancels the lookAt translation, so only the camera's
+*rotation* affects the result (identity in practice — Wallpaper Engine's
+2D scenes use a camera that looks straight down -z).
+
+> **The scene's world space has its origin in the bottom-left corner**: the
+> scene spans `[0, w] × [0, h]`, so the orthographic box is *anchored* at the
+> origin (`left = 0`, `bottom = 0`) instead of being centred on it.
+>
+> Verified against real `scene.json` files: the full-screen layer of a
+> wallpaper is always at `(w/2, h/2)` with `size = (w, h)` — e.g. `origin
+> "1920 1080"` / `size "3840 2160"` for a 4K scene — i.e. the layer covers
+> `[0, w] × [0, h]`.  A *centred* box would push the whole scene into the
+> top-right quadrant of the screen.
 
 ### `CameraUniform`
 

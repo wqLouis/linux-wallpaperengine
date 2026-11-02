@@ -10,11 +10,12 @@
 //! [`AssetStore::json`], [`AssetStore::model`], [`AssetStore::shader`], …)
 //! rather than a catch-all byte bucket.
 
-use std::{cell::RefCell, collections::BTreeMap, fs, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, fs, path::PathBuf, rc::Rc};
 
 use pkg_parser::pkg_parser::{mdl_parser::MdlFile, tex_parser::Tex};
 
 use super::shader::{self, ShaderProgram};
+use crate::collections::{Map, sorted_keys};
 
 // ---------------------------------------------------------------------------
 // Asset classification
@@ -163,13 +164,13 @@ impl Asset {
 
 /// Keyed store of parsed assets with lazy disk fallback and shader parsing.
 pub struct AssetStore {
-    map: RefCell<BTreeMap<String, Asset>>,
-    headers: RefCell<Option<Rc<BTreeMap<String, String>>>>,
+    map: RefCell<Map<String, Asset>>,
+    headers: RefCell<Option<Rc<Map<String, String>>>>,
     assets_path: Option<PathBuf>,
 }
 
 impl AssetStore {
-    pub fn new(map: BTreeMap<String, Asset>, assets_path: Option<PathBuf>) -> Self {
+    pub fn new(map: Map<String, Asset>, assets_path: Option<PathBuf>) -> Self {
         Self {
             map: RefCell::new(map),
             headers: RefCell::new(None),
@@ -263,7 +264,10 @@ impl AssetStore {
 
     /// Eagerly parse every shader pair present in the store.
     pub fn preparse_shaders(&self) {
-        let keys: Vec<String> = self.map.borrow().keys().cloned().collect();
+        let keys: Vec<String> = {
+            let map = self.map.borrow();
+            sorted_keys(&map).into_iter().cloned().collect()
+        };
         let mut bases: Vec<String> = Vec::new();
         for key in keys {
             if let Some(base) = key.strip_suffix(".frag")
@@ -277,7 +281,7 @@ impl AssetStore {
     }
 
     /// Built-in shader headers, loaded once and shared across programs.
-    fn shared_headers(&self) -> Rc<BTreeMap<String, String>> {
+    fn shared_headers(&self) -> Rc<Map<String, String>> {
         {
             let cached = self.headers.borrow();
             if let Some(headers) = cached.as_ref() {

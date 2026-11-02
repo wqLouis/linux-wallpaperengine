@@ -99,28 +99,59 @@ impl Vectors {
                 y: *val as f32,
                 z: *val as f32,
             }),
-            Vectors::Text(val) => {
-                let vec = val
-                    .split_whitespace()
-                    .map(|f| f.parse::<f32>().unwrap_or_default())
-                    .collect::<Vec<f32>>();
-
-                match vec.as_slice() {
-                    [x, y] => Some(Vec3 {
-                        x: *x,
-                        y: *y,
-                        z: 0.0,
-                    }),
-                    [x, y, z] => Some(Vec3 {
-                        x: *x,
-                        y: *y,
-                        z: *z,
-                    }),
-                    _ => None,
-                }
-            }
-            Vectors::Object(_) => None,
+            Vectors::Text(val) => parse_vector_text(val),
+            Vectors::Object(value) => parse_vector_value(value),
         }
+    }
+}
+
+/// Parse a `"x y z"` (or `"x y"`) vector string.
+fn parse_vector_text(text: &str) -> Option<Vec3> {
+    let vec = text
+        .split_whitespace()
+        .map(|f| f.parse::<f32>().unwrap_or_default())
+        .collect::<Vec<f32>>();
+
+    match vec.as_slice() {
+        [x, y] => Some(Vec3 {
+            x: *x,
+            y: *y,
+            z: 0.0,
+        }),
+        [x, y, z] => Some(Vec3 {
+            x: *x,
+            y: *y,
+            z: *z,
+        }),
+        _ => None,
+    }
+}
+
+/// Parse a vector from a JSON value.
+///
+/// Wallpaper Engine's property loader understands a nested `value` object
+/// (a user property bound to a JSON value) and broadcasts a scalar to all
+/// three axes, so `"scale": 1` means `1 1 1`.
+fn parse_vector_value(value: &Value) -> Option<Vec3> {
+    match value {
+        Value::Number(n) => {
+            let v = n.as_f64()? as f32;
+            Some(Vec3 { x: v, y: v, z: v })
+        }
+        Value::String(s) => parse_vector_text(s),
+        Value::Array(items) => {
+            let mut out = [0.0f32; 3];
+            for (i, item) in items.iter().take(3).enumerate() {
+                out[i] = item.as_f64()? as f32;
+            }
+            Some(Vec3 {
+                x: out[0],
+                y: out[1],
+                z: out[2],
+            })
+        }
+        Value::Object(map) => map.get("value").and_then(parse_vector_value),
+        _ => None,
     }
 }
 
@@ -139,5 +170,38 @@ impl<T: DeserializeOwned> BindUserProperty<T> {
                 Some(serde_json::from_value::<T>(obj.get("value")?.clone()).ok()?)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scalar_is_broadcast_to_all_axes() {
+        // Wallpaper Engine's vec3 loader broadcasts a scalar ("scale": 1).
+        let v = Vectors::Scaler(2.0).parse().unwrap();
+        assert_eq!(v, Vec3::new(2.0, 2.0, 2.0));
+    }
+
+    #[test]
+    fn text_vector_is_parsed() {
+        let v = Vectors::Text("10 20".into()).parse().unwrap();
+        assert_eq!(v, Vec3::new(10.0, 20.0, 0.0));
+        let v = Vectors::Text("10 20 30".into()).parse().unwrap();
+        assert_eq!(v, Vec3::new(10.0, 20.0, 30.0));
+    }
+
+    #[test]
+    fn user_property_binding_is_resolved() {
+        // A nested "value" object (a user property bound to a JSON value) is
+        // understood by Wallpaper Engine's property loader.
+        let json = serde_json::json!({ "value": "1 2 3" });
+        let v = Vectors::Object(json).parse().unwrap();
+        assert_eq!(v, Vec3::new(1.0, 2.0, 3.0));
+
+        let json = serde_json::json!({ "value": 4 });
+        let v = Vectors::Object(json).parse().unwrap();
+        assert_eq!(v, Vec3::new(4.0, 4.0, 4.0));
     }
 }

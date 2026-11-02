@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
 
 use wgpu::*;
 
 use crate::scene::loader::shader::{EffectLayout, WM_SAMPLER_BINDING};
+use crate::collections::{Map};
 
 pub fn apply_texture_combos(
-    defines: &mut BTreeMap<String, String>,
+    defines: &mut Map<String, String>,
     pass_textures: &[Option<String>],
 ) {
     // The textures array index is the GL texture unit number.

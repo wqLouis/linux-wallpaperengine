@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, HashSet};
 
-pub fn replace_texture_calls(line: &str, sampler_set: &HashSet<&str>) -> String {
+use crate::collections::{Map, Set};
+pub fn replace_texture_calls(line: &str, sampler_set: &Set<&str>) -> String {
     let mut result = line.to_string();
 
     for func in &["texture(", "textureLod("] {
@@ -39,7 +39,7 @@ pub fn replace_texture_calls(line: &str, sampler_set: &HashSet<&str>) -> String 
     result
 }
 
-pub fn fix_implicit_truncation(line: &str, varying_types: &BTreeMap<String, String>) -> String {
+pub fn fix_implicit_truncation(line: &str, varying_types: &Map<String, String>) -> String {
     // Only handle simple assignments: `varying = expression;`
     if !line.ends_with(';') || line.contains(['*', '+', '-']) {
         return line.to_string();

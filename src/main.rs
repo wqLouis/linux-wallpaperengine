@@ -1,3 +1,4 @@
+mod collections;
 mod scene;
 
 use std::path::Path;

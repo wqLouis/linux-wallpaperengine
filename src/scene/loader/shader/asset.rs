@@ -5,9 +5,10 @@
 //! independent of the runtime combo values, so it is done up-front by the
 //! loader instead of on every pipeline compilation.
 
-use std::{collections::BTreeMap, rc::Rc};
+use std::{rc::Rc};
 
 use super::{EffectLayout, collect_default_defines, collect_layout, collect_source_defines};
+use crate::collections::{Map};
 
 /// A parsed vertex/fragment shader pair.
 #[derive(Debug, Clone)]
@@ -15,19 +16,19 @@ pub struct ShaderProgram {
     pub vertex: String,
     pub fragment: String,
     /// Shared built-in headers, resolved during parsing.
-    pub headers: Rc<BTreeMap<String, String>>,
+    pub headers: Rc<Map<String, String>>,
     /// Combined shader interface layout (samplers, uniforms, varyings).
     pub layout: EffectLayout,
     /// Default values from `[COMBO]` annotations in either stage.
-    pub default_defines: BTreeMap<String, String>,
+    pub default_defines: Map<String, String>,
     /// Plain `#define` macros collected from either stage.
-    pub source_defines: BTreeMap<String, String>,
+    pub source_defines: Map<String, String>,
 }
 
 impl ShaderProgram {
     /// Parse a shader pair. Either stage may be empty when a shader only has
     /// one stage.
-    pub fn parse(vertex: String, fragment: String, headers: Rc<BTreeMap<String, String>>) -> Self {
+    pub fn parse(vertex: String, fragment: String, headers: Rc<Map<String, String>>) -> Self {
         let layout = collect_layout(&vertex, &fragment, &headers);
         let default_defines = collect_default_defines(&vertex, &fragment);
 

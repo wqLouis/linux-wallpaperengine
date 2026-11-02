@@ -30,10 +30,11 @@
 //! generation for a new format is just a matter of pointing the
 //! generator at a texture in that format.
 
-use std::{cell::RefCell, collections::HashMap};
+use std::{cell::RefCell};
 
 use pkg_parser::pkg_parser::tex_parser::Tex;
 use wgpu::*;
+use crate::collections::{Map, new_map};
 
 const MIPGEN_SHADER: &str = include_str!("./mipgen.wgsl");
 
@@ -47,7 +48,7 @@ pub struct MipChainGenerator {
     /// lets [`MipChainGenerator::generate`] take `&self`, which is what
     /// the renderer wants (the generator is stored in `WgpuApp` and
     /// passed through `DrawQueue` / `DrawObject` / `upload_texture`).
-    pipelines: RefCell<HashMap<TextureFormat, RenderPipeline>>,
+    pipelines: RefCell<Map<TextureFormat, RenderPipeline>>,
     bind_group_layout: BindGroupLayout,
     sampler: Sampler,
 }
@@ -91,7 +92,7 @@ impl MipChainGenerator {
         });
 
         Self {
-            pipelines: RefCell::new(HashMap::new()),
+            pipelines: RefCell::new(new_map()),
             bind_group_layout,
             sampler,
         }

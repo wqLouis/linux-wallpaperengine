@@ -4,21 +4,23 @@
 //!   * `origin`  → [`Transform::position`]
 //!   * `angles`  → [`Transform::rotation`]
 //!   * `scale`   → [`Transform::scale`]
-//!   * `pivot`   → [`Transform::pivot`]
 //!   * `alignment` → [`Transform::alignment`]
 //!
 //! Order of operations in Wallpaper Engine:
-//!   1. Translate the object so the pivot is at the origin.
-//!   2. Rotate around the pivot (Euler `angles`).
-//!   3. Scale around the pivot (`scale`).
+//!   1. Translate the object so the anchor is at the origin.
+//!   2. Rotate around the anchor (Euler `angles`).
+//!   3. Scale around the anchor (`scale`).
 //!   4. Translate the result to its world `position` (`origin`).
 //!
 //! For a child object, the local position is interpreted as an offset in
 //! the parent's frame, and the composed model matrix is
 //! `M_parent_world * M_child_local`.
 //!
-//! [`Alignment`] is an optional pre-shift of the pivot, used to anchor
+//! [`Alignment`] is an optional pre-shift of the anchor, used to anchor
 //! text/image layers to a specific side (left, right, top-left, etc.).
+//!
+//! There is **no `pivot` property in Wallpaper Engine** — the string does
+//! not even occur in the binary — so the port does not have one either.
 //!
 //! ## Rotation convention
 //!
@@ -32,31 +34,56 @@ use serde::{Deserialize, Serialize};
 
 /// Anchor alignment — which side of the object the layer is anchored to.
 ///
-/// The alignment is implemented as a 2D pivot shift: e.g. a layer with
-/// `Right` alignment has its pivot at the right edge, so when its
+/// The alignment is implemented as a 2D anchor shift: e.g. a layer with
+/// `Right` alignment has its anchor at the right edge, so when its
 /// `position` is at the right edge of the scene, the rest of the object
 /// extends to the left.
+///
+/// # Ordinals
+///
+/// The discriminants match Wallpaper Engine's `alignment` enum exactly
+/// (its string → byte map):
+///
+/// | ordinal | WE | ours |
+/// |---|---|---|
+/// | 0 | center | center |
+/// | 1 | top | top |
+/// | 2 | topright | topright |
+/// | 3 | right | right |
+/// | 4 | bottomright | bottomright |
+/// | 5 | bottom | bottom |
+/// | 6 | bottomleft | bottomleft |
+/// | 7 | left | left |
+/// | 8 | topleft | topleft |
+///
+/// Keeping the order identical means a numeric alignment value can be
+/// exchanged with Wallpaper Engine without a translation table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Alignment {
     #[default]
     Center,
-    Left,
-    Right,
     Top,
-    Bottom,
-    TopLeft,
     TopRight,
-    BottomLeft,
+    Right,
     BottomRight,
+    Bottom,
+    BottomLeft,
+    Left,
+    TopLeft,
 }
 
 impl Alignment {
-    /// Return the pivot shift (in object-local units) implied by this
+    /// Return the anchor shift (in object-local units) implied by this
     /// alignment, given the object's rendered size.
     ///
     /// For example, an object of size (100, 50) with `Right` alignment
     /// gets a pivot shift of (+50, 0) — the right edge becomes the pivot.
+    ///
+    /// The signs are the *opposite* of the engine's own anchor
+    /// offset, which is *added* to the world matrix; the port applies the
+    /// shift as `T(-offset)` inside the local matrix instead.  The
+    /// resulting translation is identical.
     pub fn pivot_offset(self, size: Vec2) -> Vec2 {
         let hx = size.x * 0.5;
         let hy = size.y * 0.5;
@@ -83,8 +110,6 @@ pub struct Transform {
     pub rotation: Vec3,
     /// Non-uniform scale — the scene.json `scale`.
     pub scale: Vec3,
-    /// Pivot point (in object-local space, pre-scale) — the scene.json `pivot`.
-    pub pivot: Vec3,
     /// Anchor alignment — the scene.json `alignment`.
     pub alignment: Alignment,
 }
@@ -95,7 +120,6 @@ impl Default for Transform {
             position: Vec3::ZERO,
             rotation: Vec3::ZERO,
             scale: Vec3::ONE,
-            pivot: Vec3::ZERO,
             alignment: Alignment::Center,
         }
     }
@@ -111,12 +135,6 @@ impl Transform {
             scale,
             ..Self::default()
         }
-    }
-
-    /// Builder: set the pivot.
-    pub fn with_pivot(mut self, pivot: Vec3) -> Self {
-        self.pivot = pivot;
-        self
     }
 
     /// Builder: set the alignment.
@@ -138,21 +156,23 @@ impl Transform {
 /// Build the 4×4 model matrix for an object with the given transform and
 /// rendered size.
 ///
-///   `M = T(position) * R(rotation) * S(scale) * T(-effective_pivot)`
+///   `M = T(position) * R(rotation) * S(scale) * T(-alignment_offset)`
 ///
-/// where `effective_pivot = pivot + alignment_offset(size)`.
-///
-/// This means: first translate so the pivot sits at the origin, then
+/// This means: first translate so the anchor sits at the origin, then
 /// scale and rotate around that origin, then translate the result to
 /// the world position.
+///
+/// Wallpaper Engine applies the same anchor offset *after* the world
+/// matrix (`M_model = M_world * T(offset)`); because the port bakes it
+/// into the local matrix with the opposite sign, both produce the same
+/// world position.
 pub fn build_model_matrix(transform: &Transform, size: Vec2) -> Mat4 {
     let alignment_offset = transform.alignment.pivot_offset(size);
-    let effective_pivot = transform.pivot + alignment_offset.extend(0.0);
 
     Mat4::from_translation(transform.position)
         * Mat4::from_quat(transform.rotation_quat())
         * Mat4::from_scale(transform.scale)
-        * Mat4::from_translation(-effective_pivot)
+        * Mat4::from_translation(-alignment_offset.extend(0.0))
 }
 
 /// Compose a child's local model matrix with a parent's world matrix.
@@ -232,58 +252,72 @@ mod tests {
         assert!(vec3_approx_eq(m.transform_point3(Vec3::new(10.0, 0.0, 0.0)), Vec3::new(120.0, 100.0, 0.0)));
     }
 
-    // ── Pivot ──────────────────────────────────────────────────────
+    // ── Anchor (alignment) ────────────────────────────────────────────────────
 
     #[test]
-    fn pivot_maps_to_world_position() {
-        // Pivot is fixed at world `position`, not at its own coordinates.
+    fn alignment_anchor_maps_to_world_position() {
+        // The alignment anchor is fixed at the world `position`.
         let t = Transform {
             position: Vec3::new(50.0, 25.0, 0.0),
-            pivot: Vec3::new(10.0, 0.0, 0.0),
+            alignment: Alignment::Right,
             ..Transform::default()
         };
         let m = build_model_matrix(&t, Vec2::new(100.0, 100.0));
-        // Local pivot (10, 0) maps to world position (50, 25).
-        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(10.0, 0.0, 0.0)), Vec3::new(50.0, 25.0, 0.0)));
+        // The local right edge (50, 0) maps to the world position (50, 25).
+        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(50.0, 0.0, 0.0)), Vec3::new(50.0, 25.0, 0.0)));
     }
 
     #[test]
-    fn rotation_around_pivot_ccw() {
-        // Rotate 90° CCW around the pivot at (10, 0).  Position is (0, 0).
+    fn rotation_around_anchor_ccw() {
+        // Rotate 90° CCW around the right-hand anchor (50, 0).  Position is (0, 0).
         let t = Transform {
             position: Vec3::ZERO,
             rotation: Vec3::new(0.0, 0.0, FRAC_PI_2),
-            pivot: Vec3::new(10.0, 0.0, 0.0),
+            alignment: Alignment::Right,
             ..Transform::default()
         };
         let m = build_model_matrix(&t, Vec2::new(100.0, 100.0));
 
-        // Pivot itself: (10, 0) → (0, 0) (the position).
-        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(10.0, 0.0, 0.0)), Vec3::ZERO));
+        // The anchor itself: (50, 0) → (0, 0) (the position).
+        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(50.0, 0.0, 0.0)), Vec3::ZERO));
 
-        // 5 units right of pivot: (15, 0) → 5 units up from position (0, 5).
-        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(15.0, 0.0, 0.0)), Vec3::new(0.0, 5.0, 0.0)));
+        // 5 units right of the anchor: (55, 0) → 5 units up from position (0, 5).
+        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(55.0, 0.0, 0.0)), Vec3::new(0.0, 5.0, 0.0)));
 
-        // 5 units above pivot: (10, 5) → 5 units left of position (-5, 0).
-        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(10.0, 5.0, 0.0)), Vec3::new(-5.0, 0.0, 0.0)));
+        // 5 units above the anchor: (50, 5) → 5 units left of position (-5, 0).
+        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(50.0, 5.0, 0.0)), Vec3::new(-5.0, 0.0, 0.0)));
     }
 
     #[test]
-    fn scale_around_pivot_keeps_pivot_fixed() {
-        // Scale 2x around the pivot at (10, 0).
+    fn scale_around_anchor_keeps_anchor_fixed() {
+        // Scale 2x around the right-hand anchor (50, 0).
         let t = Transform {
             position: Vec3::ZERO,
             scale: Vec3::new(2.0, 2.0, 1.0),
-            pivot: Vec3::new(10.0, 0.0, 0.0),
+            alignment: Alignment::Right,
             ..Transform::default()
         };
         let m = build_model_matrix(&t, Vec2::new(100.0, 100.0));
 
-        // Pivot is fixed.
-        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(10.0, 0.0, 0.0)), Vec3::ZERO));
+        // The anchor is fixed.
+        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(50.0, 0.0, 0.0)), Vec3::ZERO));
 
-        // 5 units right of the pivot doubles to 10 units right.
-        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(15.0, 0.0, 0.0)), Vec3::new(10.0, 0.0, 0.0)));
+        // 5 units right of the anchor doubles to 10 units right.
+        assert!(vec3_approx_eq(m.transform_point3(Vec3::new(55.0, 0.0, 0.0)), Vec3::new(10.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn alignment_ordinals_match_wallpaper_engine() {
+        // The engine's string → byte map.
+        assert_eq!(Alignment::Center as u8, 0);
+        assert_eq!(Alignment::Top as u8, 1);
+        assert_eq!(Alignment::TopRight as u8, 2);
+        assert_eq!(Alignment::Right as u8, 3);
+        assert_eq!(Alignment::BottomRight as u8, 4);
+        assert_eq!(Alignment::Bottom as u8, 5);
+        assert_eq!(Alignment::BottomLeft as u8, 6);
+        assert_eq!(Alignment::Left as u8, 7);
+        assert_eq!(Alignment::TopLeft as u8, 8);
     }
 
     // ── Alignment in model matrix ──────────────────────────────────

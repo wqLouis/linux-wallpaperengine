@@ -101,7 +101,7 @@ Represents a single item in the scene. Selected key fields:
 | `id` | `i64` | Unique object ID |
 | `name` | `String` | Display name |
 | `image` | `Option<String>` | Model JSON path (if texture object) |
-| `origin` / `angles` / `scale` | `Option<Vectors>` | Transform |
+| `origin` / `angles` / `scale` | `Option<Vectors>` | Transform.  `origin` is in scene pixels, measured from the scene's **bottom-left** corner (the scene spans `[0, w] × [0, h]`) |
 | `size` | `Option<Vectors>` | Dimensions |
 | `effects` | `Vec<Effect>` | Shader effects |
 | `parent` | `Option<i64>` | Parent object ID for transform inheritance |
@@ -139,10 +139,10 @@ A single render pass in an effect.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `constantshadervalues` | `Option<BTreeMap<String, Value>>` | Material constant overrides |
+| `constantshadervalues` | `Option<Map<String, Value>>` | Material constant overrides |
 | `id` | `i64` | Pass ID |
 | `textures` | `Vec<Option<String>>` | Additional textures: index 0=source, 1=mask, 2=noise |
-| `combos` | `Option<BTreeMap<String, i64>>` | Shader combo defines |
+| `combos` | `Option<Map<String, i64>>` | Shader combo defines |
 | `usertextures` | `Option<(Value, Value)>` | User-defined textures |
 
 ### `Combos` (in `pass.combos`)
@@ -196,7 +196,7 @@ Parses a `.pkg` file:
 1. Uses `pkg_parser::parser::Pkg::new(path)` to open the package
 2. For each file, classifies it with `AssetType::from_path()`:
    - `.tex` → decoded in parallel by a bounded worker pool via `Tex::new` + `parse_to_rgba()`
-   - `.mdl` → parsed via `MdlFile::new()` (skipped entirely when `no_mdl` is set). Parse failures are logged at error level and skipped, since the puppet format is only partially reverse-engineered.
+   - `.mdl` → parsed via `MdlFile::new()` (skipped entirely when `no_mdl` is set). Parse failures are logged at error level and skipped, since the puppet format is only partially documented.
    - `.json` (scene/effects/materials/particles/presets) → stored as `Rc<String>`
    - `.frag`/`.vert`/`.h` → stored as text (shaders are paired and parsed in [`Scene::prepare`])
    - audio/font/video/scripts/other → stored as typed assets
@@ -206,7 +206,7 @@ Parses a `.pkg` file:
 
 The archive is trusted to be well-formed: a package or asset that fails to
 parse is fatal rather than silently skipped. The one exception is `.mdl`
-models — the puppet format is only partially reverse-engineered, so a model
+models — the puppet format is only partially documented, so a model
 that fails to parse is logged at error level and skipped instead of aborting
 the scene. Asset *resolution* (model → material → texture) also stays lenient
 because it can legitimately fall back to the Wallpaper Engine `assets/`
@@ -272,8 +272,8 @@ pub enum Asset {
 
 ```rust
 pub struct AssetStore {
-    map: RefCell<BTreeMap<String, Asset>>,
-    headers: RefCell<Option<Rc<BTreeMap<String, String>>>>,
+    map: RefCell<Map<String, Asset>>,
+    headers: RefCell<Option<Rc<Map<String, String>>>>,
     assets_path: Option<PathBuf>,
 }
 ```
@@ -318,8 +318,9 @@ Converts raw `Object`/`Effect` definitions into render-ready types.
 | Field | Type | Description |
 |-------|------|-------------|
 | `texture` | `Rc<Tex>` | Parsed RGBA texture data |
-| `transform` | `Transform` | Local position/rotation/scale/pivot/alignment |
+| `transform` | `Transform` | Local position/rotation/scale/alignment |
 | `model` | `Mat4` | World model matrix (parent chain applied) |
+| `local_model` | `Mat4` | The object's own matrix (before the parent chain) — needed for bone-socket attachments |
 | `size` | `Vec2` | Width/height |
 | `parent` | `Option<i64>` | Parent object ID |
 | `effects` | `Vec<Effect>` | Shader effects |
@@ -361,13 +362,26 @@ Processes all scene objects:
    - `Particle` / `Text` / `Light` / `Camera` — not rendered yet; treated as transform-only nodes so children keep their world transforms
    - `Node` — transform-only parent for the hierarchy
    
-2. **Resolves parent-child transform inheritance**: iterates the hierarchy, accumulating `angles`, `scale`, and `origin` from parents. Also propagates invisibility (if parent is not visible, child is also not visible).
+2. **Resolves parent-child transform inheritance**: iterates the hierarchy, composing each child's model matrix with its parent's (`M_child_world = M_parent_world · M_child_local`). Also propagates invisibility (if parent is not visible, child is also not visible).
+
+   Objects with an `attachment` (a bone socket of their puppet parent) are placed **relative to that socket**: `M_world(child) = M_world(parent) · M_socket · M_local` — the socket is the base and the object's own `origin` is the offset from it.
+
+   > The socket is re-evaluated every frame from the puppet's **animated** bone
+   > matrices (see `draw::update_animated_meshes`), so an attached prop follows the
+   > puppet's animation — like in Wallpaper Engine.
+
+   > Real scenes confirm the composition: a puppet's face is attached to the
+   > controller's `Attachment` socket (which sits at the controller's origin, i.e. at
+   > the character's feet) with an origin of ~750 px — the origin has to be
+   > applied *on top of* the socket, otherwise the face would end up at the feet.
 
 3. **Returns ordered `texture` and `audio` vectors** — invisible objects are excluded from the output.
 
 **Visibility:** Objects with `visible == false` are skipped during loading. Child objects whose parent is not visible are also skipped.
 
 **Model Loading:** For `Image` objects, the chain is: `object.image` → model JSON → `model.material` → material JSON → `passes[0].textures[0]` → `.tex` file loaded through `scene.assets.texture()`. The model's `puppet` path (if any) is resolved through `scene.assets.model()` and meshed via `mdl::extract_mesh()` unless `no_mdl` is set.
+
+**Puppet meshes:** the control points of an `.mdl` are in the model's *own* units (the same scale as the texture, centred on the origin) — they are used verbatim, exactly like Wallpaper Engine, which never rescales them.  The layer's `size` (which equals the texture's real size) therefore only affects the alignment anchor.  The mesh's UVs are relative to the texture's *real* region, so they carry the same `uv_scale` the plain quads use (textures that are stored padded only carry the image in their top-left corner).
 
 **Solid-Colour Fallback:** When a texture object's image/material/texture chain fails to resolve, a 1×1 RGBA texture is synthesized from the object's `color` and `alpha` properties (falling back to white and 1.0 alpha respectively).
 

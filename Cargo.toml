@@ -5,12 +5,14 @@ edition = "2024"
 description = "Yet another linux wallpaper engine"
 
 [dependencies]
+ahash = "0.8.12"
 bytemuck = "1.25.0"
 clap = { version = "4.5.58", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
 pkg_parser = { path = "src/pkg_parser" }
 glam = "0.31.0"
+hashbrown = { version = "0.15.5", features = ["serde"] }
 indicatif = "0.18.3"
 pollster = "0.4.0"
 raw-window-handle = "0.6.2"

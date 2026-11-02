@@ -3,10 +3,10 @@ pub mod header;
 mod layout;
 mod replace;
 
-use std::collections::{BTreeMap, HashSet};
 
 use serde_json::Value;
 use wgpu::naga::ShaderStage;
+use crate::collections::{Map, Set, new_map, new_set, sorted_entries};
 
 pub use asset::ShaderProgram;
 pub use header::{WM_SAMPLER_BINDING, get_headers};
@@ -16,8 +16,8 @@ pub(crate) use layout::{align_up, type_align, type_size};
 
 /// Collect `// [COMBO] {"combo":"NAME","default":N}` annotations from a
 /// shader source.
-pub fn collect_default_defines(vert_source: &str, frag_source: &str) -> BTreeMap<String, String> {
-    let mut defines = BTreeMap::new();
+pub fn collect_default_defines(vert_source: &str, frag_source: &str) -> Map<String, String> {
+    let mut defines = new_map();
 
     for source in &[vert_source, frag_source] {
         for line in source.lines() {
@@ -48,8 +48,8 @@ pub fn collect_default_defines(vert_source: &str, frag_source: &str) -> BTreeMap
 
 /// Collect simple `#define NAME VALUE` macros from a shader/header source.
 /// Only top-level defines (not inside `#if` blocks) are collected.
-pub fn collect_source_defines(source: &str) -> BTreeMap<String, String> {
-    let mut macros = BTreeMap::new();
+pub fn collect_source_defines(source: &str) -> Map<String, String> {
+    let mut macros = new_map();
     for line in source.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("#define ") {
@@ -70,7 +70,7 @@ pub fn collect_source_defines(source: &str) -> BTreeMap<String, String> {
 /// Evaluate a preprocessor condition like `BLENDMODE == 26` or `defined(MACRO)`.
 /// `defines` contains combo values; `source_macros` contains `#define` macros from
 /// shader source (e.g. `BOTTOM` → `0`).
-fn eval_if_condition(cond: &str, defines: &BTreeMap<String, String>) -> bool {
+fn eval_if_condition(cond: &str, defines: &Map<String, String>) -> bool {
     let cond = cond.trim();
 
     // Handle `defined(NAME)`
@@ -149,7 +149,7 @@ impl IfBlockProcessor {
     /// Returns `Some(true)` if the line was handled (caller should `continue`).
     /// Returns `None` if the line is not a conditional directive, or is
     /// `#else` with trailing content (caller decides how to handle it).
-    fn process_line(&mut self, line: &str, defines: &BTreeMap<String, String>) -> Option<bool> {
+    fn process_line(&mut self, line: &str, defines: &Map<String, String>) -> Option<bool> {
         let trimmed = line.trim();
 
         if let Some(macro_name) = trimmed.strip_prefix("#ifdef") {
@@ -227,8 +227,8 @@ pub fn preprocess_with_layout_tracked(
     source: &str,
     stage: ShaderStage,
     layout: &EffectLayout,
-    headers: &BTreeMap<String, String>,
-    defines: &BTreeMap<String, String>,
+    headers: &Map<String, String>,
+    defines: &Map<String, String>,
     has_subgroup: bool,
 ) -> (String, Vec<String>) {
     let mut result = String::with_capacity(source.len() + 4096);
@@ -248,7 +248,7 @@ pub fn preprocess_with_layout_tracked(
 
     emit_declarations(&mut result, stage, layout, headers);
 
-    let sampler_set: HashSet<&str> = layout.sampler_names.iter().map(|s| s.as_str()).collect();
+    let sampler_set: Set<&str> = layout.sampler_names.iter().map(|s| s.as_str()).collect();
 
     for line in source.lines() {
         let trimmed = line.trim();
@@ -376,11 +376,13 @@ fn emit_declarations(
     result: &mut String,
     stage: ShaderStage,
     layout: &EffectLayout,
-    headers: &BTreeMap<String, String>,
+    headers: &Map<String, String>,
 ) {
     // Emit #define lines from all headers, skipping those inside #if blocks.
+    // The headers are visited in name order so the generated source is
+    // byte-identical from run to run.
     let mut if_depth: u32 = 0;
-    for content in headers.values() {
+    for (_, content) in sorted_entries(headers) {
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#include") {
@@ -402,7 +404,7 @@ fn emit_declarations(
             }
             if trimmed.starts_with('#') {
                 let transformed =
-                    apply_shader_transforms(trimmed, &HashSet::new(), &BTreeMap::new());
+                    apply_shader_transforms(trimmed, &new_set(), &new_map());
                 result.push_str(&transformed);
                 result.push('\n');
             }
@@ -463,8 +465,8 @@ fn strip_material_comments(line: &str) -> String {
 /// Shared GLSL→Vulkan transformations applied to every non-preprocessor line.
 fn apply_shader_transforms(
     line: &str,
-    sampler_set: &HashSet<&str>,
-    varying_types: &BTreeMap<String, String>,
+    sampler_set: &Set<&str>,
+    varying_types: &Map<String, String>,
 ) -> String {
     let mut t = line.to_string();
     t = t.replace("CAST2(", "vec2(");
@@ -490,10 +492,10 @@ fn apply_shader_transforms(
 /// `#if`/`#ifdef` blocks using `defines` so only active branches are emitted.
 fn include_header_lines(
     content: &str,
-    defines: &BTreeMap<String, String>,
-    sampler_set: &HashSet<&str>,
+    defines: &Map<String, String>,
+    sampler_set: &Set<&str>,
     result: &mut String,
-    headers: &BTreeMap<String, String>,
+    headers: &Map<String, String>,
 ) {
     let mut ifp = IfBlockProcessor::new();
 
@@ -536,7 +538,7 @@ fn include_header_lines(
             continue;
         }
 
-        let transformed = apply_shader_transforms(htrim, sampler_set, &BTreeMap::new());
+        let transformed = apply_shader_transforms(htrim, sampler_set, &new_map());
         result.push_str(&transformed);
         result.push('\n');
     }
@@ -551,8 +553,8 @@ fn include_header_lines(
 pub fn preprocess_pair_with_layout(
     vert: &str,
     frag: &str,
-    headers: &BTreeMap<String, String>,
-    defines: &BTreeMap<String, String>,
+    headers: &Map<String, String>,
+    defines: &Map<String, String>,
     layout: &EffectLayout,
     has_subgroup: bool,
     use_immediates: bool,
@@ -609,11 +611,11 @@ fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&S
     let mut result = String::with_capacity(output.len() + 512);
     let mut if_depth: u32 = 0;
     let mut hoisted_decls: Vec<String> = Vec::new();
-    let mut hoisted_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut hoisted_names: Set<String> = new_set();
     // Track ALL varying names that appear anywhere in the output,
     // including top-level ones from included headers that weren't
     // in `emitted_varyings`.
-    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_names: Set<String> = new_set();
 
     for line in output.lines() {
         let trimmed = line.trim();

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::BTreeMap, rc::Rc};
+use std::{borrow::Cow, rc::Rc};
 
 use serde_json::Value;
 use wgpu::*;
@@ -15,6 +15,7 @@ use crate::scene::{
 };
 
 use super::context::{EffectContext, PipelineMap};
+use crate::collections::{Map, sorted_entries};
 
 #[derive(Debug, Clone)]
 pub struct EffectPipelineData {
@@ -35,7 +36,7 @@ pub fn get_or_create_pipeline(
     ctx: &EffectContext,
     effect_path: String,
     pass_textures: &[Option<String>],
-    pass_combos: Option<&BTreeMap<String, i64>>,
+    pass_combos: Option<&Map<String, i64>>,
     pipelines: &mut PipelineMap,
 ) -> Option<Rc<RenderPipeline>> {
     let cache_key = make_cache_key(&effect_path, pass_textures, pass_combos);
@@ -70,7 +71,7 @@ pub fn create_effect_pipeline_for_multipass(
     vert_path: &str,
     material_path: &str,
     pass_textures: &[Option<String>],
-    pass_combos: Option<&BTreeMap<String, i64>>,
+    pass_combos: Option<&Map<String, i64>>,
     pipelines: &mut PipelineMap,
 ) -> Option<Rc<RenderPipeline>> {
     let cache_key = make_cache_key(material_path, pass_textures, pass_combos);
@@ -98,7 +99,7 @@ pub fn create_effect_pipeline_for_multipass(
 fn make_cache_key(
     base: &str,
     pass_textures: &[Option<String>],
-    pass_combos: Option<&BTreeMap<String, i64>>,
+    pass_combos: Option<&Map<String, i64>>,
 ) -> String {
     let mut key = base.to_string();
     if pass_textures.get(1).and_then(|t| t.as_deref()).is_some() {
@@ -108,7 +109,9 @@ fn make_cache_key(
         key.push_str("|T1");
     }
     if let Some(combos) = pass_combos {
-        for (k, v) in combos {
+        // Sorted so the cache key only depends on the combo *set*, not on
+        // the map's iteration order.
+        for (k, v) in sorted_entries(combos) {
             key.push_str(&format!("|{}={}", k, v));
         }
     }
@@ -122,7 +125,7 @@ fn compile_pipeline(
     vert_path: &str,
     material_json: Value,
     pass_textures: &[Option<String>],
-    pass_combos: Option<&BTreeMap<String, i64>>,
+    pass_combos: Option<&Map<String, i64>>,
 ) -> Option<EffectPipelineData> {
     let program = ctx.scene.assets.shader(frag_path, vert_path)?;
     let frag_source = &program.fragment;
@@ -148,8 +151,8 @@ fn compile_pipeline(
     }
     pipeline_helpers::apply_texture_combos(&mut defines, pass_textures);
 
-    let define_refs: Vec<(&str, &str)> = defines
-        .iter()
+    let define_refs: Vec<(&str, &str)> = sorted_entries(&defines)
+        .into_iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
     let headers = &program.headers;
