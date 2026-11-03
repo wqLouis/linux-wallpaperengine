@@ -29,6 +29,13 @@ impl ShaderProgram {
     /// Parse a shader pair. Either stage may be empty when a shader only has
     /// one stage.
     pub fn parse(vertex: String, fragment: String, headers: Rc<Map<String, String>>) -> Self {
+        // The dialect is normalised BEFORE the layout is collected: the
+        // sampler types and the macros of the engine change what the shader
+        // declares, so the layout has to be collected from the source that
+        // is actually compiled.
+        let vertex = super::dialect::normalize(&vertex);
+        let fragment = super::dialect::normalize(&fragment);
+
         let layout = collect_layout(&vertex, &fragment, &headers);
         let default_defines = collect_default_defines(&vertex, &fragment);
 

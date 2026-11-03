@@ -23,6 +23,7 @@
 pub mod asset;
 mod c_expr;
 mod compat;
+mod dialect;
 mod glsl;
 pub mod header;
 mod layout;
@@ -271,14 +272,17 @@ fn emit_stage(
 
 /// The stage that rewrites the dialect of the shader.
 ///
-/// HOOK: the dialect module (`src/scene/loader/shader/dialect.rs`) is
-/// written by another packet and is not wired in yet.  As soon as it exists,
-/// its normalisation has to be called here, after the type aware stage: it
-/// rewrites the constructs of the Wallpaper Engine dialect that the type
-/// aware stage does not know about (`mul`, the samplers of the engine, the
-/// precision qualifiers, ...).
+/// The dialect module (`src/scene/loader/shader/dialect.rs`) rewrites the
+/// constructs of the Wallpaper Engine dialect that the type aware stage
+/// does not know about: the `mul` calls (in the row vector form the engine
+/// uses), the precision qualifiers, the sampler types the engine has no
+/// binding for, the macros the engine provides and the scalar arguments of
+/// the built-in calls that want a vector.
+///
+/// It runs after the type aware stage, on the whole source: it works on the
+/// text and needs neither the layout nor the headers of the engine.
 fn apply_dialect(source: String) -> String {
-    source
+    dialect::normalize(&source)
 }
 
 /// Emit the declarations of the interface of the shader.

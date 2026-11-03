@@ -16,9 +16,10 @@
 //! * `texSample2D(s, uv)` becomes `texture(s, uv)` and `texSample2DLod`
 //!   becomes `textureLod`.
 //! * `gl_FragColor` becomes `_fragColor`, the output of the fragment stage.
-//! * `mul(a, b)` becomes `b * a`: the HLSL `mul` multiplies in the opposite
-//!   order, and `mul(matrix, vector)` is the only form GLSL spells the same
-//!   way.
+//! * `mul(a, b)` becomes `a * b`: Wallpaper Engine uses the row vector form
+//!   of the product, so the operands keep their order.  The rewrite itself
+//!   lives in the dialect stage ([`super::dialect`]), which also handles the
+//!   nested calls.
 //! * `texture(s, uv)` becomes `texture(s, uv, _wm_sampler)`, because
 //!   Wallpaper Engine uses separate sampler objects while Vulkan GLSL binds
 //!   the sampler and the texture together.
@@ -159,44 +160,17 @@ pub fn fix_implicit_truncation(line: &str, varying_types: &Map<String, String>) 
     format!("{} = {}{};", lhs, rhs, swizzle)
 }
 
-/// Rewrite the HLSL style `mul(a, b)` into the GLSL `b * a`.
+/// Rewrite the DirectX style `mul(a, b)` into the GLSL `a * b`.
 ///
-/// The argument order of the HLSL `mul` is the opposite of the GLSL `*`, so
-/// `mul(matrix, vector)` - the form that means the same thing in both -
-/// becomes `vector * matrix` and has to be swapped back.
+/// Wallpaper Engine uses the row vector form of the product: `mul(a, b)`
+/// means `a * b`.  The operands are *not* swapped the way the DirectX `mul`
+/// would need them: `mul(vec4(position, 1.0), matrix)` is the row vector
+/// product, which is the `vec4 * matrix` of GLSL.
+///
+/// The rewrite is the one of the dialect stage, which also handles the
+/// nested calls: `mul(mul(a, b), c)` becomes `(a * b) * c`.
 pub fn replace_mul(line: &str) -> String {
-    if !line.contains("mul(") {
-        return line.to_string();
-    }
-
-    let mut result = line.to_string();
-    let mut search_start = 0;
-
-    while let Some(mul_start) = result[search_start..].find("mul(") {
-        let abs_start = search_start + mul_start;
-        let args_start = abs_start + 4;
-
-        let Some(args_end) = find_matching_paren(&result, args_start) else {
-            break;
-        };
-
-        let args = &result[args_start..args_end];
-
-        if let Some(comma_pos) = find_top_level_comma(args) {
-            let arg1 = args[..comma_pos].trim();
-            let arg2 = args[comma_pos + 1..].trim();
-            let mut replacement = format!("{} * {}", arg2, arg1);
-            if result.as_bytes().get(args_end + 1) == Some(&b'.') {
-                replacement = format!("({})", replacement);
-            }
-            result.replace_range(abs_start..args_end + 1, &replacement);
-            search_start = abs_start + replacement.len();
-        } else {
-            search_start = abs_start + 1;
-        }
-    }
-
-    result
+    super::dialect::rewrite_mul(line)
 }
 
 /// Rewrite `saturate(x)` into `clamp(x, 0.0, 1.0)`.
@@ -527,11 +501,23 @@ mod tests {
 
     #[test]
     fn test_replace_mul_vec_matrix() {
+        // Wallpaper Engine uses the row vector form: the operands keep their
+        // order.
         let input = "gl_Position = mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix);";
         let output = replace_mul(input);
         assert_eq!(
             output,
-            "gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0);"
+            "gl_Position = vec4(a_Position, 1.0) * g_ModelViewProjectionMatrix;"
+        );
+    }
+
+    #[test]
+    fn test_replace_nested_mul() {
+        let input = "gl_Position = mul(mul(vec4(a_Position, 1.0), g_ModelMatrix), g_ViewMatrix);";
+        let output = replace_mul(input);
+        assert_eq!(
+            output,
+            "gl_Position = (vec4(a_Position, 1.0) * g_ModelMatrix) * g_ViewMatrix;"
         );
     }
 
