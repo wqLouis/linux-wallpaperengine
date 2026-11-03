@@ -1,4 +1,7 @@
 use crate::collections::{Map, new_map, sorted_entries};
+
+use super::preprocessor;
+
 #[derive(Debug, Clone)]
 pub struct EffectLayout {
     pub sampler_names: Vec<String>,
@@ -33,16 +36,51 @@ impl EffectLayout {
     }
 }
 
+/// Collect the interface of a pair of shaders.
+///
+/// The layout is collected when the scene is loaded, before the material of
+/// an effect is known: the default values of the combos of the shader and the
+/// macros of the shader itself decide which branch of the shader is
+/// collected.
 pub fn collect_layout(source1: &str, source2: &str, headers: &Map<String, String>) -> EffectLayout {
+    let defines = super::layout_defines(source1, source2);
+    collect_layout_with_defines(source1, source2, headers, &defines)
+}
+
+/// Collect the interface of a pair of shaders with an explicit set of macros.
+///
+/// The macros decide which branch of the shader is compiled, so the layout
+/// has to be collected with the same macros as the compilation: a uniform
+/// that is only declared in a branch that is not taken must not be in the
+/// layout, and a uniform of the branch that is taken has to be.
+pub fn collect_layout_with_defines(
+    source1: &str,
+    source2: &str,
+    headers: &Map<String, String>,
+    defines: &Map<String, String>,
+) -> EffectLayout {
+    let vertex = preprocessor::flatten(source1, headers, defines);
+    let fragment = preprocessor::flatten(source2, headers, defines);
+    collect_layout_from_flattened(&vertex, &fragment)
+}
+
+/// Collect the interface of a pair of shaders that are already flattened.
+///
+/// The flattened sources are the ones the shader compiler sees, so the
+/// layout and the shader always describe the same branch.
+fn collect_layout_from_flattened(
+    vertex: &preprocessor::Flattened,
+    fragment: &preprocessor::Flattened,
+) -> EffectLayout {
     let mut collector = LayoutCollector::default();
 
-    // Process vertex shader (source1) first, tracking all its varyings.
-    collector.collect(source1, headers);
+    // Process vertex shader first, tracking all its varyings.
+    collector.collect(&vertex.lines);
     // Snapshot all varyings found from the vertex shader.
     let mut vert_varyings: Vec<String> = collector.varying_set.keys().cloned().collect();
 
-    // Then process fragment shader (source2) for the full layout.
-    collector.collect(source2, headers);
+    // Then process fragment shader for the full layout.
+    collector.collect(&fragment.lines);
 
     collector.sampler_names.sort();
     collector.sampler_names.dedup();
@@ -108,32 +146,26 @@ struct LayoutCollector {
 }
 
 impl LayoutCollector {
-    fn collect(&mut self, source: &str, headers: &Map<String, String>) {
-        for line in source.lines() {
-            let trimmed = line.trim();
-
-            if trimmed.starts_with("#include") {
-                if let Some(start) = trimmed.find('"')
-                    && let Some(end) = trimmed[start + 1..].find('"')
-                {
-                    let include_file = &trimmed[start + 1..start + 1 + end];
-                    if let Some(header_content) = headers.get(include_file) {
-                        self.collect(header_content, headers);
-                    }
-                }
-                continue;
-            }
+    /// Collect the declarations of the flattened source of a shader.
+    ///
+    /// The flattened source holds the lines of the branch that is compiled:
+    /// the headers are inlined and the lines of the branches that are not
+    /// taken are gone.
+    fn collect(&mut self, lines: &[preprocessor::Line]) {
+        for line in lines {
+            let trimmed = line.text.trim();
 
             if trimmed.starts_with('#') || trimmed.is_empty() || trimmed.starts_with("//") {
                 continue;
             }
 
-            let cleaned = super::strip_material_comments(line);
-            if cleaned.is_empty() {
+            let cleaned = super::strip_material_comments(&line.text);
+            let declaration = cleaned.trim();
+            if declaration.is_empty() {
                 continue;
             }
 
-            if let Some(rest) = cleaned.strip_prefix("varying ") {
+            if let Some(rest) = declaration.strip_prefix("varying ") {
                 let rest = rest.trim();
                 if let Some(name) = extract_variable_name(rest) {
                     self.varying_set.entry(name.clone()).or_insert(0);
@@ -147,15 +179,15 @@ impl LayoutCollector {
                 continue;
             }
 
-            if cleaned.contains("attribute ") {
-                let rest = cleaned.split("attribute ").nth(1).unwrap_or("").trim();
+            if declaration.contains("attribute ") {
+                let rest = declaration.split("attribute ").nth(1).unwrap_or("").trim();
                 if let Some(name) = extract_variable_name(rest) {
                     self.attribute_set.entry(name).or_insert(0);
                 }
                 continue;
             }
 
-            if let Some(rest) = cleaned.strip_prefix("uniform ") {
+            if let Some(rest) = declaration.strip_prefix("uniform ") {
                 let rest = rest.trim();
                 if rest.starts_with("sampler2D ") || rest.starts_with("sampler2D\t") {
                     let name = rest["sampler2D".len()..].trim().trim_end_matches(';');
@@ -184,7 +216,7 @@ impl LayoutCollector {
                                 ty
                             };
                             self.uniform_map.entry(name.clone()).or_insert(full_ty);
-                            if let Some(mk) = extract_material_key(line) {
+                            if let Some(mk) = extract_material_key(&line.text) {
                                 self.material_keys.entry(mk).or_insert(name);
                             }
                         }

@@ -1,10 +1,34 @@
+//! The shader loader of the scene.
+//!
+//! A Wallpaper Engine effect is a pair of GLSL shaders - a `.vert` and a
+//! `.frag` file - that are written in the dialect of the engine and that use
+//! the conditionals of a C preprocessor.  The shaders are preprocessed here
+//! and handed to the shader compiler of wgpu as plain GLSL.
+//!
+//! The preprocessing has three stages:
+//!
+//! 1. [`preprocessor`] resolves the conditionals of the shader, inlines the
+//!    headers it includes and collects the macros of the shader and of its
+//!    headers.  The conditions are evaluated by [`c_expr`], which implements
+//!    the operators and the precedence of C.
+//! 2. [`compat`] rewrites the constructs of the Wallpaper Engine dialect
+//!    that have no GLSL equivalent (`mul`, `saturate`, `gl_FragColor`, ...).
+//! 3. [`glsl`] normalises the types of the shader, so that it satisfies the
+//!    strict typing rules of GLSL.
+//!
+//! The layout of the shader - its uniforms, its samplers and its varyings -
+//! is collected with the same preprocessor and the same macros, so that it
+//! always describes the branch that is really compiled.
+
 pub mod asset;
+mod c_expr;
 mod compat;
 mod glsl;
 pub mod header;
 mod layout;
+mod preprocessor;
 
-use crate::collections::{Map, Set, new_map, new_set, sorted_entries};
+use crate::collections::{Map, Set, new_map, new_set};
 use serde_json::Value;
 use wgpu::naga::ShaderStage;
 
@@ -46,183 +70,44 @@ pub fn collect_default_defines(vert_source: &str, frag_source: &str) -> Map<Stri
     defines
 }
 
-/// Collect simple `#define NAME VALUE` macros from a shader/header source.
-/// Only top-level defines (not inside `#if` blocks) are collected.
+/// Collect the `#define` macros of a shader source.
+///
+/// Only the macros of the branches that are taken are collected: a macro
+/// that is defined in a branch that is not taken does not exist.  The
+/// branches are evaluated with the macros that were defined before them, so
+/// a macro that depends on a combo of the material is not collected here -
+/// the preprocessor defines it when the shader is compiled.
 pub fn collect_source_defines(source: &str) -> Map<String, String> {
     let mut macros = new_map();
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("#define ") {
-            let rest = rest.trim();
-            if let Some(space_pos) = rest.find(|c: char| c.is_whitespace()) {
-                let name = rest[..space_pos].trim().to_string();
-                let value = rest[space_pos..].trim().to_string();
-                // Only collect simple numeric or identifier values
-                if !name.is_empty() {
-                    macros.insert(name, value);
-                }
-            }
-        }
+    for (name, definition) in preprocessor::collect_defines(source) {
+        macros.insert(name, definition.body);
     }
     macros
 }
 
-/// Evaluate a preprocessor condition like `BLENDMODE == 26` or `defined(MACRO)`.
-/// `defines` contains combo values; `source_macros` contains `#define` macros from
-/// shader source (e.g. `BOTTOM` → `0`).
-fn eval_if_condition(cond: &str, defines: &Map<String, String>) -> bool {
-    let cond = cond.trim();
-
-    // Handle `defined(NAME)`
-    if let Some(inner) = cond.strip_prefix("defined(")
-        && let Some(name) = inner.strip_suffix(')')
-    {
-        return defines.contains_key(name.trim());
+/// The macros the layout of a shader is collected with.
+///
+/// The layout is collected when the scene is loaded, before the material of
+/// an effect is known: the default values of the combos of the shader and the
+/// macros of the shader itself are the best guess that is available then.
+/// The layout is collected again when the shader is compiled, with the macros
+/// of the material.
+fn layout_defines(source1: &str, source2: &str) -> Map<String, String> {
+    let mut defines = collect_default_defines(source1, source2);
+    for (name, value) in collect_source_defines(source1) {
+        defines.entry(name).or_insert(value);
     }
-
-    // Handle `!defined(NAME)`
-    if let Some(rest) = cond.strip_prefix('!') {
-        return !eval_if_condition(rest.trim(), defines);
+    for (name, value) in collect_source_defines(source2) {
+        defines.entry(name).or_insert(value);
     }
-
-    // Handle `NAME == VALUE` or `NAME != VALUE`
-    for (op, op_len) in &[("==", 2), ("!=", 2)] {
-        if let Some(pos) = cond.find(op) {
-            let name = cond[..pos].trim();
-            let value = cond[pos + op_len..].trim();
-            let def = defines.get(name).map(|s| s.as_str()).unwrap_or("0");
-            let rhs = defines.get(value).map(|s| s.as_str()).unwrap_or(value);
-            return if *op == "==" { def == rhs } else { def != rhs };
-        }
-    }
-
-    // Handle `||` and `&&` (simple left-to-right, no precedence — enough for WE headers)
-    if let Some(or_pos) = cond.find("||") {
-        return eval_if_condition(&cond[..or_pos], defines)
-            || eval_if_condition(&cond[or_pos + 2..], defines);
-    }
-    if let Some(and_pos) = cond.find("&&") {
-        return eval_if_condition(&cond[..and_pos], defines)
-            && eval_if_condition(&cond[and_pos + 2..], defines);
-    }
-
-    // Handle `!NAME` (negation of a single macro)
-    if let Some(name) = cond.strip_prefix('!') {
-        let trimmed = name.trim();
-        return !defines.contains_key(trimmed)
-            || defines.get(trimmed).map(|s| s.as_str()) == Some("0");
-    }
-
-    // Bare macro name: truthy if defined and != "0"
-    let val = defines.get(cond);
-    match val {
-        Some(v) => v != "0",
-        None => false,
-    }
-}
-
-enum IfBlockState {
-    /// This block is being output
-    Active,
-    /// This block is skipped
-    Inactive,
-    /// An `#else` or active `#elif` has been seen for this chain
-    Done,
-}
-
-/// Tracks the state of `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif` blocks
-/// during shader preprocessing.
-struct IfBlockProcessor {
-    stack: Vec<IfBlockState>,
-}
-
-impl IfBlockProcessor {
-    fn new() -> Self {
-        Self { stack: Vec::new() }
-    }
-
-    fn is_active(&self) -> bool {
-        self.stack.iter().all(|s| matches!(s, IfBlockState::Active))
-    }
-
-    /// Process a conditional preprocessor directive.
-    /// Returns `Some(true)` if the line was handled (caller should `continue`).
-    /// Returns `None` if the line is not a conditional directive, or is
-    /// `#else` with trailing content (caller decides how to handle it).
-    fn process_line(&mut self, line: &str, defines: &Map<String, String>) -> Option<bool> {
-        let trimmed = line.trim();
-
-        if let Some(macro_name) = trimmed.strip_prefix("#ifdef") {
-            let macro_name = macro_name.trim();
-            let cond_true = defines.contains_key(macro_name);
-            self.stack.push(if cond_true {
-                IfBlockState::Active
-            } else {
-                IfBlockState::Inactive
-            });
-            return Some(true);
-        }
-        if let Some(macro_name) = trimmed.strip_prefix("#ifndef") {
-            let macro_name = macro_name.trim();
-            let cond_true = defines.contains_key(macro_name);
-            self.stack.push(if !cond_true {
-                IfBlockState::Active
-            } else {
-                IfBlockState::Inactive
-            });
-            return Some(true);
-        }
-        if trimmed.starts_with("#if")
-            && !trimmed.starts_with("#ifdef")
-            && !trimmed.starts_with("#ifndef")
-        {
-            let cond = trimmed["#if".len()..].trim();
-            let cond_true = eval_if_condition(cond, defines);
-            self.stack.push(if cond_true {
-                IfBlockState::Active
-            } else {
-                IfBlockState::Inactive
-            });
-            return Some(true);
-        }
-
-        if let Some(cond) = trimmed.strip_prefix("#elif") {
-            if let Some(top) = self.stack.last_mut() {
-                match top {
-                    IfBlockState::Active | IfBlockState::Done => {
-                        *top = IfBlockState::Done;
-                    }
-                    IfBlockState::Inactive => {
-                        if eval_if_condition(cond.trim(), defines) {
-                            *top = IfBlockState::Active;
-                        }
-                    }
-                }
-            }
-            return Some(true);
-        }
-
-        if trimmed.starts_with("#else") {
-            if let Some(top) = self.stack.last_mut() {
-                match top {
-                    IfBlockState::Active => *top = IfBlockState::Done,
-                    IfBlockState::Inactive => *top = IfBlockState::Active,
-                    IfBlockState::Done => {}
-                }
-            }
-            return Some(true);
-        }
-
-        if trimmed.starts_with("#endif") {
-            self.stack.pop();
-            return Some(true);
-        }
-
-        None
-    }
+    defines
 }
 
 /// Preprocess a shader and also track which varyings were emitted in the output.
+///
+/// `defines` holds the macros that come from outside the shader - the values
+/// of the combos of the material - and they decide which branch of the shader
+/// is compiled.
 pub fn preprocess_with_layout_tracked(
     source: &str,
     stage: ShaderStage,
@@ -231,9 +116,31 @@ pub fn preprocess_with_layout_tracked(
     defines: &Map<String, String>,
     has_subgroup: bool,
 ) -> (String, Vec<String>) {
-    let mut result = String::with_capacity(source.len() + 4096);
+    let flattened = preprocessor::flatten(source, headers, defines);
+    report_warnings(&flattened.warnings);
+    emit_stage(&flattened, stage, layout, has_subgroup)
+}
+
+/// Report the warnings of the preprocessing.
+///
+/// A header that cannot be resolved or a conditional that is never closed
+/// does not stop the shader from being compiled, but the shader is then not
+/// the one the author wrote.
+fn report_warnings(warnings: &[String]) {
+    for warning in warnings {
+        log::warn!("the shader could not be preprocessed: {}", warning);
+    }
+}
+
+/// Emit the GLSL of a stage from the flattened source of the shader.
+fn emit_stage(
+    flattened: &preprocessor::Flattened,
+    stage: ShaderStage,
+    layout: &EffectLayout,
+    has_subgroup: bool,
+) -> (String, Vec<String>) {
+    let mut result = String::with_capacity(4096);
     let mut emitted_varyings: Vec<String> = Vec::new();
-    let mut ifp = IfBlockProcessor::new();
 
     result.push_str("#version 450\n");
 
@@ -246,74 +153,63 @@ pub fn preprocess_with_layout_tracked(
         result.push_str("#extension GL_KHR_shader_subgroup_shuffle : enable\n");
     }
 
-    emit_declarations(&mut result, stage, layout, headers);
+    emit_declarations(&mut result, stage, layout);
 
     let sampler_set: Set<&str> = layout.sampler_names.iter().map(|s| s.as_str()).collect();
 
-    for line in source.lines() {
-        let trimmed = line.trim();
+    for line in &flattened.lines {
+        let trimmed = line.text.trim();
 
-        // #include handling (header inlining with #if evaluation)
-        if trimmed.starts_with("#include") {
-            if ifp.is_active()
-                && let Some(start) = trimmed.find('"')
-                && let Some(end) = trimmed[start + 1..].find('"')
-            {
-                let file = &trimmed[start + 1..start + 1 + end];
-                if let Some(hdr) = headers.get(file) {
-                    include_header_lines(hdr, defines, &sampler_set, &mut result, headers);
-                }
-            }
+        if trimmed.is_empty() {
+            result.push('\n');
             continue;
         }
 
-        // Preprocessor directives
+        // A directive that survived the preprocessing: a `#define` of the
+        // shader or of one of its headers, an `#extension`, ...
         if trimmed.starts_with('#') {
-            let was_active_before = ifp.is_active();
-            if ifp.process_line(line, defines) == Some(true) {
-                continue;
-            }
-            if !was_active_before && !ifp.is_active() {
-                continue;
-            }
-            // Skip standard constants already emitted by emit_declarations
-            if trimmed.starts_with("#define M_PI")
-                || trimmed.starts_with("#define M_PI_HALF")
-                || trimmed.starts_with("#define M_PI_2")
-                || trimmed.starts_with("#define SQRT_2")
-                || trimmed.starts_with("#define SQRT_3")
-                || trimmed.starts_with("#version")
+            result.push_str(trimmed);
+            result.push('\n');
+            continue;
+        }
+
+        if trimmed.starts_with("//") {
+            result.push_str(trimmed);
+            result.push('\n');
+            continue;
+        }
+
+        if line.from_header {
+            // The declarations of a header are part of the interface of the
+            // shader: they are emitted from the layout, not from here.
+            let lower = trimmed.to_lowercase();
+            if lower.starts_with("uniform ")
+                || lower.starts_with("sampler2d ")
+                || lower.starts_with("varying ")
+                || lower.starts_with("attribute ")
             {
                 continue;
             }
-            result.push_str(line);
+
+            let transformed = compat::apply_line(trimmed, &sampler_set, &new_map());
+            result.push_str(&transformed);
             result.push('\n');
             continue;
         }
 
-        // Skip lines inside inactive #if blocks (preserve line count with newlines)
-        if !ifp.is_active() {
-            result.push('\n');
-            continue;
-        }
-        if trimmed.is_empty() || trimmed.starts_with("//") {
-            result.push_str(line);
+        let cleaned = strip_material_comments(&line.text);
+        let declaration = cleaned.trim();
+        if declaration.is_empty() {
             result.push('\n');
             continue;
         }
 
-        let cleaned = strip_material_comments(line);
-        if cleaned.is_empty() {
-            result.push('\n');
+        if declaration.starts_with("uniform ") || declaration.starts_with("sampler2D ") {
             continue;
         }
 
-        if cleaned.starts_with("uniform ") || cleaned.starts_with("sampler2D ") {
-            continue;
-        }
-
-        if cleaned.contains("attribute ") {
-            let rest = cleaned.split("attribute ").nth(1).unwrap_or("").trim();
+        if declaration.contains("attribute ") {
+            let rest = declaration.split("attribute ").nth(1).unwrap_or("").trim();
             let loc = layout::extract_variable_name(rest)
                 .and_then(|n| layout.attribute_locations.get(&n).copied())
                 .unwrap_or(0);
@@ -321,7 +217,7 @@ pub fn preprocess_with_layout_tracked(
             continue;
         }
 
-        if let Some(rest) = cleaned.strip_prefix("varying ") {
+        if let Some(rest) = declaration.strip_prefix("varying ") {
             let rest = rest.trim();
             let keyword = if matches!(stage, ShaderStage::Vertex) {
                 "out"
@@ -350,7 +246,6 @@ pub fn preprocess_with_layout_tracked(
 
             // Track emitted varyings for hoisting logic in preprocess_pair
             if stage == ShaderStage::Vertex
-                && ifp.is_active()
                 && let Some(n) = name
             {
                 emitted_varyings.push(n);
@@ -369,47 +264,25 @@ pub fn preprocess_with_layout_tracked(
     // lenient about vectors of a different width, naga is not.
     let result = glsl::normalise(&result, layout);
 
+    let result = apply_dialect(result);
+
     (result, emitted_varyings)
 }
 
-fn emit_declarations(
-    result: &mut String,
-    stage: ShaderStage,
-    layout: &EffectLayout,
-    headers: &Map<String, String>,
-) {
-    // Emit #define lines from all headers, skipping those inside #if blocks.
-    // The headers are visited in name order so the generated source is
-    // byte-identical from run to run.
-    let mut if_depth: u32 = 0;
-    for (_, content) in sorted_entries(headers) {
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#include") {
-                continue;
-            }
-            if trimmed.starts_with("#if") {
-                if_depth += 1;
-                continue;
-            }
-            if trimmed.starts_with("#endif") {
-                if_depth = if_depth.saturating_sub(1);
-                continue;
-            }
-            if trimmed.starts_with("#else") || trimmed.starts_with("#elif") {
-                continue;
-            }
-            if if_depth > 0 {
-                continue;
-            }
-            if trimmed.starts_with('#') {
-                let transformed = compat::apply_line(trimmed, &new_set(), &new_map());
-                result.push_str(&transformed);
-                result.push('\n');
-            }
-        }
-    }
+/// The stage that rewrites the dialect of the shader.
+///
+/// HOOK: the dialect module (`src/scene/loader/shader/dialect.rs`) is
+/// written by another packet and is not wired in yet.  As soon as it exists,
+/// its normalisation has to be called here, after the type aware stage: it
+/// rewrites the constructs of the Wallpaper Engine dialect that the type
+/// aware stage does not know about (`mul`, the samplers of the engine, the
+/// precision qualifiers, ...).
+fn apply_dialect(source: String) -> String {
+    source
+}
 
+/// Emit the declarations of the interface of the shader.
+fn emit_declarations(result: &mut String, stage: ShaderStage, layout: &EffectLayout) {
     if stage == ShaderStage::Fragment {
         result.push_str("out vec4 _fragColor;\n");
     }
@@ -428,9 +301,9 @@ fn emit_declarations(
     ));
 
     if !layout.uniform_decls.is_empty() {
+        // Push constants: data supplied via set_immediates(), no buffer binding.
+        // Naga GLSL frontend expects `layout(push_constant)` for immediate data.
         if layout.use_immediates {
-            // Push constants: data supplied via set_immediates(), no buffer binding.
-            // Naga GLSL frontend expects `layout(push_constant)` for immediate data.
             result.push_str("layout(push_constant) uniform EffectParams {\n");
         } else {
             result.push_str(&format!(
@@ -461,78 +334,40 @@ fn strip_material_comments(line: &str) -> String {
     }
 }
 
-/// Recursively expand a header's content into `result`, evaluating
-/// `#if`/`#ifdef` blocks using `defines` so only active branches are emitted.
-fn include_header_lines(
-    content: &str,
-    defines: &Map<String, String>,
-    sampler_set: &Set<&str>,
-    result: &mut String,
-    headers: &Map<String, String>,
-) {
-    let mut ifp = IfBlockProcessor::new();
-
-    for hline in content.lines() {
-        let htrim = hline.trim();
-
-        // Handle nested #include (recursively expand)
-        if htrim.starts_with("#include") {
-            if ifp.is_active()
-                && let Some(start) = htrim.find('"')
-                && let Some(end) = htrim[start + 1..].find('"')
-            {
-                let include_file = &htrim[start + 1..start + 1 + end];
-                if let Some(nested) = headers.get(include_file) {
-                    include_header_lines(nested, defines, sampler_set, result, headers);
-                }
-            }
-            continue;
-        }
-
-        // Handle preprocessor directives
-        if htrim.starts_with('#') {
-            if ifp.process_line(hline, defines) == Some(true) {
-                continue;
-            }
-            continue; // skip #define etc. (already emitted by emit_declarations)
-        }
-
-        if htrim.is_empty() || htrim.starts_with("//") || !ifp.is_active() {
-            continue;
-        }
-
-        // Skip declarations (already emitted by emit_declarations)
-        let htrim_lower = htrim.to_lowercase();
-        if htrim_lower.starts_with("uniform ")
-            || htrim_lower.starts_with("sampler2d ")
-            || htrim_lower.starts_with("varying ")
-            || htrim_lower.starts_with("attribute ")
-        {
-            continue;
-        }
-
-        let transformed = compat::apply_line(htrim, sampler_set, &new_map());
-        result.push_str(&transformed);
-        result.push('\n');
-    }
-}
-
 /// Preprocess a vertex/fragment shader pair using a layout that was already
 /// collected when the scene was loaded.
 ///
 /// `defines` must already contain both the shader source macros and the
 /// runtime combo/pass defines; callers obtain the source macros from
 /// [`asset::ShaderProgram::source_defines`].
+///
+/// The layout of the shader is collected again with the macros of this
+/// compilation, so that it describes the branch that is really compiled: a
+/// uniform that is only declared in a branch that is not taken must not be in
+/// the layout, and a uniform of the branch that is taken has to be.  The
+/// layout that was collected when the scene was loaded is only used to report
+/// a change of the uniforms.
 pub fn preprocess_pair_with_layout(
     vert: &str,
     frag: &str,
     headers: &Map<String, String>,
     defines: &Map<String, String>,
-    layout: &EffectLayout,
+    collected: &EffectLayout,
     has_subgroup: bool,
     use_immediates: bool,
 ) -> (String, String, EffectLayout) {
-    let mut layout = layout.clone();
+    // The layout is collected with the macros of this compilation, so that
+    // it describes the branch that is really compiled: a uniform that is
+    // only declared in a branch that is not taken must not be in the layout,
+    // and a uniform of the branch that is taken has to be.
+    let mut layout = layout::collect_layout_with_defines(vert, frag, headers, defines);
+    if layout.uniform_decls != collected.uniform_decls {
+        log::warn!(
+            "the uniforms of the shader changed with the macros of the material: {:?} -> {:?}",
+            collected.uniform_decls,
+            layout.uniform_decls
+        );
+    }
     layout.use_immediates = use_immediates;
 
     let (mut vert_out, vert_emitted) = preprocess_with_layout_tracked(
@@ -693,7 +528,7 @@ fn fix_fragment_varying_writes(output: &str, layout: &EffectLayout) -> String {
         let ty = layout
             .varying_types
             .get(var_name.as_str())
-            .map(|s| s.as_str())
+            .map(|s: &String| s.as_str())
             .unwrap_or("vec4");
         let in_name = format!("_in_{}", var_name);
         // Rename the declaration: `in TYPE VARNAME;` → `in TYPE _IN_VARNAME;`
@@ -747,4 +582,369 @@ fn find_decl_insertion_point(output: &str) -> usize {
         })
         .map(|l| l.len() + 1)
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collections::new_map;
+
+    /// A shader with a conditional in its body.
+    ///
+    /// The branch that is taken sets the value to one, the branch that is not
+    /// taken sets it to two.
+    fn conditional_shader(condition: &str) -> String {
+        format!(
+            "varying vec2 v_TexCoord;\n\
+             \n\
+             void main() {{\n\
+             \x20   float value = 0.0;\n\
+             #if {condition}\n\
+             \x20   value = 1.0;\n\
+             #else\n\
+             \x20   value = 2.0;\n\
+             #endif\n\
+             \x20   v_TexCoord = vec2(value);\n\
+             \x20   gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n\
+             }}\n"
+        )
+    }
+
+    /// Preprocess a shader with a set of macros.
+    fn preprocess(source: &str, macros: &[(&str, &str)]) -> String {
+        let headers = new_map();
+        let mut defines = new_map();
+        for (name, value) in macros {
+            defines.insert(name.to_string(), value.to_string());
+        }
+        let layout = collect_layout(source, source, &headers);
+        let (_vertex, fragment, _) =
+            preprocess_pair_with_layout(source, source, &headers, &defines, &layout, false, false);
+        fragment
+    }
+
+    /// A condition of the Wallpaper Engine shaders, with the macros it is
+    /// evaluated with and the result the C preprocessor computes.
+    struct ConditionCase {
+        /// The condition of the directive.
+        condition: &'static str,
+        /// The macros of the condition.
+        macros: &'static [(&'static str, &'static str)],
+        /// Whether the condition holds.
+        holds: bool,
+    }
+
+    /// The conditions of the real Wallpaper Engine shaders.
+    const CONDITIONS: &[ConditionCase] = &[
+        ConditionCase {
+            condition: "A == 1 && B == 2",
+            macros: &[("A", "1"), ("B", "2")],
+            holds: true,
+        },
+        ConditionCase {
+            condition: "A == 1 || B == 2",
+            macros: &[("A", "1"), ("B", "2")],
+            holds: true,
+        },
+        ConditionCase {
+            condition: "(A || B) && C",
+            macros: &[("A", "1"), ("B", "1"), ("C", "1")],
+            holds: true,
+        },
+        ConditionCase {
+            condition: "A && (B || C)",
+            macros: &[("A", "1"), ("B", "0"), ("C", "1")],
+            holds: true,
+        },
+        ConditionCase {
+            condition: "A >= 1",
+            macros: &[("A", "2")],
+            holds: true,
+        },
+        ConditionCase {
+            condition: "defined(A) && defined(B)",
+            macros: &[("A", "1"), ("B", "1")],
+            holds: true,
+        },
+        ConditionCase {
+            condition: "defined(A) || defined(B)",
+            macros: &[("A", "1")],
+            holds: true,
+        },
+        ConditionCase {
+            condition: "TEX4FORMAT == FORMAT_R8 || TEX4FORMAT == FORMAT_RG88",
+            macros: &[
+                ("TEX4FORMAT", "8"),
+                ("FORMAT_R8", "9"),
+                ("FORMAT_RG88", "8"),
+            ],
+            holds: true,
+        },
+        ConditionCase {
+            condition: "HDR && (LIGHTING || REFLECTION) && EMISSIVE_MAP",
+            macros: &[
+                ("HDR", "1"),
+                ("LIGHTING", "1"),
+                ("REFLECTION", "0"),
+                ("EMISSIVE_MAP", "1"),
+            ],
+            holds: true,
+        },
+        ConditionCase {
+            condition: "NORMALMAP == 0",
+            macros: &[("NORMALMAP", "0")],
+            holds: true,
+        },
+        ConditionCase {
+            condition: "COMPOSITE != 0",
+            macros: &[("COMPOSITE", "3")],
+            holds: true,
+        },
+        // The conditions that do not hold.
+        ConditionCase {
+            condition: "A == 1 && B == 2",
+            macros: &[("A", "1"), ("B", "3")],
+            holds: false,
+        },
+        ConditionCase {
+            condition: "A >= 1",
+            macros: &[("A", "0")],
+            holds: false,
+        },
+        ConditionCase {
+            condition: "defined(A) && defined(B)",
+            macros: &[("A", "1")],
+            holds: false,
+        },
+        ConditionCase {
+            condition: "REFLECTION && NORMALMAP",
+            macros: &[("REFLECTION", "1"), ("NORMALMAP", "0")],
+            holds: false,
+        },
+        ConditionCase {
+            condition: "TEX1FORMAT >= FORMAT_ETC1_RGB8 && TEX1FORMAT <= FORMAT_DXT1 || TEX1FORMAT == FORMAT_BC7",
+            macros: &[
+                ("TEX1FORMAT", "1"),
+                ("FORMAT_ETC1_RGB8", "3"),
+                ("FORMAT_DXT1", "7"),
+                ("FORMAT_BC7", "12"),
+            ],
+            holds: false,
+        },
+        ConditionCase {
+            condition: "TEX1FORMAT >= FORMAT_ETC1_RGB8 && TEX1FORMAT <= FORMAT_DXT1 || TEX1FORMAT == FORMAT_BC7",
+            macros: &[
+                ("TEX1FORMAT", "12"),
+                ("FORMAT_ETC1_RGB8", "3"),
+                ("FORMAT_DXT1", "7"),
+                ("FORMAT_BC7", "12"),
+            ],
+            holds: true,
+        },
+    ];
+
+    #[test]
+    fn the_conditions_of_the_shaders_are_evaluated_like_c_does() {
+        for case in CONDITIONS {
+            let source = preprocess(&conditional_shader(case.condition), case.macros);
+            let taken = source.contains("value = 1.0;");
+            let not_taken = source.contains("value = 2.0;");
+            assert_eq!(taken, case.holds, "the condition `{}`", case.condition);
+            assert_eq!(not_taken, !case.holds, "the condition `{}`", case.condition);
+        }
+    }
+
+    #[test]
+    fn the_defines_of_the_source_are_scoped_like_c_does() {
+        // A define of a branch that is taken exists afterwards.
+        let source =
+            "#define OUTSIDE 1\n#if FOO\n#define INSIDE 1\n#endif\n#ifdef INSIDE\ntaken\n#endif\n";
+        let source = preprocess(source, &[("FOO", "1")]);
+        assert!(source.contains("taken"));
+
+        // A define of a branch that is not taken does not exist.
+        let source = "#if 0\n#define INSIDE 1\n#endif\n#ifdef INSIDE\ntaken\n#endif\n";
+        let source = preprocess(source, &[]);
+        assert!(!source.contains("taken"));
+
+        // An `#undef` removes a macro.
+        let source = "#define MYCONST 1\n#undef MYCONST\n#ifdef MYCONST\ntaken\n#endif\n";
+        let source = preprocess(source, &[]);
+        assert!(!source.contains("taken"));
+    }
+
+    #[test]
+    fn the_macros_of_a_header_are_visible_to_the_file_that_includes_it() {
+        let mut headers = new_map();
+        headers.insert("common.h".to_string(), "#define MYCONST 1\n".to_string());
+
+        let source = "#include \"common.h\"\n#ifdef MYCONST\ntaken\n#endif\n";
+        let headers_ref = &headers;
+        let layout = collect_layout(source, source, headers_ref);
+        let (_, fragment, _) = preprocess_pair_with_layout(
+            source,
+            source,
+            headers_ref,
+            &new_map(),
+            &layout,
+            false,
+            false,
+        );
+        assert!(fragment.contains("taken"));
+
+        // The macro of the header does not exist without the include.
+        let source = "#ifdef MYCONST\ntaken\n#endif\n";
+        let layout = collect_layout(source, source, headers_ref);
+        let (_, fragment, _) = preprocess_pair_with_layout(
+            source,
+            source,
+            headers_ref,
+            &new_map(),
+            &layout,
+            false,
+            false,
+        );
+        assert!(!fragment.contains("taken"));
+    }
+
+    #[test]
+    fn a_header_can_be_included_with_a_path() {
+        let mut headers = new_map();
+        headers.insert(
+            "model_vertex_v1.h".to_string(),
+            "#define MYCONST 1\n".to_string(),
+        );
+
+        let source = "#include \"base/model_vertex_v1.h\"\n#ifdef MYCONST\ntaken\n#endif\n";
+        let layout = collect_layout(source, source, &headers);
+        let (_, fragment, _) = preprocess_pair_with_layout(
+            source,
+            source,
+            &headers,
+            &new_map(),
+            &layout,
+            false,
+            false,
+        );
+        assert!(fragment.contains("taken"));
+    }
+
+    #[test]
+    fn the_mathematical_constants_exist_without_the_assets() {
+        let source = preprocess("void main() {}\n", &[]);
+        for name in ["M_PI", "M_PI_HALF", "M_PI_2", "SQRT_2", "SQRT_3"] {
+            assert!(
+                source.contains(&format!("#define {name} ")),
+                "the constant {name} is missing:\n{source}"
+            );
+        }
+    }
+
+    /// The vertex shader of the blend mode scenario.
+    const BLENDMODE_VERTEX: &str = "\
+varying vec2 v_TexCoord;
+
+void main() {
+    v_TexCoord = vec2(0.5, 0.5);
+    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+}
+";
+
+    /// The fragment shader of the blend mode scenario.
+    ///
+    /// The shader defines the macro itself, and the material sets it to
+    /// another value: the macro of the material has to win, and the shader
+    /// compiler must not see the macro twice.
+    const BLENDMODE_FRAGMENT: &str = "\
+#define BLENDMODE 0
+
+varying vec2 v_TexCoord;
+
+void main() {
+    float value = 0.0;
+#if BLENDMODE == 26
+    value = 1.0;
+#else
+    value = 2.0;
+#endif
+    gl_FragColor = vec4(value, v_TexCoord.x, 0.0, 1.0);
+}
+";
+
+    #[test]
+    fn the_macro_of_the_material_wins_over_the_definition_of_the_source() {
+        let headers = new_map();
+        let mut defines = new_map();
+        defines.insert("BLENDMODE".to_string(), "26".to_string());
+
+        let layout = collect_layout(BLENDMODE_VERTEX, BLENDMODE_FRAGMENT, &headers);
+        let (vertex, fragment, _) = preprocess_pair_with_layout(
+            BLENDMODE_VERTEX,
+            BLENDMODE_FRAGMENT,
+            &headers,
+            &defines,
+            &layout,
+            false,
+            false,
+        );
+
+        // The definition of the source is dropped: the shader compiler gets
+        // the macro of the material, and it must not see it twice.
+        assert!(!fragment.contains("#define BLENDMODE"));
+        assert!(!vertex.contains("#define BLENDMODE"));
+
+        // The branch of the material is the one that is compiled.
+        assert!(fragment.contains("value = 1.0;"));
+        assert!(!fragment.contains("value = 2.0;"));
+
+        compile(&vertex, naga::ShaderStage::Vertex, &[("BLENDMODE", "26")]);
+        compile(
+            &fragment,
+            naga::ShaderStage::Fragment,
+            &[("BLENDMODE", "26")],
+        );
+    }
+
+    /// Compile a GLSL source with naga and validate the result.
+    fn compile(source: &str, stage: naga::ShaderStage, defines: &[(&str, &str)]) {
+        let mut frontend = naga::front::glsl::Frontend::default();
+        let options = naga::front::glsl::Options {
+            stage,
+            defines: defines
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+        };
+        let module = match frontend.parse(&options, source) {
+            Ok(module) => module,
+            Err(errors) => panic!(
+                "naga could not parse the {} shader:\n{}\n{}",
+                stage_name(stage),
+                errors.emit_to_string(source),
+                source
+            ),
+        };
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        );
+        if let Err(error) = validator.validate(&module) {
+            panic!(
+                "naga rejected the {} shader: {:?}\n{}",
+                stage_name(stage),
+                error,
+                source
+            );
+        }
+    }
+
+    /// The name of a shader stage, for the error messages.
+    fn stage_name(stage: naga::ShaderStage) -> &'static str {
+        match stage {
+            naga::ShaderStage::Vertex => "vertex",
+            naga::ShaderStage::Fragment => "fragment",
+            naga::ShaderStage::Compute => "compute",
+            _ => "unknown",
+        }
+    }
 }
