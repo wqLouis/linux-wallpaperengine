@@ -22,6 +22,13 @@ pub struct EffectLayout {
     /// Whether this shader uses immediates (push constants) for uniforms.
     /// Set by the pipeline handler after computing the total uniform size.
     pub use_immediates: bool,
+    /// The path of the shader pair in the wallpaper.
+    ///
+    /// It is only used for the log messages of the preprocessing: a shader
+    /// that could not be preprocessed has to be named, or the failure cannot
+    /// be found.  It is empty when the layout does not belong to a shader of
+    /// a wallpaper.
+    pub shader_path: String,
 }
 
 impl EffectLayout {
@@ -129,6 +136,7 @@ fn collect_layout_from_flattened(
         vertex_varyings: vert_varyings,
         attribute_locations,
         use_immediates: false,
+        shader_path: String::new(),
     }
 }
 
@@ -238,6 +246,22 @@ fn extract_material_key(line: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The declaration of a uniform in GLSL.
+///
+/// The type of the layout holds the array brackets behind the type
+/// (`float [32]`), but GLSL wants them behind the name
+/// (`float name[32]`).  The shader compiler rejects the first form.
+pub(crate) fn uniform_declaration(ty: &str, name: &str) -> String {
+    match ty.find('[') {
+        Some(start) => {
+            let base = ty[..start].trim_end();
+            let array = ty[start..].trim();
+            format!("{} {}{};", base, name, array)
+        }
+        None => format!("{} {};", ty, name),
+    }
 }
 
 pub fn extract_variable_name(rest: &str) -> Option<String> {

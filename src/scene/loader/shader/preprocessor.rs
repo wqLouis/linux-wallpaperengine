@@ -79,9 +79,14 @@ pub fn flatten(
     let mut context = Context::new(headers, external);
     context.process(source, false);
 
-    // The source ends with an open conditional: the `#endif` is missing.
+    // The source ends with an open conditional: the `#endif` is missing.  The
+    // conditional is closed at the end of the file, like the reference engine
+    // does it, and the shader is preprocessed anyway.
     if !context.stack.is_empty() {
-        context.warn("the source ends with a `#if` that is never closed".to_string());
+        context.warn(
+            "the source ends with a `#if` that is never closed, it is closed at the end of the file"
+                .to_string(),
+        );
         context.stack.clear();
     }
 
@@ -150,6 +155,11 @@ struct Context<'a> {
     including: Vec<String>,
     /// Whether the `#include` directives are followed.
     follow_includes: bool,
+    /// The name of the file that is processed right now.  It is empty for
+    /// the shader itself and the name of the header for a header.
+    file: String,
+    /// The line of the file that is processed right now.
+    line: usize,
 }
 
 impl<'a> Context<'a> {
@@ -172,6 +182,8 @@ impl<'a> Context<'a> {
             warnings: Vec::new(),
             including: Vec::new(),
             follow_includes: true,
+            file: String::new(),
+            line: 0,
         }
     }
 
@@ -196,9 +208,20 @@ impl<'a> Context<'a> {
         self.warnings.push(warning);
     }
 
+    /// Record a warning about the line that is processed right now.
+    fn warn_here(&mut self, warning: &str) {
+        let place = if self.file.is_empty() {
+            format!("line {}", self.line)
+        } else {
+            format!("in `{}`, line {}", self.file, self.line)
+        };
+        self.warn(format!("{place}: {warning}"));
+    }
+
     /// Process the lines of a source.
     fn process(&mut self, source: &str, from_header: bool) {
-        for line in source.lines() {
+        for (number, line) in source.lines().enumerate() {
+            self.line = number + 1;
             let trimmed = line.trim();
             if trimmed.starts_with('#') {
                 self.directive(trimmed, from_header);
@@ -251,7 +274,7 @@ impl<'a> Context<'a> {
                     // dropped: the shader compiler would not understand it
                     // either.
                     _ => {
-                        self.warn(format!(
+                        self.warn_here(&format!(
                             "the directive `{}` is not known and is ignored",
                             trimmed.trim()
                         ));
@@ -295,11 +318,11 @@ impl<'a> Context<'a> {
             .last()
             .map(|frame| (frame.taken, frame.seen_else))
         else {
-            self.warn("an `#elif` without an `#if`".to_string());
+            self.warn_here("an `#elif` without an `#if` is ignored");
             return;
         };
         if seen_else {
-            self.warn("an `#elif` after an `#else`".to_string());
+            self.warn_here("an `#elif` after an `#else` is ignored");
         }
 
         let enclosing = self.enclosing_active();
@@ -329,11 +352,11 @@ impl<'a> Context<'a> {
             .last()
             .map(|frame| (frame.taken, frame.seen_else))
         else {
-            self.warn("an `#else` without an `#if`".to_string());
+            self.warn_here("an `#else` without an `#if` is ignored");
             return;
         };
         if seen_else {
-            self.warn("a second `#else`".to_string());
+            self.warn_here("a second `#else` is ignored");
         }
 
         let enclosing = self.enclosing_active();
@@ -347,14 +370,16 @@ impl<'a> Context<'a> {
     /// Process an `#endif`.
     fn endif_directive(&mut self) {
         if self.stack.pop().is_none() {
-            self.warn("an `#endif` without an `#if`".to_string());
+            // The reference engine ignores a stray `#endif`, so the shader is
+            // preprocessed anyway.
+            self.warn_here("an `#endif` without an `#if` is ignored");
         }
     }
 
     /// Process a `#define`.
     fn define_directive(&mut self, rest: &str, original: &str, from_header: bool) {
         let Some(definition) = parse_define(rest) else {
-            self.warn(format!("`#define` without a name: {}", original.trim()));
+            self.warn_here(&format!("`#define` without a name: {}", original.trim()));
             return;
         };
         let name = definition.name;
@@ -398,7 +423,7 @@ impl<'a> Context<'a> {
     fn undef_directive(&mut self, rest: &str, original: &str, from_header: bool) {
         let name = strip_comment(rest);
         if name.is_empty() {
-            self.warn(format!("`#undef` without a name: {}", original.trim()));
+            self.warn_here(&format!("`#undef` without a name: {}", original.trim()));
             return;
         }
         self.defines.remove(name);
@@ -418,26 +443,30 @@ impl<'a> Context<'a> {
         }
 
         let Some(name) = parse_include(rest) else {
-            self.warn(format!("`#include` without a file name: {}", rest.trim()));
+            self.warn_here(&format!("`#include` without a file name: {}", rest.trim()));
             return;
         };
 
         let Some(content) = self.resolve(&name).cloned() else {
-            self.warn(format!("the header `{}` cannot be resolved", name));
+            self.warn_here(&format!("the header `{}` cannot be resolved", name));
             return;
         };
 
         if self.including.iter().any(|included| included == &name) {
-            self.warn(format!("the header `{}` includes itself", name));
+            self.warn_here(&format!("the header `{}` includes itself", name));
             return;
         }
 
         self.including.push(name.clone());
         let depth = self.stack.len();
+        let file = std::mem::replace(&mut self.file, name.clone());
+        let line = std::mem::replace(&mut self.line, 0);
         self.process(&content, true);
+        self.file = file;
+        self.line = line;
         if self.stack.len() > depth {
             self.warn(format!(
-                "the header `{}` has a `#if` that is never closed",
+                "the header `{}` has a `#if` that is never closed, it is closed at the end of the header",
                 name
             ));
             self.stack.truncate(depth);
@@ -477,7 +506,7 @@ impl<'a> Context<'a> {
         match c_expr::evaluate(condition, &self.defines) {
             Ok(value) => value,
             Err(error) => {
-                self.warn(format!(
+                self.warn_here(&format!(
                     "the condition `{}` cannot be evaluated: {}",
                     condition.trim(),
                     error
@@ -780,6 +809,84 @@ mod tests {
         let lines = flatten_source(source, &new_map(), &[]);
         assert!(lines.iter().any(|line| line.contains("the glsl branch")));
         assert!(!lines.iter().any(|line| line.contains("the hlsl branch")));
+    }
+
+    /// A case of the leniency of the preprocessor: a source that the
+    /// reference engine of Wallpaper Engine tolerates and that the
+    /// preprocessor has to tolerate too.
+    struct LenientCase {
+        /// What the case is about.
+        name: &'static str,
+        /// The source of the shader.
+        source: &'static str,
+        /// The text that has to survive the preprocessing.
+        expected: &'static str,
+    }
+
+    /// The sources that the reference engine tolerates.
+    const LENIENT_CASES: &[LenientCase] = &[
+        LenientCase {
+            name: "a stray `#endif` is ignored",
+            source: "#if FOO\nthe branch\n#endif\n#endif\nvoid main() {}\n",
+            expected: "void main() {}",
+        },
+        LenientCase {
+            name: "a stray `#else` is ignored",
+            source: "#else\nthe branch\nvoid main() {}\n",
+            expected: "void main() {}",
+        },
+        LenientCase {
+            name: "a stray `#elif` is ignored",
+            source: "#elif FOO\nthe branch\nvoid main() {}\n",
+            expected: "void main() {}",
+        },
+        LenientCase {
+            name: "an unknown directive is ignored",
+            source: "#require LightingV1\nvoid main() {}\n",
+            expected: "void main() {}",
+        },
+        LenientCase {
+            name: "an `#if` without an `#endif` is closed at the end of the file",
+            source: "#if FOO\nthe branch\nvoid main() {}\n",
+            expected: "void main() {}",
+        },
+    ];
+
+    #[test]
+    fn the_preprocessor_is_as_lenient_as_the_reference_engine() {
+        for case in LENIENT_CASES {
+            let flattened = flatten(case.source, &new_map(), &defines(&[("FOO", "1")]));
+
+            // The shader is still usable.
+            assert!(
+                flattened
+                    .lines
+                    .iter()
+                    .any(|line| line.text.contains(case.expected)),
+                "case: {}: the shader is not usable",
+                case.name
+            );
+
+            // And the problem is reported.
+            assert!(
+                !flattened.warnings.is_empty(),
+                "case: {}: the problem is not reported",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_warning_names_the_line_it_is_about() {
+        let flattened = flatten("#if FOO\n#endif\n#endif\n", &new_map(), &new_map());
+        assert!(
+            flattened
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("line 3")),
+            "the warnings are: {:?}",
+            flattened.warnings
+        );
     }
 
     #[test]

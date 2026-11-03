@@ -109,6 +109,10 @@ fn layout_defines(source1: &str, source2: &str) -> Map<String, String> {
 /// `defines` holds the macros that come from outside the shader - the values
 /// of the combos of the material - and they decide which branch of the shader
 /// is compiled.
+///
+/// The name of the shader in the wallpaper is taken from the layout: it is
+/// the only way to tell which shader of a wallpaper could not be
+/// preprocessed.
 pub fn preprocess_with_layout_tracked(
     source: &str,
     stage: ShaderStage,
@@ -118,18 +122,40 @@ pub fn preprocess_with_layout_tracked(
     has_subgroup: bool,
 ) -> (String, Vec<String>) {
     let flattened = preprocessor::flatten(source, headers, defines);
-    report_warnings(&flattened.warnings);
+    report_warnings(&shader_name(layout, stage), &flattened.warnings);
     emit_stage(&flattened, stage, layout, has_subgroup)
+}
+
+/// The name of a shader, for the log messages of the preprocessing.
+///
+/// The path of the shader pair is in the layout; the stage tells which of the
+/// two shaders is meant.
+fn shader_name(layout: &EffectLayout, stage: ShaderStage) -> String {
+    let stage = match stage {
+        ShaderStage::Vertex => "the vertex stage",
+        ShaderStage::Fragment => "the fragment stage",
+        _ => "the stage",
+    };
+    if layout.shader_path.is_empty() {
+        format!("the shader ({stage})")
+    } else {
+        format!("{} ({stage})", layout.shader_path)
+    }
 }
 
 /// Report the warnings of the preprocessing.
 ///
-/// A header that cannot be resolved or a conditional that is never closed
-/// does not stop the shader from being compiled, but the shader is then not
-/// the one the author wrote.
-fn report_warnings(warnings: &[String]) {
+/// A header that cannot be resolved, a stray `#endif` or a conditional that
+/// is never closed does not stop the shader from being compiled: the
+/// reference engine is lenient there too.  The warning names the shader, so
+/// that a shader that is not the one the author wrote can be found.
+fn report_warnings(name: &str, warnings: &[String]) {
     for warning in warnings {
-        log::warn!("the shader could not be preprocessed: {}", warning);
+        log::warn!(
+            "the shader `{}` could not be preprocessed: {}",
+            name,
+            warning
+        );
     }
 }
 
@@ -316,7 +342,7 @@ fn emit_declarations(result: &mut String, stage: ShaderStage, layout: &EffectLay
             ));
         }
         for (name, ty) in &layout.uniform_decls {
-            result.push_str(&format!("    {} {};\n", ty, name));
+            result.push_str(&format!("    {}\n", layout::uniform_declaration(ty, name)));
         }
         result.push_str("};\n");
     }
@@ -351,6 +377,9 @@ fn strip_material_comments(line: &str) -> String {
 /// the layout, and a uniform of the branch that is taken has to be.  The
 /// layout that was collected when the scene was loaded is only used to report
 /// a change of the uniforms.
+///
+/// The path of the shaders is in the layout: it is the only way to tell which
+/// shader of a wallpaper could not be preprocessed.
 pub fn preprocess_pair_with_layout(
     vert: &str,
     frag: &str,
@@ -365,9 +394,17 @@ pub fn preprocess_pair_with_layout(
     // only declared in a branch that is not taken must not be in the layout,
     // and a uniform of the branch that is taken has to be.
     let mut layout = layout::collect_layout_with_defines(vert, frag, headers, defines);
+    // The path of the shaders is in the layout: the warnings of the
+    // preprocessing name the shader they are about.
+    layout.shader_path = collected.shader_path.clone();
     if layout.uniform_decls != collected.uniform_decls {
-        log::warn!(
-            "the uniforms of the shader changed with the macros of the material: {:?} -> {:?}",
+        // The layout of the scene was collected with the default values of
+        // the combos; the material of the effect can enable other branches
+        // of the shader.  It is not an error - the layout that is compiled
+        // is the one that counts - but it is worth knowing.
+        log::info!(
+            "the uniforms of the shader `{}` changed with the macros of the material: {:?} -> {:?}",
+            layout.shader_path,
             collected.uniform_decls,
             layout.uniform_decls
         );
@@ -842,6 +879,124 @@ mod tests {
                 "the constant {name} is missing:\n{source}"
             );
         }
+    }
+
+    /// The vertex shader of a workshop wallpaper that has a stray `#endif`.
+    ///
+    /// The reference engine of Wallpaper Engine ignores the stray `#endif`,
+    /// so the preprocessor has to ignore it too: the shader has to be
+    /// preprocessed and compiled, not skipped.
+    const IRIS_MOVEMENT_VERTEX: &str = include_str!("fixtures/iris_movement.vert");
+
+    /// The fragment shader that goes with [`IRIS_MOVEMENT_VERTEX`].
+    const IRIS_MOVEMENT_FRAGMENT: &str = include_str!("fixtures/iris_movement.frag");
+
+    /// The vertex shader of a second workshop wallpaper with a stray
+    /// `#endif`.
+    const SIMPLE_AUDIO_BARS_VERTEX: &str = include_str!("fixtures/simple_audio_bars.vert");
+
+    #[test]
+    fn a_shader_with_a_stray_endif_is_preprocessed() {
+        let headers = new_map();
+        let mut defines = new_map();
+        for (name, value) in collect_default_defines(IRIS_MOVEMENT_VERTEX, IRIS_MOVEMENT_FRAGMENT) {
+            defines.insert(name, value);
+        }
+
+        let layout = collect_layout(IRIS_MOVEMENT_VERTEX, IRIS_MOVEMENT_FRAGMENT, &headers);
+        let (vertex, fragment, _) = preprocess_pair_with_layout(
+            IRIS_MOVEMENT_VERTEX,
+            IRIS_MOVEMENT_FRAGMENT,
+            &headers,
+            &defines,
+            &layout,
+            false,
+            false,
+        );
+
+        // The shader is usable: it has an entry point and the branch that
+        // the combos select is compiled.
+        assert!(
+            vertex.contains("void main()"),
+            "the vertex shader is broken"
+        );
+        assert!(
+            fragment.contains("void main()"),
+            "the fragment shader is broken"
+        );
+        assert!(
+            vertex.contains("g_CursorScale"),
+            "the branch is not compiled"
+        );
+
+        // The uniforms of the branches that are not taken are not in the
+        // shader.
+        assert!(
+            !vertex.contains("g_ManualScale"),
+            "an inactive branch is compiled"
+        );
+        assert!(
+            !vertex.contains("g_Scale;"),
+            "an inactive branch is compiled"
+        );
+    }
+
+    #[test]
+    fn a_shader_with_a_stray_endif_is_preprocessed_in_every_stage() {
+        let headers = new_map();
+        let mut defines = new_map();
+        for (name, value) in collect_default_defines(SIMPLE_AUDIO_BARS_VERTEX, "") {
+            defines.insert(name, value);
+        }
+
+        let layout = collect_layout(SIMPLE_AUDIO_BARS_VERTEX, SIMPLE_AUDIO_BARS_VERTEX, &headers);
+        let (vertex, _, _) = preprocess_pair_with_layout(
+            SIMPLE_AUDIO_BARS_VERTEX,
+            SIMPLE_AUDIO_BARS_VERTEX,
+            &headers,
+            &defines,
+            &layout,
+            false,
+            false,
+        );
+
+        assert!(
+            vertex.contains("void main()"),
+            "the vertex shader is broken"
+        );
+        // The branch of the combos is compiled: the varying of the
+        // `BAR_STYLE == 1` branch is there.
+        assert!(
+            vertex.contains("i_DCorrectingFactor"),
+            "the branch of the combos is not compiled:\n{vertex}"
+        );
+    }
+
+    #[test]
+    fn an_array_uniform_is_declared_the_way_glsl_wants_it() {
+        // GLSL wants the array brackets behind the name, the shader compiler
+        // rejects `float [32] name;`.
+        let source = "uniform float g_Spectrum[32];\nvoid main() {}\n";
+        let headers = new_map();
+        let layout = collect_layout(source, source, &headers);
+        let (_, fragment, layout) = preprocess_pair_with_layout(
+            source,
+            source,
+            &headers,
+            &new_map(),
+            &layout,
+            false,
+            false,
+        );
+
+        assert_eq!(
+            layout.uniform_decls,
+            vec![("g_Spectrum".to_string(), "float [32]".to_string())]
+        );
+        assert!(
+            fragment.contains("float g_Spectrum[32];"),
+            "the array uniform is declared the wrong way:\n{fragment}"
+        );
     }
 
     /// The vertex shader of the blend mode scenario.

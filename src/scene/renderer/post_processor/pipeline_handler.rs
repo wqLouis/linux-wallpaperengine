@@ -165,7 +165,10 @@ fn compile_pipeline(
     let headers = &program.headers;
 
     // First pass: use the layout parsed at load time to know uniform sizes.
-    let layout_pre = &program.layout;
+    // The path of the shaders is in the layout: the warnings of the
+    // preprocessing name the shader they are about.
+    let mut layout_pre = program.layout.clone();
+    layout_pre.shader_path = vert_path.trim_end_matches(".vert").to_string();
     let total_uniform_size = layout_pre.total_uniform_size();
     // Use immediates if available AND uniform block fits within immediate size limit.
     // Vulkan push constants are typically 128–256 bytes; wgpu reports via Limits::max_immediate_size.
@@ -197,7 +200,7 @@ fn compile_pipeline(
         frag_source,
         headers,
         &merged_defines,
-        layout_pre,
+        &layout_pre,
         ctx.has_subgroup,
         use_immediates,
     );
