@@ -11,9 +11,11 @@
 
 /// The hasher backing [`Map`] and [`Set`].
 ///
-/// `ahash` seeds itself from the operating system once per process, so the
-/// tables stay resistant to hash flooding while hashing much faster than
-/// the standard library's SipHash.
+/// `ahash` hashes much faster than the standard library's SipHash.  It is
+/// configured with a fixed seed (`no-rng`): the tables index assets, effects
+/// and shader symbols, they are not a security boundary, and a constant seed
+/// keeps the crate free of an OS entropy source - which also lets it build
+/// for `wasm32-unknown-unknown`.
 pub type Hasher = ahash::RandomState;
 
 /// Hash map with `ahash`'s fast hasher.

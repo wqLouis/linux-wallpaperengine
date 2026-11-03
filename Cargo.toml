@@ -5,7 +5,11 @@ edition = "2024"
 description = "Yet another linux wallpaper engine"
 
 [dependencies]
-ahash = "0.8.12"
+# `ahash` with a fixed seed: the hash tables index assets, effects and shader
+# symbols - they are not a security boundary, so the random (OS-sourced) seed
+# `ahash` uses by default is not needed.  Dropping it also removes the
+# `getrandom` dependency, which does not build for `wasm32-unknown-unknown`.
+ahash = { version = "0.8.12", default-features = false, features = ["std", "no-rng"] }
 bytemuck = "1.25.0"
 clap = { version = "4.5.58", features = ["derive"] }
 env_logger = "0.11"
