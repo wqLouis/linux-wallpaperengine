@@ -361,14 +361,31 @@ The rules that keep that possible:
   thin wrapper over it. In the browser the archive is fetched over HTTP and parsed from bytes.
 * **No threads in the core.** The player is single-threaded by design (the ffmpeg backend is
   `Send`, but the player is never shared between threads).
-* **The browser gets its own backend.** `FrameDecoder` is the extension point: a future
-  `WebCodecsBackend` (wasm-bindgen over the browser's `VideoDecoder` **and** `ImageDecoder`)
-  implements `probe`/`next_frame`/`rewind` and plugs in through
-  `VideoPlayer::open_with_backend`. Because the trait covers still images too, the same backend
-  serves both a video layer and a plain image — one trait, two WebCodecs decoders.
-  The player, the loader and the renderer stay *identical* in both builds.
-  (Not implemented yet: `web-sys` is not in the offline registry, so the wasm backend has to wait
-  for a networked build.)
+* **The browser gets its own backends** (wasm only), built on the native browser APIs
+  rather than on a Rust decoder:
+
+  | Source | Native API | Backend |
+  |---|---|---|
+  | video (mp4/webm) | the `<video>` element (the browser's own demuxer + decoder) + `OffscreenCanvas` → `drawImage` + `getImageData` | `WebVideoBackend` |
+  | still image | WebCodecs `ImageDecoder` → `VideoFrame::copy_to("RGBA")` | `WebImageBackend` |
+  | audio | `AudioDecoder` / `decodeAudioData` | **not here** — that is a *playback* path, not a frame source; it belongs to the wasm *host* port (`<audio>`/AudioContext) |
+
+  WebCodecs' `VideoDecoder` is deliberately *not* used for video: it is a codec API that does not
+  demux containers, so feeding it an `.mp4` would mean writing an MP4 demuxer. The media element
+  is the browser's native container path, and reading its pixels back is synchronous.
+
+* **The trait has to be honest about asynchronous decoders.** The browser's decoders cannot hand
+  out a frame on demand, so the trait reports three outcomes:
+  ```rust
+  pub enum FrameStatus {
+      Frame(VideoFrame),  // decoded and ready
+      Pending,            // not ready yet — the frame on screen stays
+      End,                // the stream is over
+  }
+  ```
+  `Pending` keeps the playback alive (the player serves the cached frame and does *not* mark the
+  stream exhausted); the synchronous native backends never return it, so their behaviour is
+  unchanged.
 * **Feature flags mirror the platforms:** `ffmpeg` (default **on**) = the native backend;
   `webcodecs` (future, wasm only) = the browser backend; `--no-default-features` = no codec
   backend at all (GIF only, pure Rust).
