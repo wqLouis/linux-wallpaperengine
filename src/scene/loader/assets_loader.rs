@@ -15,7 +15,7 @@ use std::{cell::RefCell, fs, path::PathBuf, rc::Rc};
 use pkg_parser::pkg_parser::{
     mdl_parser::MdlFile,
     tex_parser::Tex,
-    video_parser::{VideoInfo, VideoPlayer, detect_format},
+    video_parser::{VideoFrame, VideoInfo, VideoPlayer, decode_all, detect_format},
 };
 
 use super::project::{Project, parse_project};
@@ -106,37 +106,73 @@ impl AssetType {
 // Parsed assets
 // ---------------------------------------------------------------------------
 
-/// A video (or animated image) asset: the raw bytes plus the probed
-/// metadata.
+/// A video (or animated image) asset: the raw bytes, the probed metadata
+/// and — when the clip fits into the memory budget of the parser — the
+/// decoded frames.
 ///
 /// The container bytes are kept behind an [`Rc`], so the asset can be
 /// shared between the loader and the renderer without copying the video
-/// around.
+/// around.  The clip is decoded once, when the asset is parsed: the
+/// renderer plays the frames back by index and never decodes a frame
+/// again.
 #[derive(Clone, Debug)]
 pub struct VideoAsset {
     /// The raw container bytes (mp4/webm/gif).
     pub bytes: Rc<[u8]>,
     /// Container metadata, probed once when the asset is parsed.
     pub info: VideoInfo,
+    /// The decoded frames, when the clip was decoded eagerly.
+    ///
+    /// The frames are `None` when the clip does not fit into the memory
+    /// budget of the parser: the renderer then streams the clip with a
+    /// [`VideoPlayer`], exactly like it did before.
+    pub frames: Option<Rc<[VideoFrame]>>,
 }
 
 impl VideoAsset {
     /// Build a video asset from the raw bytes of a container.
     ///
-    /// The metadata is probed with a throw-away player — the player is
-    /// dropped right after the probe.  A container that cannot be opened is
-    /// not fatal: the asset keeps an empty [`VideoInfo`] and the renderer
-    /// reports the problem when it tries to decode it.
+    /// The clip is decoded eagerly: the frames are kept in memory and the
+    /// renderer plays them back by index, without decoding anything again.
+    /// The metadata comes from that decoding, so no throw-away player has
+    /// to be opened to probe the clip.
+    ///
+    /// A clip that does not fit into the memory budget of the parser is
+    /// not decoded: the asset only keeps the metadata then, and the
+    /// renderer streams the clip.
     pub fn from_bytes(bytes: Rc<[u8]>) -> Self {
-        let info = match VideoPlayer::open(&bytes) {
-            Ok(player) => player.info().clone(),
-            Err(error) => {
-                log::warn!("cannot probe the video container: {}", error);
-                VideoInfo::default()
+        match decode_all(&bytes) {
+            Ok(clip) => {
+                log::debug!(
+                    "decoded {} frames of a {}x{} video",
+                    clip.frames.len(),
+                    clip.info.width,
+                    clip.info.height
+                );
+                Self {
+                    bytes,
+                    info: clip.info,
+                    frames: Some(Rc::from(clip.frames)),
+                }
             }
-        };
-
-        Self { bytes, info }
+            Err(error) => {
+                // The clip does not fit into the memory budget (or cannot
+                // be decoded at all): the renderer streams it.
+                log::debug!("the video is not decoded eagerly: {}", error);
+                let info = match VideoPlayer::open(&bytes) {
+                    Ok(player) => player.info().clone(),
+                    Err(error) => {
+                        log::warn!("cannot probe the video container: {}", error);
+                        VideoInfo::default()
+                    }
+                };
+                Self {
+                    bytes,
+                    info,
+                    frames: None,
+                }
+            }
+        }
     }
 
     /// Build a video asset from a `.tex` that carries a video container.

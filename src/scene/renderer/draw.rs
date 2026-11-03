@@ -53,16 +53,35 @@ pub struct DrawObject {
 pub struct VideoDrawState {
     /// The GPU texture the frames are uploaded into.
     pub texture: wgpu::Texture,
-    /// Decoder + bookkeeping (interior mutability: the draw queue is shared).
+    /// The playback state (interior mutability: the draw queue is shared).
     state: RefCell<VideoState>,
 }
 
-/// The decoder of an animated texture and its bookkeeping.
-struct VideoState {
-    /// The decoder: it hands out the frame that covers a given time.
-    player: VideoPlayer,
-    /// The presentation time of the frame that is currently uploaded.
-    uploaded: Option<f64>,
+/// The playback state of an animated texture.
+///
+/// A clip that was decoded eagerly is played back by index: its frames are
+/// already in memory, so nothing is decoded while the wallpaper runs.  A
+/// clip that does not fit into the memory budget of the parser is streamed:
+/// the decoder hands out the frame that covers the current time.
+enum VideoState {
+    /// The clip was decoded eagerly: the frames are played back by index.
+    Eager {
+        /// The decoded frames, in presentation order.
+        frames: Rc<[VideoFrame]>,
+        /// The presentation time of every frame, in increasing order.
+        times: Vec<f64>,
+        /// The duration of the clip, in seconds.
+        duration: f64,
+        /// The index of the frame that is currently uploaded.
+        uploaded: Option<usize>,
+    },
+    /// The clip is streamed: the decoder hands out the frames.
+    Streaming {
+        /// The decoder: it hands out the frame that covers a given time.
+        player: VideoPlayer,
+        /// The presentation time of the frame that is currently uploaded.
+        uploaded: Option<f64>,
+    },
 }
 
 /// An object that is attached to a bone socket of a puppet parent.
@@ -479,17 +498,32 @@ impl DrawObject {
         texture
     }
 
-    /// Create the texture of an animated (video) object and its decoder.
+    /// Create the texture of an animated (video) object and its playback
+    /// state.
     ///
     /// The texture holds a single mip level: the frames are uploaded as
-    /// they are decoded, so there is no mip chain to maintain.  The first
-    /// frame is decoded right away — its size is the size of the texture,
-    /// because the bind group is created once, from that texture.
+    /// they are played, so there is no mip chain to maintain.  The first
+    /// frame is uploaded right away — its size is the size of the
+    /// texture, because the bind group is created once, from that texture.
+    ///
+    /// A clip that was decoded eagerly is played back by index: its frames
+    /// are already in memory and nothing is decoded while the wallpaper
+    /// runs.  The other clips are streamed by a [`VideoPlayer`].
+    ///
+    /// The returned state is the playback state of a video: it is `None`
+    /// for a video that cannot be opened at all.
     fn upload_video_texture(
         device: &Device,
         queue: &Queue,
         video: &Rc<VideoAsset>,
     ) -> (Texture, Option<VideoDrawState>) {
+        // The clip was decoded eagerly: its frames are in memory and are
+        // played back by index.
+        if let Some(frames) = video.frames.as_ref().filter(|frames| !frames.is_empty()) {
+            return Self::upload_decoded_texture(device, queue, frames, video.info.duration);
+        }
+
+        // The clip is too big for the memory budget: it is streamed.
         let mut player = match VideoPlayer::open(&video.bytes) {
             Ok(player) => player,
             Err(error) => {
@@ -520,17 +554,14 @@ impl DrawObject {
             view_formats: &[],
         });
 
-        let mut state = VideoState {
-            player,
-            uploaded: None,
-        };
-
         // Show the first frame right away: the object must not be black
         // until the first frame of the next render pass.
+        let uploaded = first.as_ref().map(|frame| frame.time);
         if let Some(frame) = first.as_ref() {
             Self::write_video_frame(queue, &texture, frame);
-            state.uploaded = Some(frame.time);
         }
+
+        let state = VideoState::Streaming { player, uploaded };
 
         (
             texture.clone(),
@@ -539,6 +570,78 @@ impl DrawObject {
                 state: RefCell::new(state),
             }),
         )
+    }
+
+    /// Create the texture of an object whose clip was decoded eagerly.
+    ///
+    /// The frames are already in memory: the texture is filled with the
+    /// first frame and the other ones are uploaded when the playback
+    /// reaches them.
+    fn upload_decoded_texture(
+        device: &Device,
+        queue: &Queue,
+        frames: &Rc<[VideoFrame]>,
+        duration: f64,
+    ) -> (Texture, Option<VideoDrawState>) {
+        let first = &frames[0];
+        let (width, height) = (first.width.max(1), first.height.max(1));
+
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("video texture"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        // The presentation times of the frames: the frame that covers a
+        // given time is found with a binary search over them.
+        let times = frames.iter().map(|frame| frame.time).collect();
+
+        // Show the first frame right away: the object must not be black
+        // until the first frame of the next render pass.
+        Self::write_video_frame(queue, &texture, first);
+
+        let state = VideoState::Eager {
+            frames: Rc::clone(frames),
+            times,
+            duration,
+            uploaded: Some(0),
+        };
+
+        (
+            texture.clone(),
+            Some(VideoDrawState {
+                texture,
+                state: RefCell::new(state),
+            }),
+        )
+    }
+
+    /// Whether a frame can be written into the texture of an object.
+    ///
+    /// The texture was sized after the first frame of the clip: a frame of
+    /// another size cannot be written into it.  The problem is reported.
+    fn frame_fits(texture: &Texture, frame: &VideoFrame) -> bool {
+        if frame.width == texture.width() && frame.height == texture.height() {
+            return true;
+        }
+
+        log::warn!(
+            "skipping a {}x{} video frame: the texture is {}x{}",
+            frame.width,
+            frame.height,
+            texture.width(),
+            texture.height(),
+        );
+        false
     }
 
     /// Write a decoded frame into the texture of an animated object.
@@ -612,6 +715,10 @@ impl DrawObject {
 /// the frame is only uploaded when it changed, so a video that plays
 /// slower than the compositor does not cost a texture upload per frame.
 ///
+/// A clip that was decoded eagerly is played back by index: its frames are
+/// already in memory, so nothing is decoded here.  The other clips are
+/// streamed by their decoder.
+///
 /// A video that cannot be decoded is reported and skipped: it must not
 /// kill the render loop.
 pub fn update_video_textures(queue: &Queue, draw_queue: &DrawQueue, elapsed: f32) {
@@ -622,45 +729,108 @@ pub fn update_video_textures(queue: &Queue, draw_queue: &DrawQueue, elapsed: f32
 
         let mut state = video.state.borrow_mut();
 
-        // The video loops: the time within the stream is the elapsed time
-        // modulo the duration of the video.
-        let duration = state.player.info().duration;
-        let time = if duration > 0.0 {
-            f64::from(elapsed) % duration
-        } else {
-            f64::from(elapsed)
-        };
+        match &mut *state {
+            VideoState::Eager {
+                frames,
+                times,
+                duration,
+                uploaded,
+            } => {
+                // The video loops: the time within the stream is the
+                // elapsed time modulo the duration of the video.
+                let time = loop_time(*duration, elapsed);
 
-        let frame = match state.player.frame_at(time) {
-            Ok(Some(frame)) => frame,
-            Ok(None) => continue,
-            Err(error) => {
-                log::warn!("cannot decode the video frame: {}", error);
-                continue;
+                // The frame that is on screen is found by a binary search
+                // over the times of the decoded frames.
+                let Some(index) = frame_index_at(times.as_slice(), time) else {
+                    continue;
+                };
+
+                // The frames are already in memory: the texture is only
+                // written when the frame that is on screen changed.
+                if *uploaded == Some(index) {
+                    continue;
+                }
+
+                let frame = &frames[index];
+                if !DrawObject::frame_fits(&video.texture, frame) {
+                    continue;
+                }
+
+                DrawObject::write_video_frame(queue, &video.texture, frame);
+                *uploaded = Some(index);
             }
-        };
+            VideoState::Streaming { player, uploaded } => {
+                // The video loops: the time within the stream is the
+                // elapsed time modulo the duration of the video.
+                let duration = player.info().duration;
+                let time = loop_time(duration, elapsed);
 
-        // The player serves the same frame again when the video plays
-        // slower than the compositor: there is nothing to upload then.
-        if state.uploaded == Some(frame.time) {
-            continue;
+                let frame = match player.frame_at(time) {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        log::warn!("cannot decode the video frame: {}", error);
+                        continue;
+                    }
+                };
+
+                // The player serves the same frame again when the video
+                // plays slower than the compositor: there is nothing to
+                // upload then.
+                if *uploaded == Some(frame.time) {
+                    continue;
+                }
+
+                if !DrawObject::frame_fits(&video.texture, &frame) {
+                    continue;
+                }
+
+                DrawObject::write_video_frame(queue, &video.texture, &frame);
+                *uploaded = Some(frame.time);
+            }
         }
+    }
+}
 
-        // The texture was sized after the first frame: a frame of another
-        // size cannot be written into it.
-        if frame.width != video.texture.width() || frame.height != video.texture.height() {
-            log::warn!(
-                "skipping a {}x{} video frame: the texture is {}x{}",
-                frame.width,
-                frame.height,
-                video.texture.width(),
-                video.texture.height(),
-            );
-            continue;
-        }
+/// The tolerance used when comparing the presentation times of two frames.
+///
+/// The times come from different sources (the time base of the container,
+/// the delays of a GIF) and are compared with floating point arithmetic,
+/// so an epsilon keeps the lookup from picking the wrong frame.
+const TIME_EPSILON: f64 = 1e-6;
 
-        DrawObject::write_video_frame(queue, &video.texture, &frame);
-        state.uploaded = Some(frame.time);
+/// The index of the frame that is on screen at `time`.
+///
+/// `times` holds the presentation times of the frames of a clip, in
+/// increasing order.  The function returns the index of the last frame
+/// whose time is not after `time`: that frame covers `time`.  The first
+/// frame is returned when `time` is before the first frame of the clip,
+/// and `None` is returned when the clip has no frame at all.
+///
+/// The times are sorted, so the frame is found with a binary search: the
+/// lookup does not depend on the number of the frames of the clip.
+pub fn frame_index_at(times: &[f64], time: f64) -> Option<usize> {
+    if times.is_empty() {
+        return None;
+    }
+
+    // The number of the frames whose time is not after `time`: the frame
+    // before them is the one that covers `time`.
+    let count = times.partition_point(|frame_time| *frame_time <= time + TIME_EPSILON);
+    Some(count.saturating_sub(1))
+}
+
+/// The time within a clip that loops.
+///
+/// The elapsed time is taken modulo the duration of the clip, so that the
+/// clip plays again and again.  A clip of an unknown duration is not
+/// wrapped.
+fn loop_time(duration: f64, elapsed: f32) -> f64 {
+    if duration > 0.0 {
+        f64::from(elapsed) % duration
+    } else {
+        f64::from(elapsed)
     }
 }
 
@@ -718,5 +888,63 @@ pub fn update_animated_meshes(
         //     M_world(child) = M_world(parent) * M_socket * M_local
         let model = parent.model * (*socket * attachment.local_model);
         buffers.update_mesh(queue, attachment.vertex_offset, &attachment.local, model);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The frame that covers a time is the last one before it.
+    #[test]
+    fn the_frame_of_a_time_is_found_by_its_index() {
+        let times = [0.0, 0.1, 0.2, 0.3];
+
+        assert_eq!(frame_index_at(&times, 0.0), Some(0));
+        assert_eq!(frame_index_at(&times, 0.05), Some(0));
+        assert_eq!(frame_index_at(&times, 0.1), Some(1));
+        assert_eq!(frame_index_at(&times, 0.25), Some(2));
+        assert_eq!(frame_index_at(&times, 0.3), Some(3));
+
+        // A time before the first frame shows the first one, a time after
+        // the last one shows the last one.
+        assert_eq!(frame_index_at(&times, -1.0), Some(0));
+        assert_eq!(frame_index_at(&times, 10.0), Some(3));
+
+        // A clip without a frame has nothing to show.
+        assert_eq!(frame_index_at(&[], 0.0), None);
+    }
+
+    /// The lookup does not depend on the number of the frames of the clip.
+    #[test]
+    fn the_frame_of_a_time_is_found_in_a_long_clip() {
+        let times: [f64; 1000] = std::array::from_fn(|index| (index as f64) * 0.1);
+
+        // The binary search finds the same frame as a linear search.
+        for step in 0..200 {
+            let time = f64::from(step) * 0.53;
+            let expected = times
+                .iter()
+                .rposition(|frame_time| *frame_time <= time + TIME_EPSILON)
+                .unwrap_or(0);
+            assert_eq!(frame_index_at(&times, time), Some(expected));
+        }
+    }
+
+    /// A looping clip plays the time within the clip again and again.
+    ///
+    /// The elapsed time is an `f32`, so the wrapped time is only exact to
+    /// the precision of an `f32` (a few 1e-8): the comparisons use a
+    /// tolerance that fits an `f32` input.
+    #[test]
+    fn a_looping_clip_wraps_the_time() {
+        const EPSILON: f64 = 1e-6;
+
+        assert!((loop_time(0.4, 0.0) - 0.0).abs() < EPSILON);
+        assert!((loop_time(0.4, 0.5) - 0.1).abs() < EPSILON);
+        assert!((loop_time(0.4, 1.7) - 0.1).abs() < EPSILON);
+
+        // A clip of an unknown duration is not wrapped.
+        assert!((loop_time(0.0, 1.7) - 1.7).abs() < EPSILON);
     }
 }

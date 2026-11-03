@@ -188,6 +188,33 @@ Detects format from magic bytes and extracts info:
 
 Saves all frames of a GIF as separate PNG files. Returns `[(png_bytes, "stem_frame_0000.png"), ...]`.
 
+### Eager decoding (`video_parser::bulk`)
+
+The `bulk` module decodes a whole clip in one go, so that the caller can play
+it back by index without decoding anything again:
+
+```rust
+pub struct DecodedClip {
+    pub frames: Vec<VideoFrame>,
+    pub info: VideoInfo,
+}
+
+pub fn decode_all(bytes: &[u8]) -> Result<DecodedClip, VideoError>
+pub fn decode_all_with_budget(bytes: &[u8], budget: usize) -> Result<DecodedClip, VideoError>
+pub fn decode_all_with_backend(backend: Box<dyn FrameDecoder>, budget: usize) -> Result<DecodedClip, VideoError>
+pub fn estimate_decoded_size(info: &VideoInfo) -> usize
+pub fn memory_budget() -> usize
+pub fn set_memory_budget(bytes: usize)
+pub fn reset_memory_budget()
+```
+
+The size of the clip is estimated (`width * height * 4 * frame_count`) *before*
+it is decoded: a clip that does not fit into the memory budget is refused with a
+`VideoError::BudgetExceeded`, and the caller streams it with the `VideoPlayer`
+instead. The budget is `DEFAULT_MEMORY_BUDGET` (128 MiB); it is changed with
+`set_memory_budget()` or with the `PKG_PARSER_VIDEO_MEMORY_BUDGET` environment
+variable (the budget in bytes).
+
 ---
 ## `mdl_parser` — Puppet Model Parser
 

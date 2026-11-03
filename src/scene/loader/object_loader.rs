@@ -739,6 +739,9 @@ mod tests {
     }
 
     /// A standalone video next to the material resolves to a video source.
+    ///
+    /// The clip is small enough to be decoded eagerly: its frames are in
+    /// memory, so the renderer never decodes a frame again.
     #[test]
     fn a_standalone_video_resolves_to_a_video() {
         let video = Asset::parse("materials/video.mp4", SAMPLE_MP4).expect("the video must parse");
@@ -752,7 +755,19 @@ mod tests {
             .expect("the video must resolve");
 
         match source {
-            TextureSource::Video(video) => assert_eq!(video.info.width, 32),
+            TextureSource::Video(video) => {
+                assert_eq!(video.info.width, 32);
+
+                // The four frames of the clip were decoded eagerly.
+                let frames = video
+                    .frames
+                    .as_ref()
+                    .expect("the clip must have been decoded eagerly");
+                assert_eq!(frames.len(), 4);
+                assert_eq!(frames[0].width, 32);
+                assert_eq!(frames[0].height, 32);
+                assert_eq!(frames[0].rgba.len(), 32 * 32 * 4);
+            }
             TextureSource::Static(_) => panic!("the video must not resolve to a static texture"),
         }
     }

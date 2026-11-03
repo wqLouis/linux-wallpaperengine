@@ -294,19 +294,27 @@ pub enum Asset {
 
 ### `VideoAsset`
 
-A video (or animated image): the raw container bytes plus the metadata that
-was probed once, when the asset was parsed.
+A video (or animated image): the raw container bytes, the metadata that was
+probed once, when the asset was parsed, and — when the clip fits into the
+memory budget of the parser — the frames that were decoded eagerly.
 
 ```rust
 pub struct VideoAsset {
-    pub bytes: Rc<[u8]>,   // the container bytes (mp4/webm/gif)
-    pub info: VideoInfo,   // width, height, duration, fps, frame_count, …
+    pub bytes: Rc<[u8]>,             // the container bytes (mp4/webm/gif)
+    pub info: VideoInfo,             // width, height, duration, fps, frame_count, …
+    pub frames: Option<Rc<[VideoFrame]>>, // the decoded frames, when the clip was decoded eagerly
 }
 ```
 
 The bytes are kept behind an `Rc`, so the loader and the renderer share one
 copy of the container. A container that cannot be probed keeps an empty
 `VideoInfo` — the problem is reported when the renderer tries to decode it.
+
+The clip is decoded **once**, when the asset is parsed: the renderer plays the
+frames back by index (a binary search over the frame times) and never decodes
+a frame again. A clip that does not fit into the memory budget of the parser
+is not decoded at all: `frames` stays `None` and the renderer streams the
+clip with a `VideoPlayer`, exactly like it did before.
 
 > Wallpaper Engine stores its **video textures as a `.tex` file whose payload
 > is the video container**. Such a file is parsed into an `Asset::Video` too,

@@ -374,6 +374,8 @@ mod tests {
                 height,
                 ..Default::default()
             },
+            // The clip was not decoded: the renderer streams it.
+            frames: None,
         })
     }
 
