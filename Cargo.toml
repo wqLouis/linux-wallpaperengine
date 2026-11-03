@@ -31,6 +31,7 @@ wayland-client = "0.31.12"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wgpu = { version = "28.0.0", features = ["glsl"] }
 winit = "0.30.12"
+zbus = "5"
 
 [profile.release]
 opt-level = 3

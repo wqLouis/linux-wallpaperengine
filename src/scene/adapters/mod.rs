@@ -1,6 +1,6 @@
 //! Display adapters for rendering wallpapers.
 //!
-//! Two adapters are provided:
+//! Three adapters are provided:
 //!
 //! * **`winit_adapter`** — Creates an always-on-bottom window using winit.
 //!   Works on both X11 and Wayland (via XWayland).  Supports cursor tracking
@@ -8,9 +8,13 @@
 //! * **`wlr_app`** — Uses the wlr-layer-shell Wayland protocol to render on
 //!   a `Layer::Background` surface behind all windows.  No cursor tracking
 //!   (Wayland's security model does not allow it for background surfaces).
+//! * **`gnome_app`** — Renders off-screen and streams the frames to a GNOME
+//!   Shell extension, which displays them as the desktop background.  GNOME
+//!   Shell does not implement wlr-layer-shell, so a companion extension is
+//!   required.
 
 /// How the wallpaper is fitted to the output.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FitMode {
     /// Scale wallpaper to fill entire output, cropping if aspect ratios differ.
     Cover,
@@ -20,5 +24,100 @@ pub enum FitMode {
     Stretch,
 }
 
+/// The NDC scale that implements a fit mode.
+///
+/// The scene is projected to the full NDC range, which stretches the wallpaper
+/// to the aspect ratio of the output.  Scaling the NDC coordinates fixes that:
+/// `cover` overflows the viewport (the wallpaper is cropped), `contain`
+/// leaves empty borders around it and `stretch` keeps the default behaviour.
+///
+/// The scale keeps the aspect ratio of the scene: `sx / sy` is always the
+/// ratio between the scene's and the target's aspect ratio.
+pub fn fit_scale(fit_mode: FitMode, scene: [u32; 2], target: [u32; 2]) -> (f32, f32) {
+    let (sw, sh) = (scene[0] as f32, scene[1] as f32);
+    let (tw, th) = (target[0] as f32, target[1] as f32);
+    if sw <= 0.0 || sh <= 0.0 || tw <= 0.0 || th <= 0.0 {
+        return (1.0, 1.0);
+    }
+
+    // The ratio between the scene's and the target's aspect ratio.
+    let ratio = (sw * th) / (sh * tw);
+
+    match fit_mode {
+        FitMode::Stretch => (1.0, 1.0),
+        // The scene has to fill the viewport: it overflows in one direction.
+        FitMode::Cover => (ratio.max(1.0), (1.0 / ratio).max(1.0)),
+        // The scene has to fit into the viewport: it leaves borders in one
+        // direction.
+        FitMode::Contain => (ratio.min(1.0), (1.0 / ratio).min(1.0)),
+    }
+}
+
+pub mod gnome_app;
 pub mod winit_adapter;
 pub mod wlr_app;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The aspect ratio the scene has on screen after the NDC scale.
+    fn screen_aspect(target: [u32; 2], scale: (f32, f32)) -> f32 {
+        let (tw, th) = (target[0] as f32, target[1] as f32);
+        (tw * scale.0) / (th * scale.1)
+    }
+
+    #[test]
+    fn matching_aspect_ratios_are_not_scaled() {
+        for mode in [FitMode::Cover, FitMode::Contain, FitMode::Stretch] {
+            let scale = fit_scale(mode, [1920, 1080], [1920, 1080]);
+            assert_eq!(scale, (1.0, 1.0), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn stretch_fills_the_viewport() {
+        let scale = fit_scale(FitMode::Stretch, [1920, 1080], [1024, 1024]);
+        assert_eq!(scale, (1.0, 1.0));
+    }
+
+    #[test]
+    fn cover_keeps_the_aspect_ratio_and_fills_the_viewport() {
+        let scene = [1920, 1080];
+        let target = [1024, 1024];
+        let scale = fit_scale(FitMode::Cover, scene, target);
+
+        // The wallpaper keeps its 16:9 aspect ratio ...
+        let aspect = screen_aspect(target, scale);
+        assert!((aspect - 16.0 / 9.0).abs() < 1e-4, "{aspect}");
+
+        // ... and it is big enough to cover the viewport.
+        assert!(scale.0 >= 1.0 && scale.1 >= 1.0, "{scale:?}");
+    }
+
+    #[test]
+    fn contain_keeps_the_aspect_ratio_and_fits_into_the_viewport() {
+        let scene = [1920, 1080];
+        let target = [1024, 1024];
+        let scale = fit_scale(FitMode::Contain, scene, target);
+
+        // The wallpaper keeps its 16:9 aspect ratio ...
+        let aspect = screen_aspect(target, scale);
+        assert!((aspect - 16.0 / 9.0).abs() < 1e-4, "{aspect}");
+
+        // ... and it fits into the viewport (letterboxed).
+        assert!(scale.0 <= 1.0 && scale.1 <= 1.0, "{scale:?}");
+    }
+
+    #[test]
+    fn a_tall_scene_is_covered_by_scaling_the_height() {
+        // A portrait scene on a landscape screen: the width matches and the
+        // scene overflows vertically (the top and the bottom are cropped).
+        let scene = [1080, 1920];
+        let target = [1920, 1080];
+        let scale = fit_scale(FitMode::Cover, scene, target);
+
+        assert_eq!(scale.0, 1.0, "{scale:?}");
+        assert!(scale.1 > 1.0, "{scale:?}");
+    }
+}

@@ -7,7 +7,7 @@ use clap::Parser;
 use log::LevelFilter;
 
 use crate::scene::adapters::FitMode;
-use crate::scene::adapters::{winit_adapter, wlr_app};
+use crate::scene::adapters::{gnome_app, winit_adapter, wlr_app};
 
 // ── Root CLI ─────────────────────────────────────────────────────────────────
 
@@ -21,7 +21,7 @@ struct Cli {
     #[arg(short, default_value = "./scene.pkg", global = false)]
     path: String,
 
-    // different display mode [wlr, winit]
+    // different display mode [wlr, winit, gnome]
     #[arg(short = 'm', default_value = "wlr")]
     modes: String,
 
@@ -297,8 +297,20 @@ fn main() {
             target_fps,
             show_progress,
         ),
+        "gnome" => gnome_app::start(
+            cli.path,
+            fit_mode,
+            cli.no_effects,
+            cli.no_mdl,
+            cli.assets_path,
+            target_fps,
+            show_progress,
+        ),
         _ => {
-            eprintln!("Unknown display mode '{}'. Valid: wlr, winit", cli.modes);
+            eprintln!(
+                "Unknown display mode '{}'. Valid: wlr, winit, gnome",
+                cli.modes
+            );
         }
     }
 }

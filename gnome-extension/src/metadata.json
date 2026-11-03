@@ -1,0 +1,9 @@
+{
+  "uuid": "linux-wallpaper-engine@wqLouis.github.io",
+  "name": "Linux Wallpaper Engine",
+  "description": "Shows the Wallpaper Engine scenes rendered by the linux-wallpaper-engine app as the GNOME desktop background. Start the app with \"linux-wallpaper-engine -m gnome\".",
+  "shell-version": ["45", "46", "47", "48"],
+  "session-modes": ["user"],
+  "url": "https://github.com/wqLouis/linux-wallpaper-engine",
+  "version-name": "1.0"
+}
