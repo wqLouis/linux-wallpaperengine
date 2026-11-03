@@ -14,6 +14,7 @@ use std::{cell::RefCell, fs, path::PathBuf, rc::Rc};
 
 use pkg_parser::pkg_parser::{mdl_parser::MdlFile, tex_parser::Tex};
 
+use super::project::{Project, parse_project};
 use super::shader::{self, ShaderProgram};
 use crate::collections::{Map, sorted_keys};
 
@@ -221,6 +222,32 @@ impl AssetStore {
             Asset::Text(t) | Asset::Script(t) => Some(t),
             _ => None,
         }
+    }
+
+    /// The wallpaper's `project.json`, if the package has one.
+    ///
+    /// Returns `None` when the archive has no `project.json` or when it
+    /// cannot be parsed. The lookup accepts the file at the archive root and,
+    /// as a fallback, any archived file named "project.json".
+    pub fn project(&self) -> Option<Project> {
+        if let Some(raw) = self.json("project.json") {
+            return parse_project(&raw);
+        }
+
+        // Fallback: the manifest is not at the archive root.
+        let key = self
+            .map
+            .borrow()
+            .keys()
+            .find(|path| {
+                path.rsplit('/')
+                    .next()
+                    .is_some_and(|name| name == "project.json")
+            })
+            .cloned()?;
+
+        let raw = self.json(&key)?;
+        parse_project(&raw)
     }
 
     /// Consume an audio asset, loading it from disk without caching.

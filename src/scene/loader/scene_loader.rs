@@ -8,11 +8,20 @@ use std::{
 };
 
 use super::assets_loader::{Asset, AssetStore, AssetType};
+use super::project::{Project, WallpaperKind};
 use crate::collections::{Map, new_map};
 
 pub struct Scene {
     pub root: crate::scene::loader::scene::Root,
     pub assets: AssetStore,
+    /// The package's `project.json`, when the archive has one.
+    ///
+    /// It tells the loader *what kind* of wallpaper the package holds (scene,
+    /// video, web, …) — a scene package is described by `scene.json`, a video
+    /// package by a single looping clip.
+    // Read by the video-wallpaper path, which is not wired up yet.
+    #[allow(dead_code)]
+    pub project: Option<Project>,
 }
 
 impl Scene {
@@ -96,13 +105,43 @@ impl Scene {
         pb.finish_and_clear();
 
         let assets = AssetStore::new(assets, None);
-        let scene_string = assets
-            .json("scene.json")
-            .unwrap_or_else(|| panic!("scene.json not found in PKG archive"));
+
+        // The project manifest describes the wallpaper as a whole (its title
+        // and what kind of wallpaper it is).
+        let project = assets.project();
+        if let Some(project) = &project {
+            log::info!(
+                "wallpaper '{}' ({:?})",
+                if project.title.is_empty() {
+                    "<untitled>"
+                } else {
+                    &project.title
+                },
+                project.kind
+            );
+        }
+
+        let scene_string = assets.json("scene.json").unwrap_or_else(|| {
+            // A video wallpaper has no scene.json at all — say so instead of
+            // complaining about a missing file.
+            if let Some(project) = &project
+                && project.kind == WallpaperKind::Video
+            {
+                panic!(
+                    "this package is a video wallpaper ('{}'), which is not supported yet",
+                    project.file.as_deref().unwrap_or("video")
+                );
+            }
+            panic!("scene.json not found in PKG archive");
+        });
         let root: crate::scene::loader::scene::Root = serde_json::from_str(scene_string.as_str())
             .unwrap_or_else(|e| panic!("Failed to parse scene.json: {}", e));
 
-        Self { root, assets }
+        Self {
+            root,
+            assets,
+            project,
+        }
     }
 
     /// Set the Wallpaper Engine assets directory for lazy-loading fallback.
