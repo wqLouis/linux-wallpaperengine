@@ -5,13 +5,10 @@
 ---
 
 [![Rust](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Wgpu](https://img.shields.io/badge/Wgpu-FF5A03?style=for-the-badge&logoColor=white)](https://github.com/gfx-rs/wgpu)
+[![Wgpu](https://img.shields.io/badge/Wgpu-FF5A03?style=for-the-badge&logo=wgpu&logoColor=white)](https://github.com/gfx-rs/wgpu)
 [![Vulkan](https://img.shields.io/badge/Vulkan-AC162C?style=for-the-badge&logo=vulkan&logoColor=white)](https://www.vulkan.org/)
-![AUR Version](https://img.shields.io/aur/version/linux-wallpaper-engine-git)
 
-This project is an attempt to bring [Wallpaper Engine](https://www.wallpaperengine.io/en) compatibility to Linux (and potentially macOS). It is written in Rust and uses `wgpu` with Vulkan (and Metal on macOS) to render interactive 3D wallpapers.
-
-> **Status:** The software is functional but still under active development. Many wallpapers with post-processing effects work, but some features (full animation, video playback) are still incomplete.
+Wallpaper Engine for Linux — written in Rust, rendered with `wgpu`.
 
 https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
 
@@ -19,216 +16,142 @@ https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=wqLouis/linux-wallpaper-engine&type=Timeline)](https://star-history.com/#wqLouis/linux-wallpaper-engine&Timeline)
+[![Star History Chart](https://api.star-history.com/svg?repos/wqLouis/linux-wallpaper-engine&type=Timeline)](https://star-history.com/#wqLouis/linux-wallpaper-engine&Timeline)
 
 ---
 
-## Features | 功能特色
+## Features
 
-### Rendering | 渲染
-- **Hardware-accelerated rendering** via `wgpu` (Vulkan/Metal backends)
-- **GLSL shader support** — Wallpaper Engine `.frag`/`.vert` shaders are translated (via a GLSL→WGSL preprocessor) and compiled at runtime for post-processing effects
-- **Orthographic camera** from scene.json parameters (look-at + orthographic projection)
-- **Alpha blending** with configurable blend modes
-- **Post-processing pipeline** with ping-pong multi-pass rendering for effects (bloom, water ripples, etc.)
-- **Per-frame uniforms**: `g_Time`, `g_ModelViewProjectionMatrix`, `g_Screen`, `g_ParallaxPosition`, and named material constants
-- **Mask and noise texture support** in post-processing effects
-- **No-effect mode** (`--no-effects`) to render a static wallpaper image for debugging
+### Supported
 
-### Display Adapters | 顯示適配器
-- **wlr-layer-shell (Wayland):** Renders as a `Layer::Background` surface behind all windows using the `wlr_layer_shell` protocol. Supports fractional scaling via `wp-fractional-scale-v1` and `wp-viewporter`.
-- **Winit (X11/Wayland):** Creates an always-on-bottom window with cursor tracking for depth-parallax effects.
+- **wlr-layer-shell (Wayland)** — the wallpaper is rendered as a `Layer::Background` surface behind every window, with fractional scaling support.
+- **GNOME** — GNOME Shell has no layer shell, so the frames are rendered off-screen and streamed to a companion [GNOME Shell extension](gnome-extension/README.md) that shows them as the desktop background.
+- **Effect shaders** — the GLSL post-processing shaders of Wallpaper Engine (bloom, water ripples, …) are translated to WGSL and compiled at runtime.
+- **Puppet rendering** — `.mdl` models are parsed and rendered as animated, CPU-skinned meshes.
+- **Audio** — the audio tracks of a scene are played in a loop.
 
-### Package Parsing (`pkg_parser`) | 套件解析
-- **`.pkg` file extraction and parsing** — reads packaged wallpaper files
-- **`.tex` texture parsing** — supports DXT1, DXT5, R8, RG88, PNG, JPEG formats with automatic format detection and LZ4 decompression. Can export to PNG or convert to RGBA for rendering
-- **`.mdl` puppet model parsing** — reads the MDLV0021/0023 section chain: header + mesh (control points, triangles, draw batches), skeleton (MDLS), attachments (MDAT), animation clips/keyframes (MDLA) and bone matrices (MDLE). Serializes to JSON
-- **Video/GIF metadata parsing** — detects MP4, WebM, GIF formats and can extract GIF frames
-- **Dry-run mode** (`--dry-run`) to preview extraction without writing files
+### Not supported
 
-### Audio | 音頻
-- **Audio playback** via `rodio` with looping support for scene audio tracks
+- **Video playback** — `.mp4` / `.webm` textures show a still frame.
+- **User scripts** — `script.json` and the user script API are ignored.
+- **Text rendering** — text layers are not drawn.
+- **Particle systems** — particles are not simulated.
 
-### CLI Features | 命令列功能
-- Two display modes: `wlr` (default, Wayland background) and `winit` (X11/Wayland window)
-- Wallpaper fit modes: `cover`, `contain`, `stretch`
-- Extract/parse mode (`-x`): extract and optionally convert `.tex`→PNG, parse videos, parse `.mdl` models to JSON
-- Configurable log levels: `verbose`, `debug`, `warning` (default), `errors`
+---
 
-## Requirements | 系統需求
+## Installation
 
-* **Rust** (Latest stable version; edition 2024)
-* **Vulkan Drivers:** Ensure your GPU drivers support Vulkan (Mesa for AMD/Intel, proprietary drivers for Nvidia)
-* **macOS Support:** Not tested (no access to a Mac), but Metal backend is included
-* **Wallpaper Engine Assets:** You must have legal access to the `.pkg` files (e.g., via a purchased copy of Wallpaper Engine on Steam)
+### Build dependencies
 
-### Dependencies | 依賴項
-- `wgpu` 28.0 with `glsl` feature (Naga GLSL frontend)
-- `winit` 0.30 for the windowed adapter
-- `smithay-client-toolkit` 0.20 + `wayland-client` 0.31 for wlr-layer-shell
-- `glam` 0.31 for linear algebra
-- `clap` 4.5 for CLI argument parsing
-- `rodio` 0.21 for audio playback
-- `serde` / `serde_json` for scene JSON parsing
-
-## Installation | 安裝
-
-### From source | 原始碼編譯
-
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/wqLouis/linux-wallpaper-engine.git
-    cd linux-wallpaper-engine
-    ```
-
-2.  Build the project:
-    ```bash
-    cargo build --profile=release
-    ```
-
-3.  Install:
-    ```bash
-    cargo install --path . --profile=release
-    ```
-
-### For Arch users | Arch Linux 用戶
+**Linux**
 
 ```bash
-paru -S linux-wallpaper-engine-git
+# Debian / Ubuntu
+sudo apt install build-essential pkg-config libasound2-dev
+
+# Fedora
+sudo dnf install gcc pkgconf-pkg-config alsa-lib-devel
+
+# Arch
+sudo pacman -S base-devel pkgconf alsa-lib
 ```
 
-## Usage | 使用方式
+A Vulkan driver is needed as well (Mesa for AMD/Intel, the proprietary driver for
+Nvidia).
+
+**macOS**
+
+The macOS backend is written in Swift, so the Xcode command line tools (they
+include `swiftc`) are required:
 
 ```bash
-# Run a wallpaper (default wlr mode)
-linux-wallpaper-engine -p path/to/wallpaper.pkg
-
-# Run with winit adapter (window with cursor tracking for parallax)
-linux-wallpaper-engine -p path/to/wallpaper.pkg -m winit
-
-# Extract and parse a .pkg file
-linux-wallpaper-engine -p path/to/wallpaper.pkg -x [output_dir]
-
-# Extract with texture conversion to PNG
-linux-wallpaper-engine -p path/to/wallpaper.pkg -x --parse-tex
-
-# Extract with video/GIF metadata parsing
-linux-wallpaper-engine -p path/to/wallpaper.pkg -x --parse-video
-
-# Extract with MDL puppet model JSON export
-linux-wallpaper-engine -p path/to/wallpaper.pkg -x --parse-mdl
-
-# Dry run (show what would be extracted)
-linux-wallpaper-engine -p path/to/wallpaper.pkg -x --dry-run
-
-# No effects mode (debug, renders static image)
-linux-wallpaper-engine -p path/to/wallpaper.pkg --no-effects
-
-# Change wallpaper fit mode
-linux-wallpaper-engine -p path/to/wallpaper.pkg --fit-mode contain
-
-# Verbose logging
-linux-wallpaper-engine -p path/to/wallpaper.pkg -l verbose
+xcode-select --install
 ```
 
-### CLI Arguments | 命令列參數
-| Argument | Description | Default |
-|----------|-------------|--------|
-| `-p` / `<path>` | Path to `.pkg` file | `./scene.pkg` |
-| `-m` / `<modes>` | Display mode: `wlr` or `winit` | `wlr` |
-| `--fit-mode` | Wallpaper fit: `cover`, `contain`, `stretch` | `cover` |
-| `--no-effects` | Skip post-processing, render static image | `false` |
-| `-l` / `--log-level` | `verbose`, `debug`, `warning`, `errors` | `warning` |
-| `-x` / `[output]` | Extract mode (optionally specify output dir) | disabled |
-| `--parse-tex` | Convert `.tex` textures to PNG (extract mode) | `false` |
-| `--parse-video` | Parse video/GIF metadata (extract mode) | `false` |
-| `--parse-mdl` | Parse `.mdl` puppet models to JSON (extract mode) | `false` |
-| `--dry-run` | Show extracted files without writing | `false` |
+### Build
 
-## Project Structure | 專案結構
-
-```
-src/
-├── main.rs                       # CLI entry point with clap argument parsing
-├── pkg_parser/                   # (standalone crate) .pkg file parser
-│   └── src/pkg_parser/
-│       ├── parser.rs             # .pkg file format reading & extraction
-│       ├── tex_parser.rs         # .tex texture loading (LZ4, DXT, PNG, JPEG)
-│       ├── video_parser.rs       # Video/GIF metadata parsing & frame extraction
-│       └── mdl_parser/           # MDL puppet model parsing & JSON export
-└── scene/
-    ├── mod.rs                    # Module declarations
-    ├── loader/
-    │   ├── scene.rs              # scene.json schema types (Root, Camera, General, etc.)
-    │   ├── scene_loader.rs       # Scene loading from .pkg (parallel texture parsing)
-    │   ├── object.rs             # Object JSON schema + ElementType classification
-    │   ├── object_loader.rs      # ObjectMap construction (texture/audio/node hierarchy)
-    │   ├── assets_loader.rs      # AssetType classification & typed AssetStore
-    │   ├── model.rs              # Model JSON schema
-    │   └── shader/               # Shader preprocessing & pre-parsing
-    │       ├── mod.rs            # GLSL → Vulkan preprocessing pipeline
-    │       ├── asset.rs          # ShaderProgram: pre-parsed .frag/.vert pair
-    │       ├── header.rs         # Shader include headers (common.h, etc.)
-    │       ├── layout.rs         # EffectLayout generation from GLSL
-    │       └── replace.rs        # GLSL→GLSL fixes (mul, saturate, texSample2D, etc.)
-    ├── renderer/
-    │   ├── app.rs                # WgpuApp: main GPU state & render loop
-    │   ├── surface.rs            # Surface abstraction (raw handles + winit)
-    │   ├── load.rs               # Asset loading & pipeline creation
-    │   ├── buffer.rs             # Vertex/index/projection GPU buffers
-    │   ├── draw.rs               # DrawQueue & DrawObject construction
-    │   ├── vertex.rs             # Vertex type & NDC vertices
-    │   ├── projection.rs         # Orthographic camera projection
-    │   ├── render_pass.rs        # Final render pass & uniform writing
-    │   ├── intermediate_pass.rs  # Ping-pong effect render passes
-    │   ├── effect_bindgroup.rs   # Effect bind group construction
-    │   ├── ping_pong.rs          # Ping-pong texture pair management
-    │   ├── post_process.rs       # Post-process sampler & layout
-    │   └── post_processor/       # Effect pipeline (GPU)
-    │       ├── effect_param.rs   # Uniform layout & per-frame parameter population
-    │       ├── effect_step.rs    # Flattened effect steps & bind groups
-    │       ├── pipeline_handler.rs # Effect pipeline creation & caching
-    │       └── pipeline_helpers.rs # Bind group layout helpers
-    └── adapters/
-        ├── mod.rs               # FitMode enum
-        ├── winit_adapter.rs     # Winit window adapter (always-on-bottom, cursor tracking)
-        └── wlr_app/
-            ├── mod.rs           # wlr-layer-shell Wayland adapter (Background layer)
-            └── scale.rs         # Fractional scale state management
+```bash
+git clone https://github.com/wqLouis/linux-wallpaper-engine.git
+cd linux-wallpaper-engine
+cargo build --release
 ```
 
-## Known Issues & Limitations | 已知問題與限制
+### Install
 
-* **Video playback:** Video textures (mp4/webm inside .tex files) are detected but not decoded at runtime. They will display as a static frame. GIF textures may work partially.
-* **Animation:** Bone animation from `.mdl` puppet models is parsed but not played back.
-* **Shader compatibility:** Some Wallpaper Engine shader constructs may not translate correctly. The GLSL→WGSL preprocessing pipeline handles common cases but edge cases exist.
-* **Cursor tracking on Wayland:** The wlr-layer-shell adapter cannot receive pointer events on `Layer::Background` surfaces due to Wayland's security model. Depth-parallax effects that depend on cursor position are unavailable in wlr mode.
-* **macOS:** Untested.
+```bash
+cargo install --path . --profile release
+```
 
-## Roadmap | 開發路線圖
+or copy the binary into your `PATH` by hand:
 
-- [x] Improve stability and error handling
-- [x] Implement audio support
-- [x] .mdl file parsing
-- [x] Shader preprocessing and effect pipeline
-- [x] wlr-layer-shell Wayland adapter
-- [x] Multiple wallpaper fit modes
-- [x] .pkg extraction and file parsing tools
-- [x] Texture format detection and conversion (DXT, R8, RG88, PNG, JPEG)
-- [x] Post-processing effects pipeline (ping-pong multi-pass)
-- [ ] Video texture playback
-- [ ] Puppet model animation
-- [ ] Config file support
-- [ ] Multi-monitor support
+```bash
+sudo install -Dm755 target/release/linux-wallpaper-engine /usr/local/bin/
+```
 
-## Contributing | 貢獻
+The GNOME backend additionally needs the shell extension:
 
-Contributions are welcome!
+```bash
+./gnome-extension/install.sh
+```
 
-## License | 授權
+---
 
-This project is licensed under the GPLv3 License - see the LICENSE file for details.
+## Usage
 
-## Disclaimer | 免責聲明
+```bash
+# wlr-layer-shell (default) — behind every window
+linux-wallpaper-engine -p wallpaper.pkg
 
-This project is not affiliated with or endorsed by Wallpaper Engine. Please support the original software by purchasing it on Steam.
+# GNOME Shell — needs the extension from gnome-extension/
+linux-wallpaper-engine -p wallpaper.pkg -m gnome
+
+# a normal window (X11 / Wayland), with cursor tracking
+linux-wallpaper-engine -p wallpaper.pkg -m winit
+
+# macOS (experimental)
+linux-wallpaper-engine -p wallpaper.pkg -m mac
+```
+
+### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-p <path>` | path to the `.pkg` file | `./scene.pkg` |
+| `-m <mode>` | display mode: `wlr`, `winit`, `gnome` or `mac` | `wlr` |
+| `--fit-mode <mode>` | fit the wallpaper: `cover`, `contain` or `stretch` | `cover` |
+| `--no-effects` | skip the post-processing effects | `false` |
+| `--no-mdl` | ignore the puppet models | `false` |
+| `--target-fps <fps>` | limit the frame rate | unlimited |
+| `-l <level>` | log level: `verbose`, `debug`, `warning`, `errors` | `warning` |
+| `--assets-path <dir>` | fallback directory with the Wallpaper Engine assets | — |
+
+### Unpacking a wallpaper
+
+```bash
+# list the files of the package
+linux-wallpaper-engine parser -p wallpaper.pkg --list
+
+# unpack it
+linux-wallpaper-engine parser -p wallpaper.pkg -x output/
+
+# unpack and convert the textures to PNG / parse the puppets
+linux-wallpaper-engine parser -p wallpaper.pkg -x output/ --parse-tex --parse-mdl
+```
+
+---
+
+## Contributing
+
+Feel free to post issues and pull requests.
+
+---
+
+## Disclaimer
+
+This project is not affiliated with or endorsed by Wallpaper Engine.
+Please support the original software by purchasing it on
+[Steam](https://store.steampowered.com/app/431960/Wallpaper_Engine/).
+
+## License
+
+GPLv3 — see [LICENSE](LICENSE) for details.

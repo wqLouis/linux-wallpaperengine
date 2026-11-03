@@ -17,9 +17,11 @@ pub enum FitMode {
 }
 ```
 
-Module-level documentation describes the two adapters:
+Module-level documentation describes the four adapters:
 - **`winit_adapter`** — Creates an always-on-bottom window using winit. Works on both X11 and Wayland (via XWayland). Supports cursor tracking for depth-parallax effects.
 - **`wlr_app`** — Uses the wlr-layer-shell Wayland protocol to render on a `Layer::Background` surface behind all windows. No cursor tracking (Wayland's security model does not allow it for background surfaces).
+- **`gnome_app`** — Renders off-screen and streams the frames to a GNOME Shell extension. GNOME Shell does not implement wlr-layer-shell, so a companion extension is required.
+- **`mac_app`** — (macOS, experimental) Creates an AppKit window in the desktop layer of the window server and renders into its `CAMetalLayer`.
 
 ---
 
@@ -217,18 +219,163 @@ Fallback: computes a scale factor from output mode vs. logical size when the com
 
 ---
 
+## `gnome_app`
+
+**File:** `gnome_app/mod.rs`
+
+GNOME Shell does not implement the `wlr-layer-shell` protocol, so a wallpaper
+cannot be rendered into a compositor surface.  This adapter renders the scene
+into an **off-screen texture**, copies every frame back to the CPU and hands it
+to a GNOME Shell extension (see `gnome-extension/`), which displays the frame
+in the shell's background group.
+
+### Public API
+
+```rust
+pub fn start(
+    pkg_path: String,
+    fit_mode: FitMode,
+    no_effects: bool,
+    no_mdl: bool,
+    assets_path: Option<String>,
+    target_fps: Option<u32>,
+    show_progress: bool,
+)
+```
+
+### D-Bus protocol
+
+The extension owns the session bus name
+`com.github.wqlouis.linux_wallpaper_engine` and exports the interface
+`com.github.wqlouis.linux_wallpaper_engine` on the object
+`/com/github/wqlouis/linux_wallpaper_engine`.
+
+| Member          | Direction | Description                                        |
+|-----------------|-----------|----------------------------------------------------|
+| `GetOutput`     | app → ext | `(width, height, scale)` of the primary monitor     |
+| `PushFrame`     | app → ext | `(path, width, height)` of a shared RGBA frame       |
+| `SetVisible`    | app → ext | show / hide the background                           |
+| `OutputChanged` | ext → app | the output geometry changed                          |
+| `CursorMoved`   | ext → app | the pointer position, normalised to `[0, 1]`         |
+
+**Behavior:**
+1. Connects to the session bus and waits for the extension to own its bus
+   name (30 s timeout, then an error message pointing at `install.sh`).
+2. Calls `GetOutput` to learn the logical size and the scale factor of the
+   primary monitor.
+3. Creates the `WgpuApp` with `InitAppSurface::Offscreen { width, height }`
+   (the *physical* resolution of the monitor) and loads the scene.
+4. Spawns a listener thread for the `OutputChanged` and `CursorMoved`
+   signals; the cursor position feeds the depth-parallax uniforms.
+5. Render loop: render → copy the frame back to the CPU → write it into a
+   shared file → `PushFrame`.
+
+The frames travel through files in `/dev/shm` (see `gnome_app/frame.rs`)
+instead of the bus, so the D-Bus traffic stays small even for 4K frames.  Two
+files are used alternately, so the extension always reads a complete frame.
+
+### Fit modes
+
+The GNOME backend applies the fit mode to the camera projection instead of
+relying on the compositor: the NDC coordinates are scaled so the wallpaper
+overflows the viewport (`cover`, cropped), leaves empty borders around it
+(`contain`, letterboxed) or fills the viewport exactly (`stretch`).
+
+### `gnome_app/frame.rs` — FrameWriter
+
+**File:** `frame.rs`
+
+Writes the rendered frames into shared files.
+
+| Member | Description |
+|--------|-------------|
+| `FrameWriter::new(tag)` | creates the two shared files in `/dev/shm` (or the temp dir) |
+| `FrameWriter::write(data)` | writes a frame and returns its path |
+| `Drop` | removes the files again |
+
+## `mac_app` — macOS (experimental)
+
+**File:** `mac_app/mod.rs`, `mac_app/native/MacDesktop.swift`
+
+macOS has no layer shell either, but the window server has a *desktop* level: a
+window placed there is drawn above the desktop picture and below the desktop
+icons.  The adapter creates such a window with AppKit, backs it with a
+`CAMetalLayer` and renders the wallpaper into it with wgpu's Metal backend.
+
+### The Swift part
+
+The AppKit code is written in Swift (`mac_app/native/MacDesktop.swift`) and
+compiled by the `build.rs` of the crate:
+
+```bash
+swiftc -O -whole-module-optimization -emit-library -static \
+    -o liblwe_mac_desktop.a MacDesktop.swift \
+    -framework AppKit -framework Metal -framework QuartzCore
+```
+
+The Rust side talks to it through a small C ABI:
+
+| Function | Description |
+|----------|-------------|
+| `lwe_mac_screen_size(w, h, scale)` | the size of the primary screen (in points) and its scale factor |
+| `lwe_mac_create_window(w, h)` | creates the desktop window, returns the `NSView` that hosts the Metal layer |
+| `lwe_mac_pump_events()` | processes the pending AppKit events |
+| `lwe_mac_destroy_window()` | closes the window again |
+
+### Public API
+
+```rust
+pub fn start(
+    pkg_path: String,
+    fit_mode: FitMode,
+    no_effects: bool,
+    no_mdl: bool,
+    assets_path: Option<String>,
+    target_fps: Option<u32>,
+    show_progress: bool,
+)
+```
+
+**Behavior:**
+1. Asks the Swift side for the size of the primary screen.
+2. Creates the desktop window (level 20 = `kCGDesktopWindowLevel`, above the
+   desktop picture and below the desktop icons) and takes its `NSView` as a
+   `raw_window_handle::AppKitWindowHandle`.
+3. Creates the `WgpuApp` with `InitAppSurface::Raw(...)` — wgpu's Metal
+   backend picks the `CAMetalLayer` of the view.
+4. Render loop: render → pump the AppKit events.
+
+### Limitations
+
+* Only the primary screen is covered.
+* The window is created once and is not moved when the screen layout
+  changes.
+* The pointer is not tracked, so the depth parallax effects are unavailable.
+
 ## Surface Initialization
 
-Both adapters use `InitAppSurface` from the renderer's `surface` module:
+All adapters use `InitAppSurface` from the renderer's `surface` module:
 
 ```rust
 pub enum InitAppSurface {
     Raw((RawDisplayHandle, RawWindowHandle)),  // Wayland (wlr adapter)
     Winit(Arc<winit::window::Window>),          // Winit (standalone window)
+    Offscreen { width: u32, height: u32 },      // GNOME adapter
 }
 ```
 
 Re-exported from `crate::scene::renderer::app::InitAppSurface`.
+
+The `AppSurface` holds a `SurfaceTarget`:
+
+| Variant | Description |
+|---------|-------------|
+| `Swapchain(Surface)` | a window swapchain, the frame is presented by the compositor |
+| `Offscreen(OffscreenTarget)` | an off-screen texture (sRGB), the frame is copied back to the CPU |
+
+`WgpuApp::read_offscreen_frame(&mut dst)` copies the off-screen frame into a
+tightly packed RGBA8 buffer, and `WgpuApp::set_view_scale(sx, sy)` scales the
+camera projection in NDC space (used by the fit modes).
 
 ## Surface Configuration (AppSurface)
 
