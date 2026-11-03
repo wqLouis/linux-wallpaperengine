@@ -5,16 +5,21 @@
 //! [`EffectStep`]s (unifying single-pass and multi-pass effects), and
 //! optional ping-pong intermediate textures for post-processing.
 
-use std::{rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
-use wgpu::*;
 use crate::collections::{Map, new_map, new_map_with_capacity};
+use pkg_parser::pkg_parser::{
+    tex_parser::Tex,
+    video_parser::{VideoFrame, VideoPlayer},
+};
+use wgpu::*;
 
 use crate::scene::{
     loader::{
+        assets_loader::VideoAsset,
         mdl::{PuppetAnimation, PuppetMesh},
         mip_loader::MipChainGenerator,
-        object_loader::TextureObject,
+        object_loader::{TextureObject, TextureSource},
     },
     renderer::{
         buffer::Buffers,
@@ -39,6 +44,25 @@ pub struct DrawObject {
     pub skinning: Option<SkinningState>,
     /// Set when the object is attached to a bone socket of a puppet parent.
     pub attachment: Option<AttachmentState>,
+    /// The decoder of an animated (video) object, present only when the
+    /// object's pixels come from a video.
+    pub video: Option<VideoDrawState>,
+}
+
+/// The per-object state of an animated (video) texture.
+pub struct VideoDrawState {
+    /// The GPU texture the frames are uploaded into.
+    pub texture: wgpu::Texture,
+    /// Decoder + bookkeeping (interior mutability: the draw queue is shared).
+    state: RefCell<VideoState>,
+}
+
+/// The decoder of an animated texture and its bookkeeping.
+struct VideoState {
+    /// The decoder: it hands out the frame that covers a given time.
+    player: VideoPlayer,
+    /// The presentation time of the frame that is currently uploaded.
+    uploaded: Option<f64>,
 }
 
 /// An object that is attached to a bone socket of a puppet parent.
@@ -144,7 +168,7 @@ impl DrawObject {
         let post_process = effects.post_process;
         let index_start = buffers.index_len;
 
-        let texture = Self::upload_texture(device, queue, &texture_object, ctx.mipgen);
+        let (texture, video) = Self::upload_texture(device, queue, &texture_object, ctx.mipgen);
         let source_view = texture.create_view(&Default::default());
 
         let bindgroup = device.create_bind_group(&BindGroupDescriptor {
@@ -162,8 +186,7 @@ impl DrawObject {
             ],
         });
 
-        let tex_w = texture_object.texture.dimension[0];
-        let tex_h = texture_object.texture.dimension[1];
+        let [tex_w, tex_h] = texture_object.source.dimension();
 
         let target = EffectTarget {
             view: &source_view,
@@ -272,16 +295,41 @@ impl DrawObject {
             intermediates,
             skinning,
             attachment,
+            video,
         }
     }
 
+    /// Upload the pixels of an object into a GPU texture.
+    ///
+    /// A static texture is uploaded once, with its full mip chain; a video
+    /// gets a single-mip texture that is refreshed every frame (see
+    /// [`update_video_textures`]).
+    ///
+    /// The returned state is the decoder of a video: it is `None` for a
+    /// static texture.
     fn upload_texture(
         device: &Device,
         queue: &Queue,
         tex_obj: &TextureObject,
         mipgen: &MipChainGenerator,
+    ) -> (Texture, Option<VideoDrawState>) {
+        match &tex_obj.source {
+            TextureSource::Static(tex) => (
+                Self::upload_static_texture(device, queue, tex, mipgen),
+                None,
+            ),
+            TextureSource::Video(video) => Self::upload_video_texture(device, queue, video),
+        }
+    }
+
+    /// Upload a static texture, with the mip chain the parser extracted.
+    fn upload_static_texture(
+        device: &Device,
+        queue: &Queue,
+        tex: &Tex,
+        mipgen: &MipChainGenerator,
     ) -> Texture {
-        let ext = tex_obj.texture.extension.as_str();
+        let ext = tex.extension.as_str();
         let is_bcn = matches!(ext, "dxt1" | "dxt5");
         let format = match ext {
             "r8" => TextureFormat::R8Unorm,
@@ -291,8 +339,8 @@ impl DrawObject {
             _ => TextureFormat::Rgba8UnormSrgb,
         };
 
-        let w = tex_obj.texture.dimension[0];
-        let h = tex_obj.texture.dimension[1];
+        let w = tex.dimension[0];
+        let h = tex.dimension[1];
         // Allocate the full chain the header advertised, so the GPU has
         // room for the levels the parser didn't ship but the renderer
         // will generate on the GPU. `mipmap_count` is 0 for legacy
@@ -304,9 +352,9 @@ impl DrawObject {
         // undefined memory (black/transparent). Allocate only the levels
         // the parser actually extracted for BCn.
         let mip_level_count = if is_bcn {
-            tex_obj.texture.actual_mip_count().max(1)
+            tex.actual_mip_count().max(1)
         } else {
-            tex_obj.texture.mipmap_count.max(1)
+            tex.mipmap_count.max(1)
         };
 
         log::debug!(
@@ -315,9 +363,9 @@ impl DrawObject {
             h,
             format,
             mip_level_count,
-            tex_obj.texture.mipmap_count,
-            tex_obj.texture.actual_mip_count(),
-            tex_obj.texture.missing_mip_count(),
+            tex.mipmap_count,
+            tex.actual_mip_count(),
+            tex.missing_mip_count(),
         );
 
         // Non-BCn textures will get GPU-generated mips via `MipChainGenerator`,
@@ -360,7 +408,7 @@ impl DrawObject {
                 origin: Origin3d::ZERO,
                 aspect: TextureAspect::All,
             },
-            &tex_obj.texture.payload,
+            &tex.payload,
             TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
@@ -377,7 +425,7 @@ impl DrawObject {
         // payload (BCn only, in practice).
         let mut level_w = w;
         let mut level_h = h;
-        for (i, level_data) in tex_obj.texture.mip_levels.iter().enumerate() {
+        for (i, level_data) in tex.mip_levels.iter().enumerate() {
             level_w = (level_w / 2).max(1);
             level_h = (level_h / 2).max(1);
             let level = (i + 1) as u32;
@@ -418,17 +466,201 @@ impl DrawObject {
         // the chain incomplete by design; the GPU is much faster at
         // mip-downsampling than the CPU, and this keeps the parser out
         // of the rendering business.
-        if tex_obj.texture.needs_gpu_mip_generation() && !is_bcn {
+        if tex.needs_gpu_mip_generation() && !is_bcn {
             let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
                 label: Some("mipgen.encoder"),
             });
-            let generated = mipgen.generate(device, &mut encoder, &texture, &tex_obj.texture);
+            let generated = mipgen.generate(device, &mut encoder, &texture, tex);
             if generated > 0 {
                 queue.submit(std::iter::once(encoder.finish()));
             }
         }
 
         texture
+    }
+
+    /// Create the texture of an animated (video) object and its decoder.
+    ///
+    /// The texture holds a single mip level: the frames are uploaded as
+    /// they are decoded, so there is no mip chain to maintain.  The first
+    /// frame is decoded right away — its size is the size of the texture,
+    /// because the bind group is created once, from that texture.
+    fn upload_video_texture(
+        device: &Device,
+        queue: &Queue,
+        video: &Rc<VideoAsset>,
+    ) -> (Texture, Option<VideoDrawState>) {
+        let mut player = match VideoPlayer::open(&video.bytes) {
+            Ok(player) => player,
+            Err(error) => {
+                log::error!("cannot open the video: {}", error);
+                return (Self::blank_texture(device, queue), None);
+            }
+        };
+
+        let first = player.frame_at(0.0).ok().flatten();
+        let (width, height) = match first.as_ref() {
+            Some(frame) => (frame.width, frame.height),
+            None => (video.info.width, video.info.height),
+        };
+        let (width, height) = (width.max(1), height.max(1));
+
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("video texture"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let mut state = VideoState {
+            player,
+            uploaded: None,
+        };
+
+        // Show the first frame right away: the object must not be black
+        // until the first frame of the next render pass.
+        if let Some(frame) = first.as_ref() {
+            Self::write_video_frame(queue, &texture, frame);
+            state.uploaded = Some(frame.time);
+        }
+
+        (
+            texture.clone(),
+            Some(VideoDrawState {
+                texture,
+                state: RefCell::new(state),
+            }),
+        )
+    }
+
+    /// Write a decoded frame into the texture of an animated object.
+    fn write_video_frame(queue: &Queue, texture: &Texture, frame: &VideoFrame) {
+        queue.write_texture(
+            TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            &frame.rgba,
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(frame.width * 4),
+                rows_per_image: None,
+            },
+            Extent3d {
+                width: frame.width,
+                height: frame.height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    /// A 1×1 transparent texture, used when a video cannot be opened.
+    fn blank_texture(device: &Device, queue: &Queue) -> Texture {
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("blank video texture"),
+            size: Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            &[0u8, 0, 0, 0],
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: None,
+            },
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        texture
+    }
+}
+
+/// Decode and upload the animated textures for this frame.
+///
+/// Called once per frame, next to [`update_animated_meshes`].  Every
+/// animated object is asked for the frame that covers the current time;
+/// the frame is only uploaded when it changed, so a video that plays
+/// slower than the compositor does not cost a texture upload per frame.
+///
+/// A video that cannot be decoded is reported and skipped: it must not
+/// kill the render loop.
+pub fn update_video_textures(queue: &Queue, draw_queue: &DrawQueue, elapsed: f32) {
+    for draw_object in draw_queue.queue.iter() {
+        let Some(video) = &draw_object.video else {
+            continue;
+        };
+
+        let mut state = video.state.borrow_mut();
+
+        // The video loops: the time within the stream is the elapsed time
+        // modulo the duration of the video.
+        let duration = state.player.info().duration;
+        let time = if duration > 0.0 {
+            f64::from(elapsed) % duration
+        } else {
+            f64::from(elapsed)
+        };
+
+        let frame = match state.player.frame_at(time) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => continue,
+            Err(error) => {
+                log::warn!("cannot decode the video frame: {}", error);
+                continue;
+            }
+        };
+
+        // The player serves the same frame again when the video plays
+        // slower than the compositor: there is nothing to upload then.
+        if state.uploaded == Some(frame.time) {
+            continue;
+        }
+
+        // The texture was sized after the first frame: a frame of another
+        // size cannot be written into it.
+        if frame.width != video.texture.width() || frame.height != video.texture.height() {
+            log::warn!(
+                "skipping a {}x{} video frame: the texture is {}x{}",
+                frame.width,
+                frame.height,
+                video.texture.width(),
+                video.texture.height(),
+            );
+            continue;
+        }
+
+        DrawObject::write_video_frame(queue, &video.texture, &frame);
+        state.uploaded = Some(frame.time);
     }
 }
 

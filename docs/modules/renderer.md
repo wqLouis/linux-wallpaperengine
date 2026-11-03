@@ -96,9 +96,11 @@ Called every frame. Performs:
 
 1. **Time update** — computes delta from `start_time`, wraps `elapsed_ms` at 1 hour for f32 precision
 2. **Parallax cursor** — reads `user_params.cursor_position` via `compute_parallax_cursor()`
-3. **Uniform write** — calls `render_pass::write_effect_uniforms()` for all draw objects (time, projection, cursor, screen res, texture resolutions, material constants)
-4. **Intermediate passes** — if any object has effects, runs `render_intermediate_passes()` (replaces projection with identity for NDC rendering, then restores)
-5. **Final pass** — `render_final_pass()` draws all objects to swapchain
+3. **Puppet skinning** — `draw::update_animated_meshes()` re-skins the animated puppets and rewrites their vertex range
+4. **Video frames** — `draw::update_video_textures()` decodes the frame that covers the current time for every animated (video) object and uploads it into its texture (only when the frame changed)
+5. **Uniform write** — calls `render_pass::write_effect_uniforms()` for all draw objects (time, projection, cursor, screen res, texture resolutions, material constants)
+6. **Intermediate passes** — if any object has effects, runs `render_intermediate_passes()` (replaces projection with identity for NDC rendering, then restores)
+7. **Final pass** — `render_final_pass()` draws all objects to swapchain
 
 ### `WgpuApp::resize(&mut self, size: [u32; 2])`
 

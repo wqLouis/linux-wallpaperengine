@@ -184,8 +184,9 @@ The fully-loaded scene asset container.
 
 ```rust
 pub struct Scene {
-    pub root: Root,        // Parsed scene.json
+    pub root: Root,        // Parsed scene.json (or the synthetic video scene)
     pub assets: AssetStore, // Typed store of every parsed asset
+    pub project: Option<Project>, // The package's project.json, when it has one
 }
 ```
 
@@ -195,14 +196,15 @@ Parses a `.pkg` file:
 
 1. Uses `pkg_parser::parser::Pkg::new(path)` to open the package
 2. For each file, classifies it with `AssetType::from_path()`:
-   - `.tex` → decoded in parallel by a bounded worker pool via `Tex::new` + `parse_to_rgba()`
+   - `.tex` → decoded in parallel by a bounded worker pool via `Tex::new` + `parse_to_rgba()` (a `.tex` whose payload is a video container becomes a video asset instead)
    - `.mdl` → parsed via `MdlFile::new()` (skipped entirely when `no_mdl` is set). Parse failures are logged at error level and skipped, since the puppet format is only partially documented.
    - `.json` (scene/effects/materials/particles/presets) → stored as `Rc<String>`
    - `.frag`/`.vert`/`.h` → stored as text (shaders are paired and parsed in [`Scene::prepare`])
    - audio/font/video/scripts/other → stored as typed assets
 3. Shows a progress bar via `indicatif::ProgressBar`
-4. Parses `scene.json` as `Root`
-5. Returns the complete `Scene`
+4. Reads the package's `project.json` (see `project.rs`) — it tells the loader what kind of wallpaper the package holds
+5. Parses `scene.json` as `Root` — or builds a **synthetic scene** for a video wallpaper (see below)
+6. Returns the complete `Scene`
 
 The archive is trusted to be well-formed: a package or asset that fails to
 parse is fatal rather than silently skipped. The one exception is `.mdl`
@@ -213,6 +215,28 @@ because it can legitimately fall back to the Wallpaper Engine `assets/`
 directory or reference runtime textures.
 
 **Threading:** `.tex` files are decoded by a worker pool sized to the available CPU cores (capped at the number of textures). Work is handed out through an atomic index, so threads stay busy even when individual textures decode at different speeds; no thread is spawned per file.
+
+### Video wallpapers — the synthetic scene
+
+A package whose `project.json` says `"type": "Video"` has **no `scene.json`**:
+it holds a single looping clip. Such a package is brought up as a *synthetic
+scene*, so that the whole existing pipeline (camera projection, fit modes,
+effects, adapters) works exactly like it does for a scene wallpaper:
+
+* the video is found through `project.file` (`"video.mp4"`), falling back to the
+  first video of the package;
+* a synthetic material (`materials/video.json` →
+  `{"passes":[{"textures":["video"]}]}`) and model (`models/video.json` →
+  `{"material":"materials/video.json","autosize":false}`) are injected into the
+  asset store, and the video is bound under `materials/video.mp4` — the name the
+  material refers to;
+* the scene itself holds **one** image object that covers the whole projection:
+  `origin = "0 0"` (the scene's origin is its bottom-left corner),
+  `size` = the video's own resolution, `id = 1`, plus
+  `general.orthogonalprojection = {width, height}` = the video's resolution and
+  a black `clearcolor`.
+
+The `scene.json` lookup is skipped entirely for such a package.
 
 ### `Scene::set_assets_path(&mut self, assets_path: PathBuf)`
 
@@ -263,10 +287,30 @@ pub enum Asset {
     Text(Rc<String>),      // shader sources / headers before pairing
     Sound(Vec<u8>),
     Font(Vec<u8>),
-    Video(Vec<u8>),
+    Video(Rc<VideoAsset>), // mp4/webm/gif — the bytes and their metadata
     Raw(Vec<u8>),
 }
 ```
+
+### `VideoAsset`
+
+A video (or animated image): the raw container bytes plus the metadata that
+was probed once, when the asset was parsed.
+
+```rust
+pub struct VideoAsset {
+    pub bytes: Rc<[u8]>,   // the container bytes (mp4/webm/gif)
+    pub info: VideoInfo,   // width, height, duration, fps, frame_count, …
+}
+```
+
+The bytes are kept behind an `Rc`, so the loader and the renderer share one
+copy of the container. A container that cannot be probed keeps an empty
+`VideoInfo` — the problem is reported when the renderer tries to decode it.
+
+> Wallpaper Engine stores its **video textures as a `.tex` file whose payload
+> is the video container**. Such a file is parsed into an `Asset::Video` too,
+> not into a texture.
 
 ### `AssetStore`
 
@@ -284,7 +328,11 @@ pub struct AssetStore {
 | `get(key) -> Option<Asset>` | Lookup by key, lazy-parses from disk if missing |
 | `texture(key) -> Option<Rc<Tex>>` | Parsed `.tex` texture |
 | `model(key) -> Option<Rc<MdlFile>>` | Parsed `.mdl` puppet model |
+| `video(key) -> Option<Rc<VideoAsset>>` | Parsed video (`.mp4`, or a `.tex` with a video payload) |
+| `first_video() -> Option<(String, Rc<VideoAsset>)>` | The first video of the store, with its key |
 | `json(key) -> Option<Rc<String>>` | JSON-backed document |
+| `project() -> Option<Project>` | The package's `project.json` (see `project.rs`) |
+| `insert(key, asset)` | Inserts (or replaces) a parsed asset |
 | `take_sound(key) -> Option<Vec<u8>>` | Removes and returns audio data (consumed on playback) |
 | `shader(frag, vert) -> Option<Rc<ShaderProgram>>` | Pre-parsed shader pair |
 | `preparse_shaders()` | Eagerly parses every shader pair in the store |
@@ -317,15 +365,38 @@ Converts raw `Object`/`Effect` definitions into render-ready types.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `texture` | `Rc<Tex>` | Parsed RGBA texture data |
+| `source` | `TextureSource` | The pixels of the object: a static texture or a video |
 | `transform` | `Transform` | Local position/rotation/scale/alignment |
 | `model` | `Mat4` | World model matrix (parent chain applied) |
 | `local_model` | `Mat4` | The object's own matrix (before the parent chain) — needed for bone-socket attachments |
 | `size` | `Vec2` | Width/height |
+| `uv_scale` | `Vec2` | The sampled region of the texture (`(1, 1)` for a video) |
 | `parent` | `Option<i64>` | Parent object ID |
 | `effects` | `Vec<Effect>` | Shader effects |
 | `visible` | `bool` | Whether the object is visible |
 | `mesh` | `Option<PuppetMesh>` | Optional puppet mesh extracted from a `.mdl` file |
+
+### `TextureSource`
+
+Where an object's pixels come from.
+
+```rust
+pub enum TextureSource {
+    Static(Rc<Tex>),        // a static texture parsed from a `.tex` file
+    Video(Rc<VideoAsset>),  // a video or animated image, decoded frame by frame
+}
+```
+
+`resolve_texture()` resolves them in this order:
+
+1. `materials/{name}.tex` whose payload is a video container — Wallpaper Engine
+   stores its video textures that way,
+2. `materials/{name}.mp4` (and `.webm`/`.gif`/`.avi`) — a standalone video next
+   to the material,
+3. `materials/{name}.tex` — an ordinary texture.
+
+A video has no padded region, so its `uv_scale` is always `(1, 1)` and its
+dimension is the video's own resolution.
 
 ### `AudioObject`
 

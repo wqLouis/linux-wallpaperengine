@@ -20,6 +20,7 @@ pub struct DrawObject {
     pub pipelines: Vec<Rc<RenderPipeline>>,               // Effect pipelines (1 per effect)
     pub effect_bindgroups: Vec<EffectBindGroup>,          // Per-effect GPU resources
     pub intermediates: Option<PingPongTextures>,           // For multi-effect rendering
+    pub video: Option<VideoDrawState>,                    // Decoder of an animated (video) object
 }
 ```
 
@@ -28,12 +29,30 @@ pub struct DrawObject {
 Called by `DrawQueue::new()` for each texture object:
 
 1. **Resolves effect pipelines** — calls `get_or_create_pipeline` for each effect, using cache key based on effect path + mask/noise texture presence + combo values
-2. **Uploads texture** — creates a GPU texture from `.tex` payload, selecting `R8Unorm`, `Rg8Unorm`, or `Rgba8UnormSrgb` based on extension
+2. **Uploads texture** — creates a GPU texture from `.tex` payload, selecting `R8Unorm`, `Rg8Unorm`, or `Rgba8UnormSrgb` based on extension. A **video** gets an `Rgba8UnormSrgb` texture with a **single** mip level (the frames are uploaded as they are decoded) plus its decoder.
 3. **Creates source bindgroup** — texture view + sampler (bindings 0, 1) using `post_process.layout`
 4. **Loads mask & noise textures** — loads from `scene.textures` with `materials/` prefix fallback, uploaded as `R8Unorm`, `Rg8Unorm`, or `Rgba8Unorm`
 5. **Builds effect bind groups** — for each effect: creates uniform buffer if needed, builds `tex_resolutions` map for all sampler slots, creates bindgroup
 6. **Creates ping-pong textures** (if effects present) — two render targets sized to `max(texture_dim, screen_dim)`
 7. **Appends geometry** — calls `Buffers::draw_texture()` to add rotated quad to global VB/IB
+
+### `VideoDrawState` — the decoder of an animated object
+
+```rust
+pub struct VideoDrawState {
+    pub texture: wgpu::Texture,        // the GPU texture the frames go into
+    state: RefCell<VideoState>,        // the player + the time of the uploaded frame
+}
+```
+
+#### `update_video_textures(queue, draw_queue, elapsed)`
+
+Called once per frame (from `WgpuApp::render()`). For every object with a
+video state it asks the player for the frame that covers
+`t = elapsed % duration` and uploads it with `queue.write_texture()` — but
+only when the frame changed, so a video that plays slower than the
+compositor does not cost an upload per frame. A video that cannot be decoded
+is logged and skipped: it must not kill the render loop.
 
 ### `DrawQueue`
 
@@ -290,3 +309,6 @@ These limits determine the maximum number of texture objects that can be loaded.
 | `r8` | `R8Unorm` | 1 |
 | `rg88` | `Rg8Unorm` | 2 |
 | any other | `Rgba8UnormSrgb` | 4 |
+
+A **video** is always uploaded as `Rgba8UnormSrgb` (4 bytes per pixel), with a
+single mip level: its frames are written into the texture as they are decoded.

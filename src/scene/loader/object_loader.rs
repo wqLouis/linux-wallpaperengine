@@ -4,20 +4,61 @@ use glam::{Vec2, Vec3};
 use pkg_parser::pkg_parser::tex_parser::Tex;
 use serde_json::Value;
 
+use crate::collections::{Map, new_map};
 use crate::scene::loader::{
+    assets_loader::VideoAsset,
     mdl::{self, PuppetAnimation, PuppetMesh},
     model::Model,
     scene::{Effect, ElementType, Object, Vectors},
     scene_loader::Scene,
 };
 use crate::scene::renderer::transform::{Alignment, Transform, build_model_matrix, compose};
-use crate::collections::{Map, new_map};
+
+/// The extensions of the standalone video files a material may refer to.
+const VIDEO_EXTENSIONS: [&str; 4] = ["mp4", "webm", "gif", "avi"];
+
+/// Where an object's pixels come from.
+#[derive(Debug, Clone)]
+pub enum TextureSource {
+    /// A static texture parsed from a `.tex` file.
+    Static(Rc<Tex>),
+    /// A video or animated image, decoded frame by frame.
+    Video(Rc<VideoAsset>),
+}
+
+impl TextureSource {
+    /// The size of the source in pixels.
+    ///
+    /// A static texture is stored padded (to a power of two), a video is
+    /// decoded at its own resolution.
+    pub fn dimension(&self) -> [u32; 2] {
+        match self {
+            Self::Static(tex) => tex.dimension,
+            Self::Video(video) => video.size(),
+        }
+    }
+
+    /// The UV scale of the source: the ratio between the real (non-padded)
+    /// region and the stored size.
+    ///
+    /// A video has no padded region, so its scale is always `(1, 1)`.
+    pub fn uv_scale(&self) -> Vec2 {
+        match self {
+            Self::Static(tex) => Vec2::new(
+                tex.real_dimension[0] as f32 / tex.dimension[0].max(1) as f32,
+                tex.real_dimension[1] as f32 / tex.dimension[1].max(1) as f32,
+            ),
+            Self::Video(_) => Vec2::ONE,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TextureObject {
     /// The scene.json object id — used to resolve parent/attachment links.
     pub id: i64,
-    pub texture: Rc<Tex>,
+    /// The pixels of the object: a static texture or a video.
+    pub source: TextureSource,
     /// Local transform (position, rotation, scale, alignment).
     ///
     /// Kept for reference — the world matrix is pre-computed in
@@ -218,7 +259,14 @@ impl ObjectMap {
     /// Returns `None` when the object should be skipped (model not found,
     /// texture unresolvable, or a composelayer that cannot be rendered
     /// stand-alone).
-    fn resolve_texture(scene: &Scene, model: &Model, object: &Object) -> Option<Rc<Tex>> {
+    ///
+    /// The pixels come either from a static `.tex` file or from a video:
+    ///
+    /// 1. `materials/{name}.tex` whose payload is a video container —
+    ///    Wallpaper Engine stores its video textures that way,
+    /// 2. `materials/{name}.mp4` — a standalone video next to the material,
+    /// 3. `materials/{name}.tex` — an ordinary texture.
+    fn resolve_texture(scene: &Scene, model: &Model, object: &Object) -> Option<TextureSource> {
         // ── composelayer (passthrough) ────────────────────────────
         // Uses a runtime framebuffer (`_rt_FullFrameBuffer`) that only
         // exists during effect compositing.  Skip when rendering
@@ -270,7 +318,7 @@ impl ObjectMap {
                 b,
                 a,
             );
-            return Some(Rc::new(Tex {
+            return Some(TextureSource::Static(Rc::new(Tex {
                 texv: String::new(),
                 texi: String::new(),
                 texb: String::new(),
@@ -285,7 +333,7 @@ impl ObjectMap {
                 extension: "solid".into(),
                 payload: vec![r, g, b, a],
                 mip_levels: Vec::new(),
-            }));
+            })));
         }
 
         // ── normal texture lookup ─────────────────────────────────
@@ -305,8 +353,41 @@ impl ObjectMap {
         }
 
         let tex_key = format!("materials/{}.tex", tex_name);
+
+        // ── a video texture ───────────────────────────────────────
+        // Wallpaper Engine stores its videos as a `.tex` file whose
+        // payload is the video container.
+        if let Some(video) = scene.assets.video(&tex_key) {
+            log::debug!(
+                "object '{}' (id {}): video texture '{}' ({}x{})",
+                object.name,
+                object.id,
+                tex_key,
+                video.info.width,
+                video.info.height,
+            );
+            return Some(TextureSource::Video(video));
+        }
+
+        // ── a standalone video next to the material ───────────────
+        for extension in VIDEO_EXTENSIONS {
+            let video_key = format!("materials/{}.{}", tex_name, extension);
+            if let Some(video) = scene.assets.video(&video_key) {
+                log::debug!(
+                    "object '{}' (id {}): video texture '{}' ({}x{})",
+                    object.name,
+                    object.id,
+                    video_key,
+                    video.info.width,
+                    video.info.height,
+                );
+                return Some(TextureSource::Video(video));
+            }
+        }
+
+        // ── an ordinary texture ───────────────────────────────────
         if let Some(tex) = scene.assets.texture(&tex_key) {
-            return Some(tex);
+            return Some(TextureSource::Static(tex));
         }
 
         // ── unresolvable ──────────────────────────────────────────
@@ -393,7 +474,7 @@ impl ObjectMap {
                     return None;
                 };
 
-                let Some(texture) = Self::resolve_texture(scene, model, object) else {
+                let Some(source) = Self::resolve_texture(scene, model, object) else {
                     log::warn!(
                         "object '{}' (id {}): texture not found for material '{}' — skipping",
                         object.name,
@@ -408,11 +489,9 @@ impl ObjectMap {
                 //
                 // The mesh's UVs are relative to the texture's *real*
                 // (non-padded) region, so they carry the same UV scale the
-                // plain quads use.
-                let uv_scale = Vec2::new(
-                    texture.real_dimension[0] as f32 / texture.dimension[0].max(1) as f32,
-                    texture.real_dimension[1] as f32 / texture.dimension[1].max(1) as f32,
-                );
+                // plain quads use.  A video has no padded region, so its
+                // scale is always (1, 1).
+                let uv_scale = source.uv_scale();
                 let mesh = if no_mdl {
                     None
                 } else {
@@ -463,7 +542,7 @@ impl ObjectMap {
                     size,
                     uv_scale,
                     parent: object.parent,
-                    texture: Rc::clone(&texture),
+                    source,
                     effects: object.effects.clone(),
                     visible,
                     mesh,
@@ -552,5 +631,170 @@ fn parse_alignment(s: Option<&str>) -> Alignment {
         "bottomleft" | "bottom-left" | "bottom_left" => Alignment::BottomLeft,
         "bottomright" | "bottom-right" | "bottom_right" => Alignment::BottomRight,
         _ => Alignment::Center,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collections::new_map;
+    use crate::scene::loader::assets_loader::{Asset, AssetStore};
+    use crate::scene::loader::scene::Root;
+
+    /// A tiny h264 clip (32×32) from the parser's test data.
+    const SAMPLE_MP4: &[u8] = include_bytes!("../../pkg_parser/tests/data/sample.mp4");
+
+    /// Build a minimal `.tex` file around a payload.
+    ///
+    /// The header is the one Wallpaper Engine writes (`TEXV0005` /
+    /// `TEXI0002` / `TEXB0003`) with an uncompressed payload.
+    fn make_tex(payload: &[u8], width: u32, height: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"TEXV0005");
+        out.push(0);
+        out.extend_from_slice(b"TEXI0002");
+        out.push(0);
+        out.extend_from_slice(&0u32.to_le_bytes()); // format: uncompressed
+        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        out.extend_from_slice(&width.to_le_bytes());
+        out.extend_from_slice(&height.to_le_bytes());
+        out.extend_from_slice(&width.to_le_bytes()); // the real width
+        out.extend_from_slice(&height.to_le_bytes()); // the real height
+        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        out.extend_from_slice(b"TEXB0003");
+        out.push(0);
+        out.extend_from_slice(&1u32.to_le_bytes()); // image count
+        out.extend_from_slice(&[0u8; 8]); // reserved
+        out.extend_from_slice(&[0u8; 8]); // reserved
+        out.extend_from_slice(&0u32.to_le_bytes()); // lz4
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes()); // decompressed size
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes()); // payload size
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// A scene whose store holds the given assets.
+    fn scene_with(assets: Vec<(&str, Asset)>) -> Scene {
+        let mut map = new_map();
+        for (key, asset) in assets {
+            map.insert(key.to_string(), asset);
+        }
+
+        Scene {
+            root: Root::default(),
+            assets: AssetStore::new(map, None),
+            project: None,
+        }
+    }
+
+    /// The material of the tests: it binds the texture "video".
+    fn material() -> Asset {
+        Asset::Json(Rc::new(
+            r#"{"passes":[{"textures":["video"]}]}"#.to_string(),
+        ))
+    }
+
+    /// The model of the tests: it points at the material.
+    fn model() -> Model {
+        Model {
+            material: "materials/video.json".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The object of the tests.
+    fn object() -> Object {
+        Object {
+            id: 1,
+            name: "video".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// A `.tex` whose payload is a video resolves to a video source.
+    ///
+    /// Wallpaper Engine stores its video textures that way: the `.tex`
+    /// holds the video container as its payload.
+    #[test]
+    fn a_tex_with_a_video_payload_resolves_to_a_video() {
+        let tex = Asset::parse("materials/video.tex", &make_tex(SAMPLE_MP4, 32, 32))
+            .expect("the video texture must parse");
+
+        let scene = scene_with(vec![
+            ("materials/video.json", material()),
+            ("materials/video.tex", tex),
+        ]);
+
+        let source = ObjectMap::resolve_texture(&scene, &model(), &object())
+            .expect("the video texture must resolve");
+
+        match source {
+            TextureSource::Video(video) => {
+                assert_eq!(video.info.width, 32);
+                assert_eq!(video.info.height, 32);
+                assert_eq!(video.size(), [32, 32]);
+            }
+            TextureSource::Static(_) => panic!("the video must not resolve to a static texture"),
+        }
+    }
+
+    /// A standalone video next to the material resolves to a video source.
+    #[test]
+    fn a_standalone_video_resolves_to_a_video() {
+        let video = Asset::parse("materials/video.mp4", SAMPLE_MP4).expect("the video must parse");
+
+        let scene = scene_with(vec![
+            ("materials/video.json", material()),
+            ("materials/video.mp4", video),
+        ]);
+
+        let source = ObjectMap::resolve_texture(&scene, &model(), &object())
+            .expect("the video must resolve");
+
+        match source {
+            TextureSource::Video(video) => assert_eq!(video.info.width, 32),
+            TextureSource::Static(_) => panic!("the video must not resolve to a static texture"),
+        }
+    }
+
+    /// An ordinary texture resolves to a static source.
+    #[test]
+    fn a_plain_tex_resolves_to_a_static_texture() {
+        // A 2×2 opaque red texture.
+        let payload = vec![255u8; 2 * 2 * 4];
+        let tex = Asset::parse("materials/video.tex", &make_tex(&payload, 2, 2))
+            .expect("the texture must parse");
+
+        let scene = scene_with(vec![
+            ("materials/video.json", material()),
+            ("materials/video.tex", tex),
+        ]);
+
+        let source = ObjectMap::resolve_texture(&scene, &model(), &object())
+            .expect("the texture must resolve");
+
+        match source {
+            TextureSource::Static(tex) => {
+                assert_eq!(tex.dimension, [2, 2]);
+                assert_eq!(tex.real_dimension, [2, 2]);
+            }
+            TextureSource::Video(_) => panic!("the texture must not resolve to a video"),
+        }
+    }
+
+    /// A video has no padded region: its UV scale is always (1, 1).
+    #[test]
+    fn a_video_has_no_uv_scale() {
+        let video = Asset::parse("materials/video.mp4", SAMPLE_MP4).expect("the video must parse");
+        let scene = scene_with(vec![
+            ("materials/video.json", material()),
+            ("materials/video.mp4", video),
+        ]);
+
+        let source = ObjectMap::resolve_texture(&scene, &model(), &object())
+            .expect("the video must resolve");
+
+        assert_eq!(source.uv_scale(), Vec2::ONE);
+        assert_eq!(source.dimension(), [32, 32]);
     }
 }

@@ -202,6 +202,9 @@ impl WgpuApp {
             draw::update_animated_meshes(&self.queue, buffers, draw_queue, elapsed);
         }
 
+        // Decode and upload the animated (video) textures of this frame.
+        draw::update_video_textures(&self.queue, draw_queue, elapsed);
+
         render_pass::write_effect_uniforms(
             &self.queue,
             &mut self.uniform_staging,

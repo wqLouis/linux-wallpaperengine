@@ -7,12 +7,16 @@
 //! sources.
 //!
 //! Callers use the typed accessors ([`AssetStore::texture`],
-//! [`AssetStore::json`], [`AssetStore::model`], [`AssetStore::shader`], …)
-//! rather than a catch-all byte bucket.
+//! [`AssetStore::json`], [`AssetStore::model`], [`AssetStore::video`],
+//! [`AssetStore::shader`], …) rather than a catch-all byte bucket.
 
 use std::{cell::RefCell, fs, path::PathBuf, rc::Rc};
 
-use pkg_parser::pkg_parser::{mdl_parser::MdlFile, tex_parser::Tex};
+use pkg_parser::pkg_parser::{
+    mdl_parser::MdlFile,
+    tex_parser::Tex,
+    video_parser::{VideoInfo, VideoPlayer, detect_format},
+};
 
 use super::project::{Project, parse_project};
 use super::shader::{self, ShaderProgram};
@@ -102,6 +106,63 @@ impl AssetType {
 // Parsed assets
 // ---------------------------------------------------------------------------
 
+/// A video (or animated image) asset: the raw bytes plus the probed
+/// metadata.
+///
+/// The container bytes are kept behind an [`Rc`], so the asset can be
+/// shared between the loader and the renderer without copying the video
+/// around.
+#[derive(Clone, Debug)]
+pub struct VideoAsset {
+    /// The raw container bytes (mp4/webm/gif).
+    pub bytes: Rc<[u8]>,
+    /// Container metadata, probed once when the asset is parsed.
+    pub info: VideoInfo,
+}
+
+impl VideoAsset {
+    /// Build a video asset from the raw bytes of a container.
+    ///
+    /// The metadata is probed with a throw-away player — the player is
+    /// dropped right after the probe.  A container that cannot be opened is
+    /// not fatal: the asset keeps an empty [`VideoInfo`] and the renderer
+    /// reports the problem when it tries to decode it.
+    pub fn from_bytes(bytes: Rc<[u8]>) -> Self {
+        let info = match VideoPlayer::open(&bytes) {
+            Ok(player) => player.info().clone(),
+            Err(error) => {
+                log::warn!("cannot probe the video container: {}", error);
+                VideoInfo::default()
+            }
+        };
+
+        Self { bytes, info }
+    }
+
+    /// Build a video asset from a `.tex` that carries a video container.
+    ///
+    /// Wallpaper Engine stores video textures as a `.tex` file whose
+    /// payload is the video itself, so the payload is moved (not copied)
+    /// into the asset.
+    pub fn from_tex(tex: Tex) -> Self {
+        Self::from_bytes(Rc::from(tex.payload))
+    }
+
+    /// The size of the video in pixels.
+    pub fn size(&self) -> [u32; 2] {
+        [self.info.width, self.info.height]
+    }
+}
+
+/// Whether the bytes are a video container (mp4/webm/gif).
+///
+/// Wallpaper Engine stores video textures as a `.tex` file whose payload is
+/// the video itself, so the texture parser has to recognise them before it
+/// tries to decode them as pixels.
+pub fn is_video_payload(bytes: &[u8]) -> bool {
+    detect_format(bytes).is_some()
+}
+
 /// A single parsed asset.
 #[derive(Clone)]
 pub enum Asset {
@@ -117,7 +178,8 @@ pub enum Asset {
     Text(Rc<String>),
     Sound(Vec<u8>),
     Font(Vec<u8>),
-    Video(Vec<u8>),
+    /// A video (or animated image): the container bytes and its metadata.
+    Video(Rc<VideoAsset>),
     /// Unclassified binary payload.
     Raw(Vec<u8>),
 }
@@ -128,6 +190,13 @@ impl Asset {
         match AssetType::from_path(key) {
             AssetType::Texture => {
                 let mut tex = Tex::new(bytes)?;
+                // Wallpaper Engine stores video textures as a `.tex` file
+                // whose payload is the video container: those are handed
+                // over to the video backend instead of being decoded as
+                // pixels.
+                if is_video_payload(&tex.payload) {
+                    return Some(Self::Video(Rc::new(VideoAsset::from_tex(tex))));
+                }
                 tex.parse_to_rgba()?;
                 tex.build_mip_chain();
                 Some(Self::Texture(Rc::new(tex)))
@@ -141,7 +210,10 @@ impl Asset {
             ))),
             AssetType::Sound => Some(Self::Sound(bytes.to_vec())),
             AssetType::Font => Some(Self::Font(bytes.to_vec())),
-            AssetType::Video => Some(Self::Video(bytes.to_vec())),
+            AssetType::Video => {
+                let video = VideoAsset::from_bytes(Rc::from(bytes));
+                Some(Self::Video(Rc::new(video)))
+            }
             AssetType::Other => Some(Self::Raw(bytes.to_vec())),
             // Scene, effect, material, particle, preset and generic JSON.
             _ => Some(Self::Json(Rc::new(
@@ -152,8 +224,11 @@ impl Asset {
 
     fn as_bytes(&self) -> Option<Vec<u8>> {
         match self {
-            Self::Raw(b) | Self::Sound(b) | Self::Font(b) | Self::Video(b) => Some(b.clone()),
+            Self::Raw(b) | Self::Sound(b) | Self::Font(b) => Some(b.clone()),
             Self::Text(t) | Self::Json(t) | Self::Script(t) => Some(t.as_bytes().to_vec()),
+            // The video container is not a byte blob the callers want to
+            // copy around: it is decoded through its `VideoAsset`.
+            Self::Video(_) => None,
             _ => None,
         }
     }
@@ -211,6 +286,37 @@ impl AssetStore {
             Asset::Model(m) => Some(m),
             _ => None,
         }
+    }
+
+    /// The parsed video asset, if the store has one under `key`.
+    ///
+    /// A video is stored under its own name (`materials/foo.mp4`) or
+    /// inside a `.tex` file (Wallpaper Engine's way of storing video
+    /// textures); both end up as an [`Asset::Video`].
+    pub fn video(&self, key: &str) -> Option<Rc<VideoAsset>> {
+        match self.get(key)? {
+            Asset::Video(video) => Some(video),
+            _ => None,
+        }
+    }
+
+    /// The first video asset of the store, together with its key.
+    ///
+    /// The assets are visited in a stable (key-sorted) order, so the
+    /// result does not depend on the hash table's layout.
+    pub fn first_video(&self) -> Option<(String, Rc<VideoAsset>)> {
+        let map = self.map.borrow();
+        for key in sorted_keys(&map) {
+            if let Asset::Video(video) = &map[key] {
+                return Some((key.clone(), Rc::clone(video)));
+            }
+        }
+        None
+    }
+
+    /// Insert (or replace) a parsed asset.
+    pub fn insert(&self, key: &str, asset: Asset) {
+        self.map.borrow_mut().insert(key.to_string(), asset);
     }
 
     /// JSON-backed document (scene, effect, material, …).
