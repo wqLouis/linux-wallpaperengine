@@ -14,16 +14,27 @@ use super::{
     draw::{DrawObject, DrawQueue},
     post_processor::effect_param::SystemUniforms,
     projection::ProjectionBindGroups,
-    surface::AppSurface,
+    surface::{AppSurface, SurfaceTarget},
 };
 
-/// Render all draw objects to the swapchain surface using the provided encoder.
+/// The result of the final render pass.
+pub enum FinalFrame {
+    /// A swapchain frame that has to be presented after the encoder is
+    /// submitted.
+    Present(SurfaceTexture),
+    /// The scene was rendered into the off-screen texture; the caller can
+    /// copy it back to the CPU.
+    Offscreen,
+}
+
+/// Render all draw objects to the render target using the provided encoder.
 ///
 /// Each object is drawn with either its direct bind group (no post-processing)
 /// or the intermediate ping-pong texture (after applying effects).
 ///
-/// Returns the swapchain output texture (caller must call `present()` after
-/// submitting the encoder).  Returns `None` on surface error.
+/// Returns the rendered frame: a swapchain texture the caller must present
+/// after submitting the encoder, or [FinalFrame::Offscreen] when the scene
+/// was rendered into an off-screen texture.  Returns `None` on surface error.
 pub fn render_final_pass<'a>(
     encoder: &'a mut CommandEncoder,
     device: &Device,
@@ -32,32 +43,41 @@ pub fn render_final_pass<'a>(
     projection_bindgroup: &'a ProjectionBindGroups,
     draw_queue: &'a DrawQueue,
     clear_color: Vec3,
-) -> Option<SurfaceTexture> {
-    // Acquire the next swapchain frame
-    let output = match surface.surface.get_current_texture() {
-        Ok(frame) => {
-            log::trace!("acquired swapchain texture");
-            frame
+) -> Option<FinalFrame> {
+    // Acquire the next swapchain frame (or the off-screen view).
+    let (view, frame) = match &surface.target {
+        SurfaceTarget::Swapchain(swapchain) => {
+            let output = match swapchain.get_current_texture() {
+                Ok(frame) => {
+                    log::trace!("acquired swapchain texture");
+                    frame
+                }
+                Err(SurfaceError::Lost | SurfaceError::Outdated) => {
+                    log::warn!("surface lost/outdated, reconfiguring...");
+                    swapchain.configure(device, &surface.config);
+                    return None;
+                }
+                Err(SurfaceError::Timeout) => {
+                    log::warn!("surface timeout, reconfiguring...");
+                    swapchain.configure(device, &surface.config);
+                    return None;
+                }
+                Err(e) => {
+                    log::error!("surface error: {:?}", e);
+                    return None;
+                }
+            };
+
+            let view = output
+                .texture
+                .create_view(&TextureViewDescriptor::default());
+            (view, Some(FinalFrame::Present(output)))
         }
-        Err(SurfaceError::Lost | SurfaceError::Outdated) => {
-            log::warn!("surface lost/outdated, reconfiguring...");
-            surface.surface.configure(device, &surface.config);
-            return None;
-        }
-        Err(SurfaceError::Timeout) => {
-            log::warn!("surface timeout, reconfiguring...");
-            surface.surface.configure(device, &surface.config);
-            return None;
-        }
-        Err(e) => {
-            log::error!("surface error: {:?}", e);
-            return None;
+        SurfaceTarget::Offscreen(offscreen) => {
+            log::trace!("rendering into offscreen target");
+            (offscreen.view.clone(), Some(FinalFrame::Offscreen))
         }
     };
-
-    let view = output
-        .texture
-        .create_view(&TextureViewDescriptor::default());
 
     log::trace!("drawing {} objects...", draw_queue.queue.len());
     {
@@ -91,7 +111,9 @@ pub fn render_final_pass<'a>(
             // otherwise use the original texture bind group
             let bg = if let Some(ref pp) = draw_object.intermediates {
                 // Use cached final-pass bind group to avoid per-frame allocation.
-                pp.cached_final_bg_a.as_ref().unwrap_or(&draw_object.bindgroup)
+                pp.cached_final_bg_a
+                    .as_ref()
+                    .unwrap_or(&draw_object.bindgroup)
             } else {
                 &draw_object.bindgroup
             };
@@ -104,7 +126,7 @@ pub fn render_final_pass<'a>(
         }
     }
 
-    Some(output)
+    frame
 }
 
 /// Write per-frame uniform data into effect bind group buffers.

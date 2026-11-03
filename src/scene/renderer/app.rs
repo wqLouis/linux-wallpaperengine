@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use log;
 use wgpu::*;
 
@@ -14,7 +14,9 @@ use crate::MAX_TEXTURE;
 
 use super::{
     buffer::Buffers, draw::{self, DrawQueue}, intermediate_pass, post_process::PostProcess,
-    projection::ProjectionBindGroups, render_pass, surface::AppSurface,
+    projection::{CameraUniform, ProjectionBindGroups},
+    render_pass::{self, FinalFrame},
+    surface::AppSurface,
 };
 
 pub use super::surface::InitAppSurface;
@@ -58,6 +60,15 @@ pub struct WgpuApp {
     pub has_clear_texture: bool,
     pub has_subgroup: bool,
     pub show_progress: bool,
+
+    /// Extra scale applied to the camera projection in NDC space.
+    ///
+    /// Used to implement the fit modes: the scene is scaled up (cover) or
+    /// down (contain) so the wallpaper keeps its aspect ratio.
+    pub view_scale: [f32; 2],
+
+    /// Staging buffer used to copy off-screen frames back to the CPU.
+    readback_buffer: Option<Buffer>,
 }
 
 impl WgpuApp {
@@ -138,7 +149,7 @@ impl WgpuApp {
         let has_clear_texture = enabled_features.contains(Features::CLEAR_TEXTURE);
         let has_subgroup = enabled_features.contains(Features::SUBGROUP);
 
-        let surface = AppSurface::new(surface, &instance, &adapter, size);
+        let surface = AppSurface::new(surface, &instance, &adapter, &device, size);
         // Buffers are allocated later in load() once we know geometry size.
         let projection_bindgroup = ProjectionBindGroups::new(&device);
         let audio_stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
@@ -167,6 +178,8 @@ impl WgpuApp {
             has_clear_texture,
             has_subgroup,
             show_progress,
+            view_scale: [1.0, 1.0],
+            readback_buffer: None,
         }
     }
 
@@ -236,19 +249,150 @@ impl WgpuApp {
         self.queue.submit(Some(encoder.finish()));
 
         match output {
-            Some(frame) => {
+            Some(FinalFrame::Present(frame)) => {
                 frame.present();
                 Some(())
             }
+            Some(FinalFrame::Offscreen) => Some(()),
             None => None,
         }
     }
 
     pub fn resize(&mut self, size: [u32; 2]) {
-        self.surface.config.width = size[0];
-        self.surface.config.height = size[1];
-        self.surface
-            .surface
-            .configure(&self.device, &self.surface.config);
+        self.surface.resize(&self.device, size);
+    }
+
+    /// Scale the camera projection in NDC space.
+    ///
+    /// The scene is projected to the full NDC range by default.  Scaling the
+    /// NDC coordinates makes the wallpaper overflow the viewport (cover) or
+    /// leave empty borders around it (contain) while keeping its aspect
+    /// ratio.
+    pub fn set_view_scale(&mut self, sx: f32, sy: f32) {
+        self.view_scale = [sx, sy];
+        self.upload_projection();
+    }
+
+    /// Re-upload the (possibly scaled) camera projection to the GPU.
+    fn upload_projection(&self) {
+        let Some(buffers) = self.buffers.as_ref() else {
+            return;
+        };
+
+        let base = Mat4::from_cols_array_2d(&self.projection_matrix);
+        let scaled =
+            Mat4::from_scale(Vec3::new(self.view_scale[0], self.view_scale[1], 1.0)) * base;
+
+        let uniform = CameraUniform {
+            projection: scaled.to_cols_array_2d(),
+        };
+        self.queue
+            .write_buffer(&buffers.projection, 0, bytemuck::bytes_of(&uniform));
+    }
+
+    /// Copy the off-screen frame into `dst` (tightly packed RGBA8).
+    ///
+    /// Returns false when the scene is not rendered off-screen or when the
+    /// copy failed.
+    pub fn read_offscreen_frame(&mut self, dst: &mut [u8]) -> bool {
+        let (texture, width, height) = {
+            let Some(offscreen) = self.surface.offscreen() else {
+                return false;
+            };
+            (
+                offscreen.texture.clone(),
+                self.surface.config.width,
+                self.surface.config.height,
+            )
+        };
+
+        let row_bytes = width as usize * 4;
+        if dst.len() < row_bytes * height as usize {
+            log::error!(
+                "readback buffer too small: {} < {}",
+                dst.len(),
+                row_bytes * height as usize
+            );
+            return false;
+        }
+
+        // The copy destination has to be aligned to 256 bytes per row.
+        let bytes_per_row = row_bytes.div_ceil(256) * 256;
+        let size = bytes_per_row * height as usize;
+
+        let recreate = match self.readback_buffer.as_ref() {
+            Some(buffer) => buffer.size() < size as u64,
+            None => true,
+        };
+        if recreate {
+            self.readback_buffer = Some(self.device.create_buffer(&BufferDescriptor {
+                label: Some("frame readback"),
+                size: size as u64,
+                usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }));
+        }
+        let buffer = self.readback_buffer.as_ref().unwrap();
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            TexelCopyBufferInfo {
+                buffer,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row as u32),
+                    rows_per_image: Some(height),
+                },
+            },
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        // Map the staging buffer and wait for the copy to complete.
+        let slice = buffer.slice(..);
+        let mapped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = mapped.clone();
+        slice.map_async(MapMode::Read, move |result| {
+            if result.is_ok() {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        if let Err(e) = self.device.poll(PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        }) {
+            log::error!("device poll failed: {:?}", e);
+            return false;
+        }
+
+        if !mapped.load(std::sync::atomic::Ordering::SeqCst) {
+            log::error!("failed to map the readback buffer");
+            return false;
+        }
+
+        {
+            let data = slice.get_mapped_range();
+            for row in 0..height as usize {
+                let src = &data[row * bytes_per_row..row * bytes_per_row + row_bytes];
+                let dst_row = &mut dst[row * row_bytes..(row + 1) * row_bytes];
+                dst_row.copy_from_slice(src);
+            }
+        }
+        buffer.unmap();
+
+        true
     }
 }
