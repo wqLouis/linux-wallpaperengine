@@ -412,6 +412,10 @@ ahash = { version = "0.8.12", default-features = false, features = ["std", "no-r
   The same reasoning applies to the host crate (`src/collections.rs`) when the engine itself is
   ported to the browser.
 * **`ffmpeg_next` cannot build for wasm** — it is exactly why the backend lives behind a trait.
+  The dependency itself is now declared for the native targets only
+  (`[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`), so a browser build works with the
+  *default* features: `cargo check --target wasm32-unknown-unknown` compiles `web-sys` and the
+  browser backends instead of trying to cross compile ffmpeg.
 * The `image` crate (`gif`/`png`/`jpg` decoders) is pure Rust and builds for wasm ✓.
 
 

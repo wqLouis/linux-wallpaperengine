@@ -2469,10 +2469,14 @@ dependencies = [
  "ffmpeg-next",
  "hashbrown 0.15.5",
  "image",
+ "js-sys",
  "log",
  "lz4_flex",
  "serde",
  "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
