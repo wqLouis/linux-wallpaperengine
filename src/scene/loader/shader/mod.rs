@@ -24,6 +24,8 @@ pub mod asset;
 mod c_expr;
 mod compat;
 mod dialect;
+#[cfg(test)]
+mod engine_assets;
 mod glsl;
 pub mod header;
 mod layout;
