@@ -419,6 +419,47 @@ ahash = { version = "0.8.12", default-features = false, features = ["std", "no-r
 * The `image` crate (`gif`/`png`/`jpg` decoders) is pure Rust and builds for wasm ✓.
 
 
+### 3.9 The pixels stay in YUV until the GPU needs them
+
+The colour conversion was the biggest single cost of a video frame.  Measured on
+1920x1080 h264 (150 frames, release):
+
+| path | per frame |
+|---|---|
+| decode only | 1.29 ms |
+| decode + YUV→RGBA on the CPU (`swscale`) | 2.23 ms |
+| decode + RGBA, half size | 1.91 ms |
+| decode, YUV planes kept as they are | 1.50 ms |
+
+So the conversion was ~43% of the cost — more than the H.264 decode itself —
+and no `sws_flags` setting changes that (bilinear, fast_bilinear, neighbor
+and bicubic are all within 4% of each other).  The only way to remove it is to
+*not* convert on the CPU.
+
+`wgpu 28 does have a YUV path` — `Features::EXTERNAL_TEXTURE` with
+`ExternalTextureFormat::Nv12`/`Yu12` and `BindingResource::ExternalTexture` —
+but **only Metal and DX12 expose it**; Vulkan and GLES (the Linux backends) do
+not.  So the conversion is done by a small render pass of our own instead:
+
+* the decoder hands out the three planes of the frame as they are (YUV 4:2:0,
+  1.5 bytes per pixel instead of 4),
+* the planes are uploaded as three `R8Unorm` textures,
+* one fullscreen pass combines them into the `Rgba8UnormSrgb` texture the
+  wallpaper samples — the wallpaper's shader, the bind group layout and the
+  effect pipeline are **unchanged**.
+
+The pass reproduces what `swscale` did, including the colour space of the
+stream (BT.601/BT.709, limited or full range) and the nearest neighbour chroma
+upsampling.  One subtlety: the target is an sRGB texture, so the hardware
+*encodes* the fragment on write — the shader therefore decodes the gamma
+encoded value first, and the bytes that end up in the texture are the ones
+`swscale` produced.
+
+Measured A/B (the same clip, the same machine, back to back):
+streaming playback went from ~7.0 to ~4.9 ms per frame (−27%).  The eager path
+barely moved, because it is dominated by our own allocations and copies rather
+than by the conversion.
+
 ## 4. Work packets
 
 > **Progress:** W2 merged — the manifest parser lives in the **host loader**
