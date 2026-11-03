@@ -1,12 +1,19 @@
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::scene::Vectors;
 use crate::collections::{Map};
 
+/// An object of the scene.
+///
+/// Wallpaper Engine stores every element of a scene (an image, a text, a
+/// particle system, a light, a camera, a plain node) in the same
+/// `objects` array, so the struct holds the union of all their fields.
+///
+/// Every field has a default: a scene only writes the fields the element
+/// it describes uses.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Object {
     pub alignment: Option<String>,
     pub alpha: Option<Value>,
@@ -15,7 +22,6 @@ pub struct Object {
     pub color: Option<Vectors>,
     pub color_blend_mode: Option<i64>,
     pub copybackground: Option<bool>,
-    #[serde(default)]
     pub effects: Vec<Effect>,
     pub id: i64,
     pub image: Option<String>,
@@ -23,7 +29,11 @@ pub struct Object {
     pub locktransforms: Option<bool>,
     pub name: String,
     pub origin: Option<Vectors>,
-    pub parallax_depth: Option<Value>,
+    /// How much the object moves with the mouse.
+    ///
+    /// Wallpaper Engine writes it as a `"x y"` string, but as a plain
+    /// number in older wallpapers.
+    pub parallax_depth: Option<Vectors>,
     pub perspective: Option<bool>,
     pub scale: Option<Vectors>,
     pub size: Option<Vectors>,
@@ -33,8 +43,7 @@ pub struct Object {
     pub particle: Option<String>,
     pub model: Option<Value>,
     pub castshadow: Option<bool>,
-    #[serde(default)]
-    pub dependencies: Vec<i64>,
+    pub dependencies: Vec<Value>,
     pub anchor: Option<String>,
     pub backgroundbrightness: Option<f64>,
     pub backgroundcolor: Option<String>,
@@ -48,7 +57,11 @@ pub struct Object {
     pub maxrows: Option<i64>,
     pub maxwidth: Option<Value>,
     pub opaquebackground: Option<bool>,
-    pub padding: Option<i64>,
+    /// The padding of a text object.
+    ///
+    /// Wallpaper Engine writes it as a `"x y"` string (`"32.00000
+    /// 32.00000"`), but as a plain number in older wallpapers.
+    pub padding: Option<Vectors>,
     pub pointsize: Option<Value>,
     pub text: Option<Value>,
     pub verticalalign: Option<String>,
@@ -57,9 +70,10 @@ pub struct Object {
     pub mintime: Option<f64>,
     pub muteineditor: Option<bool>,
     pub playbackmode: Option<String>,
-    #[serde(default)]
     pub sound: Vec<String>,
     pub startsilent: Option<bool>,
+    /// The spacing of a text object: a `"x y"` string.
+    pub spacing: Option<Vectors>,
     pub volume: Option<Value>,
     pub parent: Option<i64>,
     pub shape: Option<String>,
@@ -71,7 +85,6 @@ pub struct Object {
     pub outercone: Option<f64>,
     pub radius: Option<f64>,
     pub volumetricsexponent: Option<f64>,
-    #[serde(default)]
     pub animationlayers: Vec<Animationlayer>,
     pub attachment: Option<String>,
     pub camera: Option<String>,
@@ -84,8 +97,9 @@ pub struct Object {
     pub disablepropagation: Option<bool>,
 }
 
+/// An effect of an object.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Effect {
     pub file: String,
     pub id: i64,
@@ -138,19 +152,20 @@ impl Object {
     }
 }
 
+/// A pass of an effect.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Pass {
     pub constantshadervalues: Option<Map<String, Value>>,
     pub id: i64,
-    #[serde(default)]
     pub textures: Vec<Option<String>>,
     pub combos: Option<Map<String, i64>>,
     pub usertextures: Option<(Value, Value)>,
 }
 
+/// The overrides of a particle instance.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Instanceoverride {
     pub alpha: Option<Value>,
     pub id: Option<i64>,
@@ -162,18 +177,19 @@ pub struct Instanceoverride {
     pub rate: Option<Value>,
 }
 
+/// A particle instance.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Instance {
     pub combos: Map<String, Value>,
     pub id: i64,
     pub textures: Vec<String>,
-    #[serde(default)]
     pub usertextures: Vec<Value>,
 }
 
+/// A layer of the animation of a puppet.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Animationlayer {
     pub additive: bool,
     pub animation: i64,
@@ -187,15 +203,17 @@ pub struct Animationlayer {
     pub visible: Value,
 }
 
+/// The zoom of a scene.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Zoom {
     pub user: String,
     pub value: f64,
 }
 
+/// The configuration of an object.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub passthrough: bool,
 }

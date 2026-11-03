@@ -23,6 +23,37 @@ const VIDEO_ASSET: &str = "materials/video.mp4";
 /// The name of the texture the synthetic material binds.
 const VIDEO_TEXTURE: &str = "video";
 
+/// Why a wallpaper could not be loaded.
+///
+/// The loader reports the problem instead of panicking: a wallpaper that
+/// cannot be loaded is skipped and the application stays alive.
+#[derive(Debug)]
+pub enum SceneError {
+    /// The `.pkg` archive could not be read.
+    Package(String),
+    /// The archive holds no `scene.json`.
+    MissingScene,
+    /// The `scene.json` of the archive could not be parsed.
+    Scene(String),
+    /// The package is a video wallpaper, but it holds no video.
+    MissingVideo,
+}
+
+impl std::fmt::Display for SceneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SceneError::Package(reason) => {
+                write!(f, "the package could not be read: {}", reason)
+            }
+            SceneError::MissingScene => write!(f, "the package holds no scene.json"),
+            SceneError::Scene(reason) => {
+                write!(f, "the scene.json could not be parsed: {}", reason)
+            }
+            SceneError::MissingVideo => write!(f, "the video wallpaper holds no video"),
+        }
+    }
+}
+
 pub struct Scene {
     pub root: Root,
     pub assets: AssetStore,
@@ -38,8 +69,9 @@ pub struct Scene {
 impl Scene {
     /// Load a wallpaper scene from a .pkg file.
     ///
-    /// The archive is trusted to be well-formed: an unreadable package, an
-    /// invalid asset or a missing/invalid `scene.json` is fatal.
+    /// A wallpaper that cannot be loaded does not take the application
+    /// down: the reason is logged and an empty scene is returned, so the
+    /// wallpaper is skipped and the application stays alive.
     ///
     /// `show_progress` controls whether the extraction progress bar is
     /// drawn. Set it to `false` when debug/trace logging is enabled,
@@ -48,10 +80,23 @@ impl Scene {
     /// When `no_mdl` is set, `.mdl` files are not parsed at all (they are
     /// unused without puppet meshes).
     pub fn new(path: String, show_progress: bool, no_mdl: bool) -> Self {
+        match Self::try_new(path.clone(), show_progress, no_mdl) {
+            Ok(scene) => scene,
+            Err(error) => {
+                log::error!("failed to load the wallpaper '{}': {}", path, error);
+                Scene::empty()
+            }
+        }
+    }
+
+    /// Load a wallpaper scene from a .pkg file, reporting why it failed.
+    ///
+    /// The errors are the ones [`Scene::new`] logs: an unreadable package,
+    /// a missing or invalid `scene.json` and a video wallpaper without a
+    /// video.
+    pub fn try_new(path: String, show_progress: bool, no_mdl: bool) -> Result<Self, SceneError> {
         let path = Path::new(&path);
-        let pkg = Pkg::new(path).unwrap_or_else(|e| {
-            panic!("Failed to load PKG file '{}': {}", path.display(), e);
-        });
+        let pkg = Pkg::new(path).map_err(|error| SceneError::Package(error.to_string()))?;
 
         let mut assets: Map<String, Asset> = new_map();
         // Texture decoding is the expensive part, so collect the textures
@@ -102,9 +147,16 @@ impl Scene {
 
                 _ => {
                     pb.inc(1);
-                    let asset = Asset::parse(&key, &val)
-                        .unwrap_or_else(|| panic!("failed to parse asset: {}", key));
-                    assets.insert(key, asset);
+                    // An asset that cannot be parsed is skipped: the rest
+                    // of the wallpaper may still be usable.
+                    match Asset::parse(&key, &val) {
+                        Some(asset) => {
+                            assets.insert(key, asset);
+                        }
+                        None => {
+                            log::error!("pkg: failed to parse asset '{}' - skipping", key);
+                        }
+                    }
                 }
             }
         }
@@ -143,30 +195,32 @@ impl Scene {
             // as a synthetic scene, so the whole pipeline (projection, fit
             // modes, effects, adapters) works as it does for a scene.
             Some(project) if project.kind == WallpaperKind::Video => {
-                Self::video_scene(&assets, project).unwrap_or_else(|| {
-                    panic!(
-                        "the video wallpaper '{}' has no video file",
-                        if project.title.is_empty() {
-                            "<untitled>"
-                        } else {
-                            &project.title
-                        }
-                    )
-                })
+                Self::video_scene(&assets, project).ok_or(SceneError::MissingVideo)?
             }
             _ => {
-                let scene_string = assets
-                    .json("scene.json")
-                    .unwrap_or_else(|| panic!("scene.json not found in PKG archive"));
+                let scene_string = assets.json("scene.json").ok_or(SceneError::MissingScene)?;
                 serde_json::from_str(scene_string.as_str())
-                    .unwrap_or_else(|e| panic!("Failed to parse scene.json: {}", e))
+                    .map_err(|error| SceneError::Scene(error.to_string()))?
             }
         };
 
-        Self {
+        Ok(Self {
             root,
             assets,
             project,
+        })
+    }
+
+    /// An empty scene.
+    ///
+    /// It is the scene of a wallpaper that could not be loaded: the
+    /// wallpaper is skipped, but the application still has a projection to
+    /// render (an empty picture).
+    fn empty() -> Self {
+        Self {
+            root: Root::default(),
+            assets: AssetStore::new(new_map(), None),
+            project: None,
         }
     }
 
@@ -330,8 +384,13 @@ fn parse_textures(
                         break;
                     };
 
-                    let mut tex =
-                        Tex::new(val).unwrap_or_else(|| panic!("invalid texture: {}", key));
+                    // A texture that cannot be parsed is skipped: the rest
+                    // of the wallpaper may still be usable.
+                    let Some(mut tex) = Tex::new(val) else {
+                        pb.inc(1);
+                        log::error!("pkg: invalid texture '{}' - skipping", key);
+                        continue;
+                    };
 
                     // A video texture: the payload is the video container,
                     // not pixels.
@@ -341,8 +400,11 @@ fn parse_textures(
                         continue;
                     }
 
-                    tex.parse_to_rgba()
-                        .unwrap_or_else(|| panic!("failed to decode texture: {}", key));
+                    if tex.parse_to_rgba().is_none() {
+                        pb.inc(1);
+                        log::error!("pkg: failed to decode texture '{}' - skipping", key);
+                        continue;
+                    }
                     tex.build_mip_chain();
 
                     pb.inc(1);
@@ -609,5 +671,210 @@ mod pkg_tests {
         assert_eq!(scene.root.general.orthogonalprojection.width, 800);
         assert_eq!(scene.root.general.orthogonalprojection.height, 600);
         assert!(scene.root.objects.is_empty());
+    }
+
+    /// A text object of a real wallpaper.
+    ///
+    /// Wallpaper Engine writes the numbers of a text object as strings that
+    /// hold the components of the number.
+    const TEXT_OBJECT_SCENE: &str = r#"{
+        "camera": { "center": "0 0 -1", "eye": "0 0 0", "up": "0 1 0" },
+        "general": {
+            "clearcolor": "0 0 0",
+            "orthogonalprojection": { "height": 600, "width": 800 }
+        },
+        "objects": [
+            {
+                "id": 1,
+                "name": "text",
+                "font": "fonts/arial.ttf",
+                "origin": "2051.18604 1134.85095 0.00000",
+                "padding": "32.00000 32.00000",
+                "parallaxDepth": "0.00000 0.00000",
+                "size": "2.00000 2.00000",
+                "spacing": "0.00000 0.00000"
+            }
+        ],
+        "version": 3
+    }"#;
+
+    /// The same scene, with the numbers written as plain numbers.
+    const PLAIN_NUMBER_SCENE: &str = r#"{
+        "camera": { "center": "0 0 -1", "eye": "0 0 0", "up": "0 1 0" },
+        "general": {
+            "clearcolor": "0 0 0",
+            "orthogonalprojection": { "height": 600, "width": 800 }
+        },
+        "objects": [
+            {
+                "id": 1,
+                "name": "text",
+                "font": "fonts/arial.ttf",
+                "origin": 2051.18604,
+                "padding": 32,
+                "parallaxDepth": 0,
+                "size": 2,
+                "spacing": 0
+            }
+        ],
+        "version": 3
+    }"#;
+
+    /// Write a scene package with the given `scene.json` and load it.
+    ///
+    /// The name of the package is unique per test: the tests run in
+    /// parallel and every one of them writes its own package.
+    fn load_scene_package(name: &str, scene_json: &str) -> Scene {
+        let files: Vec<(&str, &[u8])> = vec![
+            (
+                "project.json",
+                br#"{"title":"My Scene","type":"Scene","file":"scene.json"}"#,
+            ),
+            ("scene.json", scene_json.as_bytes()),
+        ];
+
+        let path = std::env::temp_dir().join(format!(
+            "linux-wallpaperengine-{}-{}.pkg",
+            name,
+            std::process::id()
+        ));
+        std::fs::write(&path, make_pkg(&files)).expect("the package must be written");
+
+        let scene = Scene::new(path.to_string_lossy().to_string(), false, true);
+        let _ = std::fs::remove_file(&path);
+        scene
+    }
+
+    /// Whether two numbers are the same (the precision of a `f32` is not
+    /// exact, so the numbers of a scene are compared with a tolerance).
+    fn close(left: f32, right: f32) -> bool {
+        (left - right).abs() < 0.001
+    }
+
+    /// The numbers of a text object are written as strings that hold their
+    /// components: the scene has to parse and the components have to be
+    /// the numbers of the string.
+    #[test]
+    fn a_text_object_with_its_numbers_as_strings_parses() {
+        let scene = load_scene_package("text-object", TEXT_OBJECT_SCENE);
+
+        assert_eq!(scene.root.objects.len(), 1);
+        let object = &scene.root.objects[0];
+
+        // The padding is the two numbers of the string.
+        let padding = object
+            .padding
+            .as_ref()
+            .and_then(|padding| padding.parse())
+            .expect("the padding must be there");
+        assert!(close(padding.x, 32.0));
+        assert!(close(padding.y, 32.0));
+
+        // The origin and the size are split into their components too.
+        let origin = object
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.parse())
+            .expect("the origin must be there");
+        assert!(close(origin.x, 2051.186_f32));
+        assert!(close(origin.y, 1134.851_f32));
+        assert!(close(origin.z, 0.0));
+
+        let size = object
+            .size
+            .as_ref()
+            .and_then(|size| size.parse())
+            .expect("the size must be there");
+        assert!(close(size.x, 2.0));
+        assert!(close(size.y, 2.0));
+
+        // The spacing and the parallax depth are read as well.
+        let spacing = object
+            .spacing
+            .as_ref()
+            .and_then(|spacing| spacing.parse())
+            .expect("the spacing must be there");
+        assert!(close(spacing.x, 0.0));
+        assert!(close(spacing.y, 0.0));
+
+        let depth = object
+            .parallax_depth
+            .as_ref()
+            .and_then(|depth| depth.parse())
+            .expect("the parallax depth must be there");
+        assert!(close(depth.x, 0.0));
+        assert!(close(depth.y, 0.0));
+    }
+
+    /// The same scene with the numbers written as plain numbers parses as
+    /// well.
+    #[test]
+    fn the_same_scene_with_plain_numbers_parses() {
+        let scene = load_scene_package("plain-numbers", PLAIN_NUMBER_SCENE);
+
+        assert_eq!(scene.root.objects.len(), 1);
+        let object = &scene.root.objects[0];
+
+        // The padding is the plain number.
+        let padding = object
+            .padding
+            .as_ref()
+            .and_then(|padding| padding.parse())
+            .expect("the padding must be there");
+        assert!(close(padding.x, 32.0));
+        assert!(close(padding.y, 32.0));
+
+        // The size is the plain number.
+        let size = object
+            .size
+            .as_ref()
+            .and_then(|size| size.parse())
+            .expect("the size must be there");
+        assert!(close(size.x, 2.0));
+        assert!(close(size.y, 2.0));
+    }
+
+    /// A scene.json that cannot be parsed does not take the application
+    /// down: the loader reports the error and the wallpaper is skipped.
+    #[test]
+    fn a_malformed_scene_does_not_panic() {
+        let files: Vec<(&str, &[u8])> = vec![
+            (
+                "project.json",
+                br#"{"title":"My Scene","type":"Scene","file":"scene.json"}"#,
+            ),
+            (
+                "scene.json",
+                br#"{ "objects": [ "this is not an object" ] }"#,
+            ),
+        ];
+
+        let path = std::env::temp_dir().join(format!(
+            "linux-wallpaperengine-malformed-{}.pkg",
+            std::process::id()
+        ));
+        std::fs::write(&path, make_pkg(&files)).expect("the package must be written");
+
+        // The loader reports the error…
+        let error = match Scene::try_new(path.to_string_lossy().to_string(), false, true) {
+            Ok(_) => panic!("the malformed scene must be reported"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, SceneError::Scene(_)),
+            "unexpected error: {:?}",
+            error
+        );
+
+        // …and loading the wallpaper does not panic: the wallpaper is
+        // skipped and an empty scene is returned.
+        let scene = Scene::new(path.to_string_lossy().to_string(), false, true);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(scene.root.objects.is_empty());
+
+        // The empty scene still has a projection the renderer can use.
+        assert!(scene.root.general.orthogonalprojection.width > 0);
+        assert!(scene.root.general.orthogonalprojection.height > 0);
     }
 }
