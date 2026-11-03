@@ -12,7 +12,7 @@ use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::EventLoop,
-    window::{Fullscreen, Window},
+    window::{CursorIcon, Fullscreen, Window},
 };
 
 use crate::scene::renderer::app::WgpuApp;
@@ -41,9 +41,25 @@ impl ApplicationHandler for WinitApp {
             .with_fullscreen(Some(Fullscreen::Borderless(None)))
             .with_window_level(winit::window::WindowLevel::AlwaysOnBottom)
             .with_transparent(true)
+            // Pin the mouse cursor to the standard pointer.
+            //
+            // `CursorIcon::Default` is the "normal pointer" variant: the
+            // regular arrow the desktop uses for everything else.  It is
+            // deliberately *not* one of the special shapes (`Text` = I-beam,
+            // `Pointer` = hand, `Crosshair`, ...).  Without this the shape
+            // of a fullscreen, transparent, always-on-bottom window is
+            // whatever the compositor/window manager decides to use for it,
+            // which on some setups is a text cursor or another odd shape.
+            // The cursor stays visible - only its shape is pinned.
+            .with_cursor(CursorIcon::Default)
             .with_title("Linux wallpaper engine");
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+
+        // Re-assert the standard pointer on the created window: the
+        // attribute above only describes the *initial* cursor, and some
+        // compositors apply it lazily (on the first pointer enter).
+        window.set_cursor(CursorIcon::Default);
 
         let size = window.inner_size();
 

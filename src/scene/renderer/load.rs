@@ -12,6 +12,7 @@ use crate::scene::{
     renderer::{
         app::WgpuApp,
         draw::{DrawContext, DrawQueue},
+        error_scope,
         post_process::PostProcess,
         post_processor::context::EffectContext,
         projection::Projection,
@@ -47,7 +48,18 @@ impl WgpuApp {
 
         self.clear_color = scene.root.general.clearcolor.parse().unwrap_or_default();
 
-        let (pipeline, copy_pipeline) = create_pipelines(self, &post_process.layout);
+        let (pipeline, copy_pipeline) = match create_pipelines(self, &post_process.layout) {
+            Some(pipelines) => pipelines,
+            None => {
+                // The built-in image pipeline is broken - there is nothing
+                // to draw.  Keep the application alive (the render loop
+                // simply has nothing to render) instead of aborting.
+                log::error!(
+                    "the built-in image pipeline could not be created - the wallpaper will not be rendered"
+                );
+                return;
+            }
+        };
         let objects = ObjectMap::with_clear_color(
             &scene.root.objects.clone(),
             &scene,
@@ -186,97 +198,111 @@ fn count_geometry(objects: &[TextureObject]) -> (u32, u32) {
 fn create_pipelines(
     app: &WgpuApp,
     bindgroup_layout: &BindGroupLayout,
-) -> (RenderPipeline, RenderPipeline) {
-    let (image, copy) = (
-        create_pipeline_with_blend(
-            app,
-            bindgroup_layout,
-            BlendState {
-                color: BlendComponent {
-                    src_factor: BlendFactor::SrcAlpha,
-                    dst_factor: BlendFactor::OneMinusSrcAlpha,
-                    operation: BlendOperation::Add,
-                },
-                alpha: BlendComponent::OVER,
+) -> Option<(RenderPipeline, RenderPipeline)> {
+    let image = create_pipeline_with_blend(
+        app,
+        bindgroup_layout,
+        BlendState {
+            color: BlendComponent {
+                src_factor: BlendFactor::SrcAlpha,
+                dst_factor: BlendFactor::OneMinusSrcAlpha,
+                operation: BlendOperation::Add,
             },
-        ),
-        create_pipeline_with_blend(
-            app,
-            bindgroup_layout,
-            BlendState {
-                color: BlendComponent {
-                    src_factor: BlendFactor::One,
-                    dst_factor: BlendFactor::One,
-                    operation: BlendOperation::Add,
-                },
-                alpha: BlendComponent {
-                    src_factor: BlendFactor::One,
-                    dst_factor: BlendFactor::One,
-                    operation: BlendOperation::Add,
-                },
+            alpha: BlendComponent::OVER,
+        },
+    )?;
+    let copy = create_pipeline_with_blend(
+        app,
+        bindgroup_layout,
+        BlendState {
+            color: BlendComponent {
+                src_factor: BlendFactor::One,
+                dst_factor: BlendFactor::One,
+                operation: BlendOperation::Add,
             },
-        ),
-    );
-    (image, copy)
+            alpha: BlendComponent {
+                src_factor: BlendFactor::One,
+                dst_factor: BlendFactor::One,
+                operation: BlendOperation::Add,
+            },
+        },
+    )?;
+    Some((image, copy))
 }
 
+/// Build the built-in image pipeline.
+///
+/// The shader is part of the application itself, so a failure here means a
+/// broken build - but it must not take the whole process down.  The
+/// validation error is captured, logged and `None` is returned so the
+/// caller can skip the wallpaper instead of aborting.
 fn create_pipeline_with_blend(
     app: &WgpuApp,
     bindgroup_layout: &BindGroupLayout,
     blend: BlendState,
-) -> RenderPipeline {
-    let shader = app.device.create_shader_module(ShaderModuleDescriptor {
-        label: None,
-        source: ShaderSource::Wgsl(include_str!("./shader/image.wgsl").into()),
-    });
-
-    let pipeline_layout = app
-        .device
-        .create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[
-                bindgroup_layout,
-                &app.projection_bindgroup.projection_layout,
-            ],
-            immediate_size: 0,
+) -> Option<RenderPipeline> {
+    let built = error_scope::validation_scope(&app.device, || {
+        let shader = app.device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("image.shader"),
+            source: ShaderSource::Wgsl(include_str!("./shader/image.wgsl").into()),
         });
 
-    app.device
-        .create_render_pipeline(&RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&pipeline_layout),
-            vertex: VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Vertex::create_buffer_layout()],
-            },
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            fragment: Some(FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(ColorTargetState {
-                    format: app.surface.config.format,
-                    blend: Some(blend),
-                    write_mask: ColorWrites::all(),
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        })
+        let pipeline_layout = app
+            .device
+            .create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[
+                    bindgroup_layout,
+                    &app.projection_bindgroup.projection_layout,
+                ],
+                immediate_size: 0,
+            });
+
+        app.device
+            .create_render_pipeline(&RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&pipeline_layout),
+                vertex: VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Vertex::create_buffer_layout()],
+                },
+                primitive: PrimitiveState {
+                    topology: PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                fragment: Some(FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(ColorTargetState {
+                        format: app.surface.config.format,
+                        blend: Some(blend),
+                        write_mask: ColorWrites::all(),
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+    });
+
+    match built {
+        Ok(pipeline) => Some(pipeline),
+        Err(err) => {
+            log::error!("the built-in image shader could not be compiled: {err}");
+            None
+        }
+    }
 }

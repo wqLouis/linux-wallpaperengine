@@ -9,6 +9,7 @@ use crate::scene::{
         shader::{EffectLayout, preprocess_pair_with_layout},
     },
     renderer::{
+        error_scope,
         post_processor::{effect_param::UniformLayout, pipeline_helpers},
         vertex::Vertex,
     },
@@ -53,6 +54,7 @@ pub fn get_or_create_pipeline(
 
     let data = compile_pipeline(
         ctx,
+        &effect_path,
         &format!("shaders/{}.frag", shader_name),
         &format!("shaders/{}.vert", shader_name),
         material_json,
@@ -83,6 +85,7 @@ pub fn create_effect_pipeline_for_multipass(
         serde_json::from_str(&ctx.scene.assets.json(material_path)?[..]).ok()?;
     let data = compile_pipeline(
         ctx,
+        material_path,
         frag_path,
         vert_path,
         material_json,
@@ -119,8 +122,12 @@ fn make_cache_key(
 }
 
 /// Shared pipeline compilation: material_json already loaded, shader paths resolved.
+///
+/// `effect_id` names the effect (its json file or material) and is only
+/// used to report failures.
 fn compile_pipeline(
     ctx: &EffectContext,
+    effect_id: &str,
     frag_path: &str,
     vert_path: &str,
     material_json: Value,
@@ -195,104 +202,124 @@ fn compile_pipeline(
         use_immediates,
     );
 
-    let vert_module = ctx.device.create_shader_module(ShaderModuleDescriptor {
-        label: None,
-        source: ShaderSource::Glsl {
-            shader: Cow::Owned(vert_processed),
-            stage: naga::ShaderStage::Vertex,
-            defines: &define_refs,
-        },
-    });
-    let frag_module = ctx.device.create_shader_module(ShaderModuleDescriptor {
-        label: None,
-        source: ShaderSource::Glsl {
-            shader: Cow::Owned(frag_processed),
-            stage: naga::ShaderStage::Fragment,
-            defines: &define_refs,
-        },
-    });
+    // A broken shader - or a pipeline that cannot be built from it - must
+    // not take the whole application down.  Build everything inside a
+    // validation error scope so the error is captured here, log it and
+    // skip this effect: the rest of the wallpaper keeps running.
+    let vert_label = format!("shader {vert_path}");
+    let frag_label = format!("shader {frag_path}");
 
-    let effect_bgl = pipeline_helpers::create_effect_bindgroup_layout(ctx.device, &layout);
-    // immediate_size must exactly match the data passed to set_immediates().
-    // Use the UniformLayout computed here (shared with EffectPipelineData below).
-    let uniform_layout = UniformLayout::new(&layout.uniform_decls);
-    let immediate_size = if use_immediates {
-        uniform_layout.total_size() as u32
-    } else {
-        0
-    };
-    let pipeline_layout = ctx
-        .device
-        .create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[&effect_bgl, ctx.projection_bgl],
-            immediate_size,
+    let built = error_scope::validation_scope(ctx.device, || {
+        let vert_module = ctx.device.create_shader_module(ShaderModuleDescriptor {
+            label: Some(&vert_label),
+            source: ShaderSource::Glsl {
+                shader: Cow::Owned(vert_processed),
+                stage: naga::ShaderStage::Vertex,
+                defines: &define_refs,
+            },
         });
-    let pipeline = ctx
-        .device
-        .create_render_pipeline(&RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&pipeline_layout),
-            vertex: VertexState {
-                module: &vert_module,
-                entry_point: Some("main"),
-                compilation_options: Default::default(),
-                buffers: &[Vertex::create_buffer_layout()],
+        let frag_module = ctx.device.create_shader_module(ShaderModuleDescriptor {
+            label: Some(&frag_label),
+            source: ShaderSource::Glsl {
+                shader: Cow::Owned(frag_processed),
+                stage: naga::ShaderStage::Fragment,
+                defines: &define_refs,
             },
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: FrontFace::Ccw,
-                cull_mode: Some(Face::Back),
-                unclipped_depth: false,
-                polygon_mode: PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            fragment: Some(FragmentState {
-                module: &frag_module,
-                entry_point: Some("main"),
-                compilation_options: Default::default(),
-                targets: &[Some(ColorTargetState {
-                    format: TextureFormat::Rgba8UnormSrgb,
-                    // Additive blend (One / One) over the cleared destination.
-                    // The destination is cleared to (0,0,0,0) at the start of
-                    // each effect step, so `src + 0 == src` — the effect's
-                    // output is stored as-is (not premultiplied). The final
-                    // pass can then composite it with normal straight-alpha
-                    // blending without the double-premultiplication artifact
-                    // that produced a dark gray shade around the object.
-                    blend: Some(BlendState {
-                        color: BlendComponent {
-                            src_factor: BlendFactor::One,
-                            dst_factor: BlendFactor::One,
-                            operation: BlendOperation::Add,
-                        },
-                        alpha: BlendComponent {
-                            src_factor: BlendFactor::One,
-                            dst_factor: BlendFactor::One,
-                            operation: BlendOperation::Add,
-                        },
-                    }),
-                    write_mask: ColorWrites::all(),
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
         });
 
-    Some(EffectPipelineData {
-        pipeline: Rc::new(pipeline),
-        compute_pipeline: None,
-        uniform_layout,
-        bindgroup_layout: effect_bgl,
-        layout,
-    })
+        let effect_bgl = pipeline_helpers::create_effect_bindgroup_layout(ctx.device, &layout);
+        // immediate_size must exactly match the data passed to set_immediates().
+        // Use the UniformLayout computed here (shared with EffectPipelineData below).
+        let uniform_layout = UniformLayout::new(&layout.uniform_decls);
+        let immediate_size = if use_immediates {
+            uniform_layout.total_size() as u32
+        } else {
+            0
+        };
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[&effect_bgl, ctx.projection_bgl],
+                immediate_size,
+            });
+        let pipeline = ctx
+            .device
+            .create_render_pipeline(&RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&pipeline_layout),
+                vertex: VertexState {
+                    module: &vert_module,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Vertex::create_buffer_layout()],
+                },
+                primitive: PrimitiveState {
+                    topology: PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: FrontFace::Ccw,
+                    cull_mode: Some(Face::Back),
+                    unclipped_depth: false,
+                    polygon_mode: PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                fragment: Some(FragmentState {
+                    module: &frag_module,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(ColorTargetState {
+                        format: TextureFormat::Rgba8UnormSrgb,
+                        // Additive blend (One / One) over the cleared destination.
+                        // The destination is cleared to (0,0,0,0) at the start of
+                        // each effect step, so `src + 0 == src` — the effect's
+                        // output is stored as-is (not premultiplied). The final
+                        // pass can then composite it with normal straight-alpha
+                        // blending without the double-premultiplication artifact
+                        // that produced a dark gray shade around the object.
+                        blend: Some(BlendState {
+                            color: BlendComponent {
+                                src_factor: BlendFactor::One,
+                                dst_factor: BlendFactor::One,
+                                operation: BlendOperation::Add,
+                            },
+                            alpha: BlendComponent {
+                                src_factor: BlendFactor::One,
+                                dst_factor: BlendFactor::One,
+                                operation: BlendOperation::Add,
+                            },
+                        }),
+                        write_mask: ColorWrites::all(),
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+
+        EffectPipelineData {
+            pipeline: Rc::new(pipeline),
+            compute_pipeline: None,
+            uniform_layout,
+            bindgroup_layout: effect_bgl,
+            layout,
+        }
+    });
+
+    match built {
+        Ok(data) => Some(data),
+        Err(err) => {
+            log::error!(
+                "effect '{effect_id}' could not be compiled (shader '{vert_path}' / '{frag_path}'): {err}"
+            );
+            log::warn!("effect '{effect_id}' will be skipped");
+            None
+        }
+    }
 }
 
 // ── Texture loader ────────────────────────────────────────────

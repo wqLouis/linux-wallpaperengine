@@ -4,7 +4,7 @@
 //! resources.  It is created once by an adapter, loaded with a
 //! wallpaper scene, then drives the per-frame render loop.
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use glam::{Mat4, Vec3};
 use log;
@@ -13,7 +13,10 @@ use wgpu::*;
 use crate::MAX_TEXTURE;
 
 use super::{
-    buffer::Buffers, draw::{self, DrawQueue}, intermediate_pass, post_process::PostProcess,
+    buffer::Buffers,
+    draw::{self, DrawQueue},
+    intermediate_pass,
+    post_process::PostProcess,
     projection::{CameraUniform, ProjectionBindGroups},
     render_pass::{self, FinalFrame},
     surface::AppSurface,
@@ -144,6 +147,19 @@ impl WgpuApp {
             })
             .await
             .unwrap();
+
+        // wgpu treats uncaptured errors as fatal by default: it logs
+        // "Handling wgpu errors as fatal by default" and panics.  The
+        // release profile is built with `panic = "abort"`, so a single
+        // broken shader (or any other validation error) would kill the
+        // whole application.  Install a handler that only logs the error,
+        // so the failure is reported and the rest of the wallpaper keeps
+        // running.
+        let error_handler: Arc<dyn wgpu::UncapturedErrorHandler> =
+            Arc::new(|error: wgpu::Error| {
+                log::error!("wgpu error: {error}");
+            });
+        device.on_uncaptured_error(error_handler);
 
         let has_immediates = enabled_features.contains(Features::IMMEDIATES);
         let has_clear_texture = enabled_features.contains(Features::CLEAR_TEXTURE);

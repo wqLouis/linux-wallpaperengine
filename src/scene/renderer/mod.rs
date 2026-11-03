@@ -2,6 +2,7 @@ pub mod app;
 mod buffer;
 pub mod draw;
 mod effect_bindgroup;
+pub mod error_scope;
 mod intermediate_pass;
 pub mod load;
 mod ping_pong;
