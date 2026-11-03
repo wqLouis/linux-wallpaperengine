@@ -8,6 +8,8 @@ use log::LevelFilter;
 
 use crate::scene::adapters::FitMode;
 use crate::scene::adapters::{gnome_app, winit_adapter, wlr_app};
+#[cfg(target_os = "macos")]
+use crate::scene::adapters::mac_app;
 
 // ── Root CLI ─────────────────────────────────────────────────────────────────
 
@@ -21,7 +23,7 @@ struct Cli {
     #[arg(short, default_value = "./scene.pkg", global = false)]
     path: String,
 
-    // different display mode [wlr, winit, gnome]
+    // different display mode [wlr, winit, gnome, mac]
     #[arg(short = 'm', default_value = "wlr")]
     modes: String,
 
@@ -306,9 +308,23 @@ fn main() {
             target_fps,
             show_progress,
         ),
+        "mac" => {
+            #[cfg(target_os = "macos")]
+            mac_app::start(
+                cli.path,
+                fit_mode,
+                cli.no_effects,
+                cli.no_mdl,
+                cli.assets_path,
+                target_fps,
+                show_progress,
+            );
+            #[cfg(not(target_os = "macos"))]
+            eprintln!("The 'mac' display mode is only available on macOS");
+        }
         _ => {
             eprintln!(
-                "Unknown display mode '{}'. Valid: wlr, winit, gnome",
+                "Unknown display mode '{}'. Valid: wlr, winit, gnome, mac",
                 cli.modes
             );
         }

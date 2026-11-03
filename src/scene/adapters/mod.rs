@@ -1,6 +1,6 @@
 //! Display adapters for rendering wallpapers.
 //!
-//! Three adapters are provided:
+//! Four adapters are provided:
 //!
 //! * **`winit_adapter`** — Creates an always-on-bottom window using winit.
 //!   Works on both X11 and Wayland (via XWayland).  Supports cursor tracking
@@ -12,6 +12,8 @@
 //!   Shell extension, which displays them as the desktop background.  GNOME
 //!   Shell does not implement wlr-layer-shell, so a companion extension is
 //!   required.
+//! * **`mac_app`** — (macOS, experimental) Creates an AppKit window at the
+//!   desktop window level and renders into its `CAMetalLayer`.
 
 /// How the wallpaper is fitted to the output.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -54,6 +56,8 @@ pub fn fit_scale(fit_mode: FitMode, scene: [u32; 2], target: [u32; 2]) -> (f32, 
 }
 
 pub mod gnome_app;
+#[cfg(target_os = "macos")]
+pub mod mac_app;
 pub mod winit_adapter;
 pub mod wlr_app;
 
