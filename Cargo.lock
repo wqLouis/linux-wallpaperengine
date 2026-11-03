@@ -1716,6 +1716,7 @@ dependencies = [
  "hashbrown 0.15.5",
  "indicatif",
  "log",
+ "naga",
  "pkg_parser",
  "pollster",
  "raw-window-handle",

@@ -1,4 +1,3 @@
-
 use crate::collections::{Map, new_map, sorted_entries};
 #[derive(Debug, Clone)]
 pub struct EffectLayout {
@@ -8,6 +7,11 @@ pub struct EffectLayout {
     pub uniform_binding: u32,
     pub varying_locations: Map<String, u32>,
     pub varying_types: Map<String, String>,
+    /// The number of elements of the varyings that are arrays.
+    ///
+    /// A varying that is declared as an array has the type of its elements,
+    /// so the size is what tells an array apart from a plain vector.
+    pub varying_array_sizes: Map<String, u32>,
     /// Varyings that exist in the vertex shader source (includes conditional ones).
     /// Fragment shader `in` declarations are only emitted for varyings in this set.
     pub vertex_varyings: Vec<String>,
@@ -29,11 +33,7 @@ impl EffectLayout {
     }
 }
 
-pub fn collect_layout(
-    source1: &str,
-    source2: &str,
-    headers: &Map<String, String>,
-) -> EffectLayout {
+pub fn collect_layout(source1: &str, source2: &str, headers: &Map<String, String>) -> EffectLayout {
     let mut collector = LayoutCollector::default();
 
     // Process vertex shader (source1) first, tracking all its varyings.
@@ -87,6 +87,7 @@ pub fn collect_layout(
         uniform_binding,
         varying_locations,
         varying_types: collector.varying_types,
+        varying_array_sizes: collector.varying_array_sizes,
         vertex_varyings: vert_varyings,
         attribute_locations,
         use_immediates: false,
@@ -193,7 +194,6 @@ impl LayoutCollector {
         }
     }
 }
-
 
 fn extract_material_key(line: &str) -> Option<String> {
     if let Some(comment_pos) = line.find("//") {

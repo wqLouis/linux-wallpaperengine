@@ -37,6 +37,12 @@ wgpu = { version = "28.0.0", features = ["glsl"] }
 winit = "0.30.12"
 zbus = "5"
 
+[dev-dependencies]
+# The shader preprocessor is verified against the shader compiler wgpu uses:
+# the tests preprocess a shader that Wallpaper Engine accepts but naga
+# rejects and check that the preprocessed shader compiles and validates.
+naga = { version = "28.0.0", features = ["glsl-in"] }
+
 [profile.release]
 opt-level = 3
 debug = false

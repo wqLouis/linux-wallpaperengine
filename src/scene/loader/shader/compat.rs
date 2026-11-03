@@ -1,5 +1,89 @@
+//! The GLSL compatibility stage of the shader preprocessor.
+//!
+//! Wallpaper Engine's shaders are written in a dialect that mixes GLSL with
+//! a few DirectX style helpers.  This stage rewrites the constructs that
+//! have no GLSL equivalent into ones that do.  Every rewrite is a plain
+//! textual substitution on a single line; none of them looks at the types of
+//! the expressions, which is why the type aware stage ([`super::glsl`]) is
+//! needed on top of them.
+//!
+//! The rewrites, in the order they are applied:
+//!
+//! * `CAST2`, `CAST3`, `CAST4` and `CAST3X3` become the GLSL constructors
+//!   `vec2`, `vec3`, `vec4` and `mat3`.
+//! * `saturate(x)` becomes `clamp(x, 0.0, 1.0)`.
+//! * `frac(x)` becomes `fract(x)`.
+//! * `texSample2D(s, uv)` becomes `texture(s, uv)` and `texSample2DLod`
+//!   becomes `textureLod`.
+//! * `gl_FragColor` becomes `_fragColor`, the output of the fragment stage.
+//! * `mul(a, b)` becomes `b * a`: the HLSL `mul` multiplies in the opposite
+//!   order, and `mul(matrix, vector)` is the only form GLSL spells the same
+//!   way.
+//! * `texture(s, uv)` becomes `texture(s, uv, _wm_sampler)`, because
+//!   Wallpaper Engine uses separate sampler objects while Vulkan GLSL binds
+//!   the sampler and the texture together.
+//! * A varying that is assigned a wider vector is truncated, which the
+//!   type aware stage does as well - see the note on
+//!   [`fix_implicit_truncation`].
+//! * A boolean used in arithmetic becomes `float(condition)`.
+//! * A float used as a condition becomes `condition != 0.0`.
+//!
+//! The body of a shader gets a few extra rewrites that only make sense
+//! inside a function: `ddx` and `ddy` become `dFdx` and `dFdy`, `atan2`
+//! becomes `atan` and the reserved words `sample` and `packed` are renamed
+//! when they are used as identifiers.
 
 use crate::collections::{Map, Set};
+
+/// Apply the compatibility rewrites that apply to every line of shader code.
+///
+/// This is the set of rewrites that also apply to the declarations the
+/// preprocessor emits and to the lines of the built-in headers.
+pub fn apply_line(
+    line: &str,
+    sampler_set: &Set<&str>,
+    varying_types: &Map<String, String>,
+) -> String {
+    let mut t = line.to_string();
+    t = t.replace("CAST2(", "vec2(");
+    t = t.replace("CAST3(", "vec3(");
+    t = t.replace("CAST4(", "vec4(");
+    t = t.replace("CAST3X3(", "mat3(");
+    t = replace_saturate(&t);
+    t = replace_frac(&t);
+    t = t.replace("texSample2D(", "texture(");
+    t = t.replace("texSample2DLod(", "textureLod(");
+    t = t.replace("gl_FragColor", "_fragColor");
+    t = replace_mul(&t);
+    t = replace_texture_calls(&t, sampler_set);
+    t = fix_implicit_truncation(&t, varying_types);
+    t = replace_bool_arithmetic(&t);
+    t = replace_float_as_bool(&t);
+    t
+}
+
+/// Apply the compatibility rewrites that apply to the body of a shader.
+///
+/// On top of [`apply_line`] this renames the DirectX derivatives and
+/// `atan2`, and renames the identifiers that are reserved words in GLSL.
+pub fn apply_body_line(
+    line: &str,
+    sampler_set: &Set<&str>,
+    varying_types: &Map<String, String>,
+) -> String {
+    let mut t = apply_line(line, sampler_set, varying_types);
+    t = t.replace("ddx(", "dFdx(");
+    t = t.replace("ddy(", "dFdy(");
+    t = t.replace("atan2(", "atan(");
+    t = replace_reserved_identifiers(&t);
+    t
+}
+
+/// Rewrite the texture sampling calls so that they use the sampler the
+/// preprocessor binds for them.
+///
+/// `texture(s, uv)` becomes `texture(s, uv, _wm_sampler)`, but only when
+/// the first argument really is one of the samplers of the effect.
 pub fn replace_texture_calls(line: &str, sampler_set: &Set<&str>) -> String {
     let mut result = line.to_string();
 
@@ -39,6 +123,13 @@ pub fn replace_texture_calls(line: &str, sampler_set: &Set<&str>) -> String {
     result
 }
 
+/// Truncate a vector that is assigned to a narrower varying.
+///
+/// This is the legacy, per line version of the assignment truncation rule
+/// of the type aware stage: it only looks at the varyings of the shader
+/// interface and only at assignments of a plain variable.  The type aware
+/// stage covers the same case - and a lot more - but it needs to parse the
+/// shader, so this one is kept as a safety net.
 pub fn fix_implicit_truncation(line: &str, varying_types: &Map<String, String>) -> String {
     // Only handle simple assignments: `varying = expression;`
     if !line.ends_with(';') || line.contains(['*', '+', '-']) {
@@ -68,6 +159,11 @@ pub fn fix_implicit_truncation(line: &str, varying_types: &Map<String, String>) 
     format!("{} = {}{};", lhs, rhs, swizzle)
 }
 
+/// Rewrite the HLSL style `mul(a, b)` into the GLSL `b * a`.
+///
+/// The argument order of the HLSL `mul` is the opposite of the GLSL `*`, so
+/// `mul(matrix, vector)` - the form that means the same thing in both -
+/// becomes `vector * matrix` and has to be swapped back.
 pub fn replace_mul(line: &str) -> String {
     if !line.contains("mul(") {
         return line.to_string();
@@ -103,6 +199,7 @@ pub fn replace_mul(line: &str) -> String {
     result
 }
 
+/// Rewrite `saturate(x)` into `clamp(x, 0.0, 1.0)`.
 pub fn replace_saturate(line: &str) -> String {
     if !line.contains("saturate(") {
         return line.to_string();
@@ -135,6 +232,7 @@ pub fn replace_saturate(line: &str) -> String {
     result
 }
 
+/// Rewrite `frac(x)` into `fract(x)`.
 pub fn replace_frac(line: &str) -> String {
     if !line.contains("frac(") {
         return line.to_string();
@@ -155,6 +253,7 @@ pub fn replace_frac(line: &str) -> String {
 }
 
 /// Replace GLSL reserved keywords used as identifiers.
+///
 /// `sample` and `packed` are reserved GLSL keywords that may appear
 /// as variable names in Wallpaper Engine shaders.
 pub fn replace_reserved_identifiers(line: &str) -> String {
@@ -305,7 +404,7 @@ pub fn replace_float_as_bool(line: &str) -> String {
         }
 
         // Check if the condition is a parenthesized expression
-        if before.ends_with(')')
+        if before.ends_with(")")
             && let Some(open_pos) = find_matching_open_paren(&result, before.len() - 1)
         {
             let inside = &result[open_pos + 1..before.len() - 1];

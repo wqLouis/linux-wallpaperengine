@@ -1,12 +1,12 @@
 pub mod asset;
+mod compat;
+mod glsl;
 pub mod header;
 mod layout;
-mod replace;
 
-
+use crate::collections::{Map, Set, new_map, new_set, sorted_entries};
 use serde_json::Value;
 use wgpu::naga::ShaderStage;
-use crate::collections::{Map, Set, new_map, new_set, sorted_entries};
 
 pub use asset::ShaderProgram;
 pub use header::{WM_SAMPLER_BINDING, get_headers};
@@ -358,16 +358,16 @@ pub fn preprocess_with_layout_tracked(
             continue;
         }
 
-        let mut transformed =
-            apply_shader_transforms(&cleaned, &sampler_set, &layout.varying_types);
-        transformed = transformed.replace("ddx(", "dFdx(");
-        transformed = transformed.replace("ddy(", "dFdy(");
-        transformed = transformed.replace("atan2(", "atan(");
-        transformed = replace::replace_reserved_identifiers(&transformed);
+        let transformed = compat::apply_body_line(&cleaned, &sampler_set, &layout.varying_types);
 
         result.push_str(&transformed);
         result.push('\n');
     }
+
+    // The type aware stage: the shader is normalised so that it satisfies
+    // the strict typing rules of GLSL.  Wallpaper Engine's own compiler is
+    // lenient about vectors of a different width, naga is not.
+    let result = glsl::normalise(&result, layout);
 
     (result, emitted_varyings)
 }
@@ -403,8 +403,7 @@ fn emit_declarations(
                 continue;
             }
             if trimmed.starts_with('#') {
-                let transformed =
-                    apply_shader_transforms(trimmed, &new_set(), &new_map());
+                let transformed = compat::apply_line(trimmed, &new_set(), &new_map());
                 result.push_str(&transformed);
                 result.push('\n');
             }
@@ -462,32 +461,6 @@ fn strip_material_comments(line: &str) -> String {
     }
 }
 
-/// Shared GLSL→Vulkan transformations applied to every non-preprocessor line.
-fn apply_shader_transforms(
-    line: &str,
-    sampler_set: &Set<&str>,
-    varying_types: &Map<String, String>,
-) -> String {
-    let mut t = line.to_string();
-    t = t.replace("CAST2(", "vec2(");
-    t = t.replace("CAST3(", "vec3(");
-    t = t.replace("CAST4(", "vec4(");
-    t = t.replace("CAST3X3(", "mat3(");
-    t = replace::replace_saturate(&t);
-    t = replace::replace_frac(&t);
-    t = t.replace("texSample2D(", "texture(");
-    t = t.replace("texSample2DLod(", "textureLod(");
-    t = t.replace("gl_FragColor", "_fragColor");
-    t = replace::replace_mul(&t);
-    t = replace::replace_texture_calls(&t, sampler_set);
-    t = replace::fix_implicit_truncation(&t, varying_types);
-    t = replace::replace_bool_arithmetic(&t);
-    t = replace::replace_float_as_bool(&t);
-    t
-}
-
-/// Preprocess a vertex and fragment shader pair, returning the transformed
-/// source code and collected layout information.
 /// Recursively expand a header's content into `result`, evaluating
 /// `#if`/`#ifdef` blocks using `defines` so only active branches are emitted.
 fn include_header_lines(
@@ -538,7 +511,7 @@ fn include_header_lines(
             continue;
         }
 
-        let transformed = apply_shader_transforms(htrim, sampler_set, &new_map());
+        let transformed = compat::apply_line(htrim, sampler_set, &new_map());
         result.push_str(&transformed);
         result.push('\n');
     }
