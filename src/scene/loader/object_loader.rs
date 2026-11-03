@@ -766,7 +766,9 @@ mod tests {
                 assert_eq!(frames.len(), 4);
                 assert_eq!(frames[0].width, 32);
                 assert_eq!(frames[0].height, 32);
-                assert_eq!(frames[0].rgba.len(), 32 * 32 * 4);
+                // The frames hold the YUV planes of the decoder.
+                assert!(frames[0].is_yuv420());
+                assert_eq!(frames[0].pixel_bytes(), 32 * 32 * 3 / 2);
             }
             TextureSource::Static(_) => panic!("the video must not resolve to a static texture"),
         }

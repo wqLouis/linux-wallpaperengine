@@ -13,3 +13,4 @@ pub mod render_pass;
 mod surface;
 pub mod transform;
 pub mod vertex;
+pub mod yuv;

@@ -10,7 +10,7 @@ use std::{cell::RefCell, rc::Rc};
 use crate::collections::{Map, new_map, new_map_with_capacity};
 use pkg_parser::pkg_parser::{
     tex_parser::Tex,
-    video_parser::{VideoFrame, VideoPlayer},
+    video_parser::{FramePixels, VideoFrame, VideoPlayer},
 };
 use wgpu::*;
 
@@ -29,6 +29,7 @@ use crate::scene::{
             effect_step::{self, EffectStep, FboTexture},
         },
         vertex::Vertex,
+        yuv::{YuvConverter, YuvTarget},
     },
 };
 
@@ -53,6 +54,13 @@ pub struct DrawObject {
 pub struct VideoDrawState {
     /// The GPU texture the frames are uploaded into.
     pub texture: wgpu::Texture,
+    /// The view of the texture: the conversion pass writes into it.
+    pub view: wgpu::TextureView,
+    /// The YUV planes of the texture, when the frames are YUV ones.
+    ///
+    /// The planes are only allocated when a YUV frame shows up: the GIFs
+    /// and the still images are uploaded as they are.
+    pub planes: RefCell<Option<YuvTarget>>,
     /// The playback state (interior mutability: the draw queue is shared).
     state: RefCell<VideoState>,
 }
@@ -135,6 +143,11 @@ pub struct DrawQueue {
     /// `image_pipeline` so the final pass keeps the correct
     /// straight-alpha blend for non-effect objects.
     pub copy_pipeline: RenderPipeline,
+    /// The conversion of the YUV planes of a video into RGBA.
+    ///
+    /// It is `None` when the shader of the conversion could not be
+    /// compiled: the frames are then converted on the CPU.
+    pub yuv: Option<YuvConverter>,
 }
 
 impl DrawQueue {
@@ -147,11 +160,16 @@ impl DrawQueue {
     ) -> Self {
         let mut render_pipelines = new_map();
 
+        // The conversion of the YUV planes of the videos into RGBA.  It
+        // is done by the GPU: the CPU does not have to touch the pixels
+        // of a frame at all.
+        let yuv = YuvConverter::new(ctx.effects.device);
+
         let mut draw_objects: Vec<DrawObject> = Vec::with_capacity(texture_objects.len());
         let mut id_to_index: Map<i64, usize> = new_map_with_capacity(texture_objects.len());
         for tex_obj in texture_objects {
             let id = tex_obj.id;
-            let obj = DrawObject::build(ctx, buffers, tex_obj, &mut render_pipelines);
+            let obj = DrawObject::build(ctx, buffers, tex_obj, &mut render_pipelines, yuv.as_ref());
             id_to_index.insert(id, draw_objects.len());
             draw_objects.push(obj);
         }
@@ -170,6 +188,7 @@ impl DrawQueue {
             render_pipelines,
             image_pipeline,
             copy_pipeline,
+            yuv,
         }
     }
 }
@@ -180,6 +199,7 @@ impl DrawObject {
         buffers: &mut Buffers,
         mut texture_object: TextureObject,
         pipelines: &mut PipelineMap,
+        yuv: Option<&YuvConverter>,
     ) -> Self {
         let effects = &ctx.effects;
         let device = effects.device;
@@ -187,8 +207,8 @@ impl DrawObject {
         let post_process = effects.post_process;
         let index_start = buffers.index_len;
 
-        let (texture, video) = Self::upload_texture(device, queue, &texture_object, ctx.mipgen);
-        let source_view = texture.create_view(&Default::default());
+        let (_texture, source_view, video) =
+            Self::upload_texture(device, queue, &texture_object, ctx.mipgen, yuv);
 
         let bindgroup = device.create_bind_group(&BindGroupDescriptor {
             label: None,
@@ -324,6 +344,10 @@ impl DrawObject {
     /// gets a single-mip texture that is refreshed every frame (see
     /// [`update_video_textures`]).
     ///
+    /// The view of the texture is returned as well: a video owns its view
+    /// (the conversion pass writes into it), a static texture gets one
+    /// here.
+    ///
     /// The returned state is the decoder of a video: it is `None` for a
     /// static texture.
     fn upload_texture(
@@ -331,13 +355,15 @@ impl DrawObject {
         queue: &Queue,
         tex_obj: &TextureObject,
         mipgen: &MipChainGenerator,
-    ) -> (Texture, Option<VideoDrawState>) {
+        yuv: Option<&YuvConverter>,
+    ) -> (Texture, TextureView, Option<VideoDrawState>) {
         match &tex_obj.source {
-            TextureSource::Static(tex) => (
-                Self::upload_static_texture(device, queue, tex, mipgen),
-                None,
-            ),
-            TextureSource::Video(video) => Self::upload_video_texture(device, queue, video),
+            TextureSource::Static(tex) => {
+                let texture = Self::upload_static_texture(device, queue, tex, mipgen);
+                let view = texture.create_view(&Default::default());
+                (texture, view, None)
+            }
+            TextureSource::Video(video) => Self::upload_video_texture(device, queue, video, yuv),
         }
     }
 
@@ -516,11 +542,12 @@ impl DrawObject {
         device: &Device,
         queue: &Queue,
         video: &Rc<VideoAsset>,
-    ) -> (Texture, Option<VideoDrawState>) {
+        yuv: Option<&YuvConverter>,
+    ) -> (Texture, TextureView, Option<VideoDrawState>) {
         // The clip was decoded eagerly: its frames are in memory and are
         // played back by index.
         if let Some(frames) = video.frames.as_ref().filter(|frames| !frames.is_empty()) {
-            return Self::upload_decoded_texture(device, queue, frames, video.info.duration);
+            return Self::upload_decoded_texture(device, queue, frames, video.info.duration, yuv);
         }
 
         // The clip is too big for the memory budget: it is streamed.
@@ -528,7 +555,9 @@ impl DrawObject {
             Ok(player) => player,
             Err(error) => {
                 log::error!("cannot open the video: {}", error);
-                return (Self::blank_texture(device, queue), None);
+                let texture = Self::blank_texture(device, queue);
+                let view = texture.create_view(&Default::default());
+                return (texture, view, None);
             }
         };
 
@@ -550,26 +579,36 @@ impl DrawObject {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: TextureFormat::Rgba8UnormSrgb,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            // The texture is the target of the conversion pass of the YUV
+            // frames.
+            usage: TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
+        let view = texture.create_view(&Default::default());
 
         // Show the first frame right away: the object must not be black
         // until the first frame of the next render pass.
         let uploaded = first.as_ref().map(|frame| frame.time);
-        if let Some(frame) = first.as_ref() {
-            Self::write_video_frame(queue, &texture, frame);
-        }
-
         let state = VideoState::Streaming { player, uploaded };
 
-        (
-            texture.clone(),
-            Some(VideoDrawState {
-                texture,
-                state: RefCell::new(state),
-            }),
-        )
+        let draw_state = VideoDrawState {
+            texture: texture.clone(),
+            view: view.clone(),
+            planes: RefCell::new(None),
+            state: RefCell::new(state),
+        };
+
+        if let Some(frame) = first.as_ref() {
+            let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("video"),
+            });
+            Self::write_video_frame(&mut encoder, device, queue, yuv, &draw_state, frame);
+            queue.submit(Some(encoder.finish()));
+        }
+
+        (texture, view, Some(draw_state))
     }
 
     /// Create the texture of an object whose clip was decoded eagerly.
@@ -582,7 +621,8 @@ impl DrawObject {
         queue: &Queue,
         frames: &Rc<[VideoFrame]>,
         duration: f64,
-    ) -> (Texture, Option<VideoDrawState>) {
+        yuv: Option<&YuvConverter>,
+    ) -> (Texture, TextureView, Option<VideoDrawState>) {
         let first = &frames[0];
         let (width, height) = (first.width.max(1), first.height.max(1));
 
@@ -597,17 +637,18 @@ impl DrawObject {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: TextureFormat::Rgba8UnormSrgb,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            // The texture is the target of the conversion pass of the YUV
+            // frames.
+            usage: TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
+        let view = texture.create_view(&Default::default());
 
         // The presentation times of the frames: the frame that covers a
         // given time is found with a binary search over them.
         let times = frames.iter().map(|frame| frame.time).collect();
-
-        // Show the first frame right away: the object must not be black
-        // until the first frame of the next render pass.
-        Self::write_video_frame(queue, &texture, first);
 
         let state = VideoState::Eager {
             frames: Rc::clone(frames),
@@ -616,13 +657,22 @@ impl DrawObject {
             uploaded: Some(0),
         };
 
-        (
-            texture.clone(),
-            Some(VideoDrawState {
-                texture,
-                state: RefCell::new(state),
-            }),
-        )
+        let draw_state = VideoDrawState {
+            texture: texture.clone(),
+            view: view.clone(),
+            planes: RefCell::new(None),
+            state: RefCell::new(state),
+        };
+
+        // Show the first frame right away: the object must not be black
+        // until the first frame of the next render pass.
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("video"),
+        });
+        Self::write_video_frame(&mut encoder, device, queue, yuv, &draw_state, first);
+        queue.submit(Some(encoder.finish()));
+
+        (texture, view, Some(draw_state))
     }
 
     /// Whether a frame can be written into the texture of an object.
@@ -644,8 +694,59 @@ impl DrawObject {
         false
     }
 
-    /// Write a decoded frame into the texture of an animated object.
-    fn write_video_frame(queue: &Queue, texture: &Texture, frame: &VideoFrame) {
+    /// Write a decoded frame into the textures of an animated object.
+    ///
+    /// A frame that holds RGBA pixels is uploaded into the texture of the
+    /// object directly.  A frame that holds YUV planes is uploaded into
+    /// the planes of the object and turned into RGBA by a small pass: the
+    /// conversion is done by the GPU, which is much faster than the CPU.
+    ///
+    /// The pass is recorded into `encoder`: the caller has to submit it
+    /// before the pass that samples the texture.
+    fn write_video_frame(
+        encoder: &mut CommandEncoder,
+        device: &Device,
+        queue: &Queue,
+        converter: Option<&YuvConverter>,
+        video: &VideoDrawState,
+        frame: &VideoFrame,
+    ) {
+        match &frame.pixels {
+            FramePixels::Rgba(pixels) => {
+                Self::upload_rgba(queue, &video.texture, frame, pixels);
+            }
+            FramePixels::Yuv420 {
+                y,
+                u,
+                v,
+                colorspace,
+            } => {
+                let Some(converter) = converter else {
+                    // The conversion pass is not available (the shader
+                    // could not be compiled): the frame is converted on
+                    // the CPU instead.
+                    match frame.rgba() {
+                        Ok(pixels) => Self::upload_rgba(queue, &video.texture, frame, &pixels),
+                        Err(error) => log::warn!("cannot convert the video frame: {error}"),
+                    }
+                    return;
+                };
+
+                // The planes are allocated when the first YUV frame shows
+                // up: the GIFs and the still images never need them.
+                let mut planes = video.planes.borrow_mut();
+                let target = planes.get_or_insert_with(|| {
+                    converter.create_target(device, frame.width, frame.height)
+                });
+
+                target.upload(queue, y, u, v, *colorspace);
+                converter.record(encoder, target, &video.view);
+            }
+        }
+    }
+
+    /// Upload the RGBA pixels of a frame into the texture of an object.
+    fn upload_rgba(queue: &Queue, texture: &Texture, frame: &VideoFrame, pixels: &[u8]) {
         queue.write_texture(
             TexelCopyTextureInfo {
                 texture,
@@ -653,7 +754,7 @@ impl DrawObject {
                 origin: Origin3d::ZERO,
                 aspect: TextureAspect::All,
             },
-            &frame.rgba,
+            pixels,
             TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(frame.width * 4),
@@ -721,7 +822,19 @@ impl DrawObject {
 ///
 /// A video that cannot be decoded is reported and skipped: it must not
 /// kill the render loop.
-pub fn update_video_textures(queue: &Queue, draw_queue: &DrawQueue, elapsed: f32) {
+///
+/// The frames that hold YUV planes are converted into RGBA by a small
+/// pass, which is recorded into `encoder`: the pass has to be submitted
+/// before the pass that samples the texture.
+pub fn update_video_textures(
+    encoder: &mut CommandEncoder,
+    device: &Device,
+    queue: &Queue,
+    draw_queue: &DrawQueue,
+    elapsed: f32,
+) {
+    let converter = draw_queue.yuv.as_ref();
+
     for draw_object in draw_queue.queue.iter() {
         let Some(video) = &draw_object.video else {
             continue;
@@ -757,7 +870,7 @@ pub fn update_video_textures(queue: &Queue, draw_queue: &DrawQueue, elapsed: f32
                     continue;
                 }
 
-                DrawObject::write_video_frame(queue, &video.texture, frame);
+                DrawObject::write_video_frame(encoder, device, queue, converter, video, frame);
                 *uploaded = Some(index);
             }
             VideoState::Streaming { player, uploaded } => {
@@ -786,7 +899,7 @@ pub fn update_video_textures(queue: &Queue, draw_queue: &DrawQueue, elapsed: f32
                     continue;
                 }
 
-                DrawObject::write_video_frame(queue, &video.texture, &frame);
+                DrawObject::write_video_frame(encoder, device, queue, converter, video, &frame);
                 *uploaded = Some(frame.time);
             }
         }

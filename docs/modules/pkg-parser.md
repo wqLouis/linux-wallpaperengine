@@ -215,6 +215,35 @@ instead. The budget is `DEFAULT_MEMORY_BUDGET` (128 MiB); it is changed with
 `set_memory_budget()` or with the `PKG_PARSER_VIDEO_MEMORY_BUDGET` environment
 variable (the budget in bytes).
 
+A frame of a video holds **YUV 4:2:0 planes** (the luma plane at the full
+resolution, the two chroma planes at half the width and half the height): they
+are 1.5 bytes per pixel, so the estimate of the budget counts them as such
+(an RGBA frame is 4 bytes per pixel). The conversion into RGB is left to the
+consumer, which usually hands the planes over to the GPU:
+
+```rust
+pub enum FramePixels {
+    Rgba(Arc<[u8]>),          // the GIF, the still image and the browser backends
+    Yuv420 {                  // what the video decoders produce
+        y: Arc<[u8]>,
+        u: Arc<[u8]>,
+        v: Arc<[u8]>,
+        colorspace: YuvColorspace,
+    },
+}
+
+impl VideoFrame {
+    pub fn rgba(&self) -> Result<Arc<[u8]>, VideoError>  // converts on the CPU
+    pub fn pixel_bytes(&self) -> usize
+    pub fn is_yuv420(&self) -> bool
+}
+```
+
+The colour space of a frame is the pair of a matrix (BT.601 or BT.709) and a
+range (limited or full); it is read from the decoded frame and defaults to
+BT.601 with the limited range, which is what the `swscale` conversion assumes
+as well.
+
 ---
 ## `mdl_parser` — Puppet Model Parser
 

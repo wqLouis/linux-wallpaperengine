@@ -218,8 +218,15 @@ impl WgpuApp {
             draw::update_animated_meshes(&self.queue, buffers, draw_queue, elapsed);
         }
 
+        // The encoder of this frame: the conversion of the YUV planes of
+        // the videos is recorded into it, before the pass that samples
+        // the textures.
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor::default());
+
         // Decode and upload the animated (video) textures of this frame.
-        draw::update_video_textures(&self.queue, draw_queue, elapsed);
+        draw::update_video_textures(&mut encoder, &self.device, &self.queue, draw_queue, elapsed);
 
         render_pass::write_effect_uniforms(
             &self.queue,
@@ -231,10 +238,6 @@ impl WgpuApp {
         );
 
         let has_intermediates = draw_queue.queue.iter().any(|o| o.intermediates.is_some());
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor::default());
 
         if has_intermediates {
             let frame = intermediate_pass::FrameParams {
