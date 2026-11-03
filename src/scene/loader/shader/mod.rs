@@ -152,7 +152,7 @@ fn shader_name(layout: &EffectLayout, stage: ShaderStage) -> String {
 fn report_warnings(name: &str, warnings: &[String]) {
     for warning in warnings {
         log::warn!(
-            "the shader `{}` could not be preprocessed: {}",
+            "the shader `{}` was preprocessed with a warning: {}",
             name,
             warning
         );
@@ -379,7 +379,7 @@ fn strip_material_comments(line: &str) -> String {
 /// a change of the uniforms.
 ///
 /// The path of the shaders is in the layout: it is the only way to tell which
-/// shader of a wallpaper could not be preprocessed.
+/// shader of a wallpaper a warning or a failure belongs to.
 pub fn preprocess_pair_with_layout(
     vert: &str,
     frag: &str,
