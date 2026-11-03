@@ -136,12 +136,16 @@ pub struct VideoFrame {
 pub enum VideoError { Unsupported(String), Decode(String), Io(String) }
 
 // video_parser::backend
-/// A pluggable video decoding backend.
+/// A pluggable decoder that produces frames.
 ///
 /// The trait is deliberately *sequential* (next frame / rewind) so that any implementation —
 /// ffmpeg on native targets, a WebCodecs bridge in the browser — can satisfy it. Random
 /// access is implemented by the player on top of it.
-pub trait VideoBackend {
+///
+/// It is *not* video-specific: a still image is simply a source with a single
+/// frame, which is what lets one trait cover both WebCodecs decoders
+/// (`VideoDecoder` and `ImageDecoder`) in a browser build.
+pub trait FrameDecoder {
     fn name(&self) -> &'static str;
     fn probe(&mut self) -> Result<VideoInfo, VideoError>;
     fn next_frame(&mut self) -> Result<Option<VideoFrame>, VideoError>;
@@ -149,8 +153,13 @@ pub trait VideoBackend {
     fn set_output_size(&mut self, _width: u32, _height: u32) {}
 }
 
-pub enum BackendKind { Auto, Ffmpeg, Gif }
+/// The former name of `FrameDecoder`, kept as an alias.
+pub use FrameDecoder as VideoBackend;
+
+pub enum BackendKind { Auto, Ffmpeg, Gif, Image }
 pub fn detect_format(bytes: &[u8]) -> Option<VideoFormat>;
+/// Pick the backend that can decode `bytes` (gif / still image / mp4-webm).
+pub fn backend_for(bytes: &[u8]) -> Result<Box<dyn FrameDecoder>, VideoError>;
 
 // video_parser::player
 /// Backend-agnostic frame scheduler: maps a wall-clock time to a decoded frame,
@@ -160,7 +169,7 @@ pub struct VideoPlayer { /* backend + ring cache + cursor */ }
 impl VideoPlayer {
     pub fn open(bytes: &[u8]) -> Result<Self, VideoError>;
     /// Extension point for alternative backends (e.g. WebCodecs in a browser build).
-    pub fn open_with_backend(bytes: &[u8], backend: Box<dyn VideoBackend>) -> Result<Self, VideoError>;
+    pub fn open_with_backend(bytes: &[u8], backend: Box<dyn FrameDecoder>) -> Result<Self, VideoError>;
     pub fn open_with_backend_kind(bytes: &[u8], kind: BackendKind) -> Result<Self, VideoError>;
     pub fn info(&self) -> &VideoInfo;
     pub fn backend_name(&self) -> &'static str;
@@ -276,8 +285,14 @@ Resolution order in `resolve_texture()`:
 // renderer/draw.rs
 pub struct VideoDrawState {
     pub texture: wgpu::Texture,          // Rgba8UnormSrgb, 1 mip, COPY_DST | TEXTURE_BINDING
-    pub decoder: VideoDecoder,
-    pub last_uploaded: Option<f64>,      // avoid re-uploading an unchanged frame
+    /// Decoder + bookkeeping. The draw queue is shared, so the mutable state
+    /// lives behind a RefCell.
+    state: RefCell<VideoState>,
+}
+
+struct VideoState {
+    player: VideoPlayer,
+    uploaded: Option<f64>,               // avoid re-uploading an unchanged frame
 }
 
 // new, called from app::render() next to update_animated_meshes()
@@ -285,7 +300,7 @@ pub fn update_video_textures(queue: &wgpu::Queue, draw_queue: &DrawQueue, elapse
 ```
 
 * The bind group is created **once** (the `wgpu::Texture` object never changes) → per-frame work
-  is only `decoder.frame_at(t)` + `queue.write_texture`.
+  is only `player.frame_at(t)` + `queue.write_texture`.
 * Loop: `t = elapsed % duration`.
 * Guard: `upload_texture()` must **not** treat an `"mp4"` `Tex.extension` as RGBA (today it would
   panic in wgpu validation) — video textures take the new path.
@@ -346,10 +361,14 @@ The rules that keep that possible:
   thin wrapper over it. In the browser the archive is fetched over HTTP and parsed from bytes.
 * **No threads in the core.** The player is single-threaded by design (the ffmpeg backend is
   `Send`, but the player is never shared between threads).
-* **The browser gets its own backend.** `VideoBackend` is the extension point: a future
-  `WebCodecsBackend` (wasm-bindgen over the browser's `VideoDecoder`) implements
-  `probe`/`next_frame`/`rewind` and plugs in through `VideoPlayer::open_with_backend`.
+* **The browser gets its own backend.** `FrameDecoder` is the extension point: a future
+  `WebCodecsBackend` (wasm-bindgen over the browser's `VideoDecoder` **and** `ImageDecoder`)
+  implements `probe`/`next_frame`/`rewind` and plugs in through
+  `VideoPlayer::open_with_backend`. Because the trait covers still images too, the same backend
+  serves both a video layer and a plain image — one trait, two WebCodecs decoders.
   The player, the loader and the renderer stay *identical* in both builds.
+  (Not implemented yet: `web-sys` is not in the offline registry, so the wasm backend has to wait
+  for a networked build.)
 * **Feature flags mirror the platforms:** `ffmpeg` (default **on**) = the native backend;
   `webcodecs` (future, wasm only) = the browser backend; `--no-default-features` = no codec
   backend at all (GIF only, pure Rust).
