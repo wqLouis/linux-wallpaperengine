@@ -124,7 +124,12 @@ pub fn replace_texture_calls(line: &str, sampler_set: &Set<&str>) -> String {
 
             let arg1 = result[args_start..arg1_end].trim().to_string();
             if sampler_set.contains(arg1.as_str()) {
-                let replacement = format!("{}sampler2D({}, _wm_sampler), ", func, arg1);
+                let replacement = format!(
+                    "{}sampler2D({}, {}), ",
+                    func,
+                    arg1,
+                    super::dialect::PIPELINE_SAMPLER
+                );
                 result.replace_range(abs_start..arg1_end + 1, &replacement);
                 search_start = abs_start + replacement.len();
             } else {

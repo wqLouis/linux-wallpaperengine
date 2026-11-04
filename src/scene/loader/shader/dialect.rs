@@ -42,6 +42,25 @@
 //!    (`gl_InstanceID` becomes `gl_InstanceIndex`).  A declaration of such
 //!    a name is dropped: it is a built-in of GLSL and not an attribute of
 //!    the shader.
+//! 10. The functions the engine spells differently are rewritten
+//!     (`lerp(a, b, t)` becomes `mix(a, b, t)`, the `FUNCTION_ALIASES`
+//!     table).  The rewrite happens before the promotion of the scalar
+//!     arguments, so that the arguments of the call are promoted the way
+//!     the arguments of the GLSL function are promoted.
+//! 11. The functions whose parameter is an array are rewritten: naga has
+//!     no array parameters, so the parameter becomes a scalar and a call
+//!     that passes an array passes its first element.
+//! 12. The calls of the textures the engine builds with a sampler are
+//!     rewritten: the sampler of the constructor is the sampler of the
+//!     pipeline and the coordinate is truncated to the number of the
+//!     components the texture takes.
+//! 13. The longer operand of a binary operation is truncated to the number
+//!     of the components of the shorter one: the type aware stage cannot
+//!     see the type of a macro, because the macros are expanded by the
+//!     shader compiler, after the type aware stage has run.
+//! 14. The uniforms the engine injects into an effect are declared for
+//!     the shaders that use them (`ENGINE_UNIFORMS`); the declaration is a
+//!     member of the block of the effect.
 //!
 //! Every rule reaches the body of the `#define` macros as well: a macro is
 //! expanded by the shader compiler, so a construct of the dialect inside of
@@ -52,6 +71,9 @@
 //! above.
 
 use std::collections::BTreeMap;
+
+use super::glsl::expr::Expr;
+use super::glsl::types::Type;
 
 /// The macros the engine provides and the pipeline does not.
 ///
@@ -67,7 +89,10 @@ use std::collections::BTreeMap;
 ///
 /// Every definition is wrapped in an `#ifndef`, so a value the pipeline
 /// does provide - the material sets the count - still wins.
-const ENGINE_MACROS: &[(&str, &str)] = &[
+///
+/// The macros are `pub(crate)`: the preprocessing needs to know which
+/// macros the dialect stage provides, see [`external_defines`].
+pub(crate) const ENGINE_MACROS: &[(&str, &str)] = &[
     ("BONECOUNT", "1"),
     ("BLENDROWCOUNT", "1"),
     ("LIGHTS_DIRECTIONAL", "1"),
@@ -109,6 +134,19 @@ const CASTS: &[(&str, &str)] = &[
     ("CASTU", "uint"),
 ];
 
+/// The functions of the engine that GLSL spells differently.
+///
+/// The engine writes `lerp(a, b, t)` where GLSL writes `mix(a, b, t)`.
+/// The name of the function is rewritten in a call only: a shader that
+/// defines a function of that name keeps it, because the shader knows what
+/// its own function does.
+///
+/// The rewrite happens before the promotion of the scalar arguments, so
+/// that the arguments of the call are promoted the way the arguments of
+/// the GLSL function are promoted: `lerp(v, v, 0.5)` becomes
+/// `mix(v, v, vec3(0.5))`.
+const FUNCTION_ALIASES: &[(&str, &str)] = &[("lerp", "mix")];
+
 /// The functions the engine provides and the assets do not ship.
 ///
 /// The engine has a library of built-in functions: its shaders call them
@@ -119,13 +157,72 @@ const CASTS: &[(&str, &str)] = &[
 ///
 /// The approximation is visible: the pipeline does not bind the lights of
 /// the scene yet, so the light of the shader is the light of the ambient.
-const ENGINE_BUILTINS: &[(&str, &str)] = &[(
-    "PerformLighting_V1",
-    "vec3 PerformLighting_V1(vec3 worldPos, vec3 color, vec3 normal, vec3 viewVector, vec3 specularTint, vec3 ambient, float roughness, float metallic)\n\
-     {\n\
-     \treturn vec3(0.0);\n\
-     }\n",
-)];
+/// The response of the audio is zero for the same reason: the pipeline
+/// does not have the audio of the scene, so the spectrum the engine would
+/// read is empty.
+const ENGINE_BUILTINS: &[(&str, &str)] = &[
+    (
+        "PerformLighting_V1",
+        "vec3 PerformLighting_V1(vec3 worldPos, vec3 color, vec3 normal, vec3 viewVector, vec3 specularTint, vec3 ambient, float roughness, float metallic)\n\
+         {\n\
+         \treturn vec3(0.0);\n\
+         }\n",
+    ),
+    (
+        "CreateAudioResponse",
+        "float CreateAudioResponse(float bufferLeft, float bufferRight)\n\
+         {\n\
+         \treturn 0.0;\n\
+         }\n",
+    ),
+];
+
+/// The uniforms the engine injects into an effect and the shaders use.
+///
+/// Some effects of the workshop use a uniform that the engine hands to the
+/// shader and that the shader does not declare: `res` (the resolution of
+/// the screen), `kernel` (the radius of the gaussian kernel) and
+/// `kernelSampleCount` (the number of the samples of the kernel).  naga
+/// reports an unknown variable for a name that is used and not declared, so
+/// the pipeline declares the ones the shader uses.
+///
+/// The declaration is a uniform of the block of the effect: the layout of
+/// the effect has room for it and the material of the effect can write it.
+/// A shader that declares the name itself keeps its own declaration, and a
+/// shader that does not use the name does not get it: the layout would
+/// carry a uniform nobody needs.
+const ENGINE_UNIFORMS: &[(&str, &str)] = &[
+    ("res", "vec2"),
+    ("kernel", "int"),
+    ("kernelSampleCount", "int"),
+];
+
+/// The number of the coordinates a texture of a sampler type takes.
+///
+/// The engine samples a texture with a coordinate that can be wider than
+/// the texture needs: the engine truncates it, naga does not.  The number
+/// of the components of the coordinate of a texture is the number of the
+/// coordinates the texture takes.
+const SAMPLER_COORDINATES: &[(&str, u8)] = &[
+    ("sampler2D", 2),
+    ("sampler2DArray", 3),
+    ("sampler3D", 3),
+    ("samplerCube", 3),
+];
+
+/// The functions that sample a texture, with the number of their arguments.
+///
+/// The number is the number of the arguments of the call without a bias: a
+/// call with more arguments has a bias, and the coordinate of such a call
+/// is a `vec3` that naga does not truncate.
+const TEXTURE_FUNCTIONS: &[(&str, usize)] = &[("texture", 2), ("textureLod", 3)];
+
+/// The name of the sampler the pipeline binds for every texture.
+///
+/// The sampler of the pipeline is a binding of its own: the textures of
+/// the effect are bound as textures and the sampler of the engine is bound
+/// as the sampler of all of them.
+pub(crate) const PIPELINE_SAMPLER: &str = "_wm_sampler";
 
 /// The built-in globals the engine spells differently.
 ///
@@ -351,12 +448,16 @@ pub fn normalize(source: &str) -> String {
 pub fn normalize_named(source: &str, name: &str) -> String {
     let source = insert_engine_builtins(source, name);
     let source = define_engine_macros(&source);
+    let source = rewrite_function_aliases(&source);
     let source = rewrite_mul(&source);
     let source = rewrite_casts(&source);
     let source = strip_precision_qualifiers(&source);
     let source = rewrite_sampler_types(&source, name);
     let source = promote_scalar_arguments(&source);
     let source = promote_scalar_initialisers(&source);
+    let source = rewrite_array_parameters(&source);
+    let source = rewrite_texture_calls(&source);
+    let source = truncate_binary_operands(&source);
     rewrite_builtin_globals(&source)
 }
 
@@ -427,6 +528,737 @@ fn defines_function(tokens: &[Token<'_>], name: &str) -> bool {
         }
     }
     false
+}
+
+/// Rewrite the calls of the functions the engine spells differently.
+///
+/// `lerp(a, b, t)` becomes `mix(a, b, t)`.  Only a call is rewritten: a
+/// shader that defines a function of that name keeps it, because the
+/// shader knows what its own function does.
+///
+/// The rewrite happens before the promotion of the scalar arguments, so
+/// that the arguments of the call are promoted the way the arguments of
+/// the GLSL function are promoted: `lerp(v, v, 0.5)` becomes
+/// `mix(v, v, vec3(0.5))`.
+fn rewrite_function_aliases(source: &str) -> String {
+    let mask = CodeMask::with_macro_bodies(source);
+    let tokens = tokenize(source, &mask);
+
+    let mut edits: Vec<Edit> = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Word {
+            continue;
+        }
+        let Some((_, replacement)) = FUNCTION_ALIASES
+            .iter()
+            .find(|(name, _)| *name == token.text)
+        else {
+            continue;
+        };
+        // Only a call is rewritten: the name is followed by a parenthesis.
+        if punct_after(&tokens, index, "(").is_none() {
+            continue;
+        }
+        // A definition of the function keeps its name.
+        if defines_function(&tokens, token.text) {
+            continue;
+        }
+        edits.push(Edit {
+            start: token.start,
+            end: token.end,
+            text: (*replacement).to_string(),
+        });
+    }
+
+    apply_edits(source, edits)
+}
+
+/// A function of the source whose parameter is an array.
+struct ArrayFunction {
+    /// The name of the function.
+    name: String,
+    /// The parameters of the function that are an array: the name of the
+    /// parameter and the range of its array specifier (`[16]`).
+    parameters: Vec<(String, usize, usize)>,
+    /// The range of the body of the function.
+    body: (usize, usize),
+}
+
+/// Truncate the longer operand of a binary operation.
+///
+/// The engine truncates the longer operand of a binary operation to the
+/// number of the components of the shorter one; GLSL does not, and naga
+/// rejects the operation ("Operation Multiply can't work with
+/// Vector{Quad} and Vector{Bi}").
+///
+/// The type aware stage has that rule already, but it cannot see the type
+/// of a macro: the macros are expanded by the shader compiler, after the
+/// type aware stage has run.  This rule is the same rule, with the types
+/// of the macros of the source added.
+fn truncate_binary_operands(source: &str) -> String {
+    let macros = defined_macro_bodies(source);
+    if macros.is_empty() {
+        // Without a macro there is nothing the type aware stage could not
+        // have seen.
+        return source.to_string();
+    }
+
+    let unit = super::glsl::parser::parse(source);
+    let symbols = binary_symbols(source, &unit, &macros);
+
+    let mut edits: Vec<Edit> = Vec::new();
+    visit_expressions(&unit, &mut |expr| {
+        let Expr::Binary { lhs, rhs, .. } = expr else {
+            return;
+        };
+        let lhs_type = super::glsl::infer::infer(lhs, &symbols);
+        let rhs_type = super::glsl::infer::infer(rhs, &symbols);
+        let (Type::Vector(_, lhs_width), Type::Vector(_, rhs_width)) = (lhs_type, rhs_type) else {
+            return;
+        };
+        if lhs_width == rhs_width {
+            return;
+        }
+
+        // The longer operand is truncated to the number of the components
+        // of the shorter one.
+        let (operand, width) = if lhs_width > rhs_width {
+            (lhs, rhs_width)
+        } else {
+            (rhs, lhs_width)
+        };
+        let span = operand.span();
+        let rewritten = super::glsl::fixups::Rewritten {
+            text: span.text(source).to_string(),
+            ty: super::glsl::infer::infer(operand, &symbols),
+            needs_parens: needs_parens(operand),
+            swizzle: swizzle_of(operand, source),
+        };
+        let Some((truncated, _)) = super::glsl::fixups::truncate_text(&rewritten, width) else {
+            return;
+        };
+        edits.push(Edit {
+            start: span.start,
+            end: span.end,
+            text: truncated,
+        });
+    });
+
+    apply_edits(source, edits)
+}
+
+/// The symbols the binary rule needs: the globals of the shader and the
+/// macros it defines.
+fn binary_symbols(
+    source: &str,
+    unit: &super::glsl::parser::TranslationUnit,
+    macros: &BTreeMap<String, String>,
+) -> super::glsl::symbols::SymbolTable {
+    let mut symbols = super::glsl::symbols::SymbolTable::new();
+
+    // The declarations of the source: the varyings and the uniforms that
+    // the shader declares with a qualifier the parser does not know.
+    let own = collect_symbols(source, &CodeMask::new(source));
+    for (name, ty) in own.types.iter().chain(own.locals.iter()) {
+        symbols.declare_global(
+            name,
+            glsl_type(*ty),
+            super::glsl::symbols::SymbolKind::Uniform,
+            false,
+        );
+    }
+
+    for global in &unit.globals {
+        match global {
+            super::glsl::parser::GlobalDecl::Variable { ty, name, is_array } => {
+                symbols.declare_global(
+                    name,
+                    *ty,
+                    super::glsl::symbols::SymbolKind::Attribute,
+                    *is_array,
+                );
+            }
+            super::glsl::parser::GlobalDecl::InterfaceBlock { members } => {
+                for member in members {
+                    symbols.declare_global(
+                        &member.name,
+                        member.ty,
+                        super::glsl::symbols::SymbolKind::Uniform,
+                        member.is_array,
+                    );
+                }
+            }
+            super::glsl::parser::GlobalDecl::Opaque => {}
+        }
+    }
+
+    // The macros of the source: their type is the type of their body.
+    for (name, body) in macros {
+        let ty = estimate_type(body, &own);
+        symbols.declare_global(
+            name,
+            glsl_type(ty),
+            super::glsl::symbols::SymbolKind::Uniform,
+            false,
+        );
+    }
+
+    symbols
+}
+
+/// The type of the dialect stage as the type of the type aware stage.
+fn glsl_type(ty: Ty) -> super::glsl::types::Type {
+    match ty {
+        Ty::Scalar => super::glsl::types::Type::Scalar(super::glsl::types::Scalar::Float),
+        Ty::Vector(size) => {
+            super::glsl::types::Type::Vector(super::glsl::types::Scalar::Float, size)
+        }
+        Ty::Matrix | Ty::Array | Ty::Opaque => super::glsl::types::Type::Opaque,
+        Ty::Unknown => super::glsl::types::Type::Unknown,
+    }
+}
+
+/// Whether a swizzle can be appended to an expression or not.
+///
+/// A swizzle binds tighter than an operator, so the expression has to be
+/// parenthesised first.
+fn needs_parens(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Unary { .. } | Expr::Binary { .. } | Expr::Ternary { .. }
+    )
+}
+
+/// The swizzle an expression is, if it is one.
+fn swizzle_of(expr: &Expr, source: &str) -> Option<super::glsl::fixups::SwizzleInfo> {
+    let Expr::Swizzle { base, comps, .. } = expr else {
+        return None;
+    };
+    Some(super::glsl::fixups::SwizzleInfo {
+        base: base.span().text(source).to_string(),
+        comps: comps.clone(),
+    })
+}
+
+/// The macros the source defines, with the body of the macro.
+///
+/// A function like macro is not one of them: its parameters are substituted
+/// without any precedence, and the body of the macro is not a value.
+fn defined_macro_bodies(source: &str) -> BTreeMap<String, String> {
+    let mut macros = BTreeMap::new();
+
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("#define ") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let name: String = rest
+            .chars()
+            .take_while(|character| character.is_alphanumeric() || *character == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        let body = rest[name.len()..].trim_start();
+        // A function like macro: the parenthesis follows the name of the
+        // macro without a space between them.
+        if rest[name.len()..].starts_with('(') {
+            continue;
+        }
+        macros.insert(name, body.to_string());
+    }
+
+    macros
+}
+
+/// Visit every expression of a translation unit.
+fn visit_expressions(unit: &super::glsl::parser::TranslationUnit, visit: &mut impl FnMut(&Expr)) {
+    for function in &unit.functions {
+        visit_block(&function.body, visit);
+    }
+}
+
+/// Visit every expression of a block.
+fn visit_block(block: &super::glsl::parser::Block, visit: &mut impl FnMut(&Expr)) {
+    for statement in &block.stmts {
+        visit_statement(statement, visit);
+    }
+}
+
+/// Visit every expression of a statement.
+fn visit_statement(statement: &super::glsl::parser::Stmt, visit: &mut impl FnMut(&Expr)) {
+    use super::glsl::parser::Stmt;
+
+    match statement {
+        Stmt::Decl { init, .. } => {
+            if let Some(init) = init {
+                visit_expression(init, visit);
+            }
+        }
+        Stmt::Assign { target, value, .. } => {
+            visit_expression(target, visit);
+            visit_expression(value, visit);
+        }
+        Stmt::Expr(expr) => visit_expression(expr, visit),
+        Stmt::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
+            visit_expression(cond, visit);
+            visit_block(then_block, visit);
+            if let Some(else_block) = else_block {
+                visit_block(else_block, visit);
+            }
+        }
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                visit_statement(init, visit);
+            }
+            if let Some(cond) = cond {
+                visit_expression(cond, visit);
+            }
+            if let Some(step) = step {
+                visit_expression(step, visit);
+            }
+            visit_block(body, visit);
+        }
+        Stmt::While { cond, body } => {
+            visit_expression(cond, visit);
+            visit_block(body, visit);
+        }
+        Stmt::DoWhile { cond, body } => {
+            visit_expression(cond, visit);
+            visit_block(body, visit);
+        }
+        Stmt::Return(expr) => {
+            if let Some(expr) = expr {
+                visit_expression(expr, visit);
+            }
+        }
+        Stmt::Block(block) => visit_block(block, visit),
+        Stmt::Jump | Stmt::Opaque => {}
+    }
+}
+
+/// Visit every expression of an expression.
+fn visit_expression(expr: &Expr, visit: &mut impl FnMut(&Expr)) {
+    visit(expr);
+
+    match expr {
+        Expr::Literal { .. } | Expr::Ident { .. } | Expr::Error { .. } => {}
+        Expr::Swizzle { base, .. } => visit_expression(base, visit),
+        Expr::Call { args, .. } => {
+            for argument in args {
+                visit_expression(argument, visit);
+            }
+        }
+        Expr::Unary { operand, .. } => visit_expression(operand, visit),
+        Expr::Binary { lhs, rhs, .. } => {
+            visit_expression(lhs, visit);
+            visit_expression(rhs, visit);
+        }
+        Expr::Ternary {
+            cond,
+            then_expr,
+            other,
+            ..
+        } => {
+            visit_expression(cond, visit);
+            visit_expression(then_expr, visit);
+            visit_expression(other, visit);
+        }
+        Expr::Paren { inner, .. } => visit_expression(inner, visit),
+        Expr::Index { base, index, .. } => {
+            visit_expression(base, visit);
+            visit_expression(index, visit);
+        }
+    }
+}
+
+/// Rewrite the functions whose parameter is an array.
+///
+/// GLSL has array parameters, but naga does not: a call that passes an
+/// array to a function is an "unknown function" for naga.  The parameter
+/// becomes a scalar - the value of the array is not known at the call site
+/// either - and the accesses to it in the body of the function become the
+/// scalar.  A call that passes an array passes its first element.
+fn rewrite_array_parameters(source: &str) -> String {
+    let mask = CodeMask::with_macro_bodies(source);
+    let tokens = tokenize(source, &mask);
+
+    let functions = array_functions(&tokens);
+    if functions.is_empty() {
+        return source.to_string();
+    }
+    let symbols = collect_symbols(source, &CodeMask::new(source));
+
+    let mut edits: Vec<Edit> = Vec::new();
+    for function in &functions {
+        // The array specifier of the parameter is dropped: the parameter
+        // is a scalar now.
+        for (_, start, end) in &function.parameters {
+            edits.push(Edit {
+                start: *start,
+                end: *end,
+                text: String::new(),
+            });
+        }
+        // The accesses to the parameter in the body of the function become
+        // the scalar itself.
+        for (name, _, _) in &function.parameters {
+            edits.extend(array_accesses(&tokens, function.body, name));
+        }
+        // A call that passes an array to the function passes its first
+        // element.
+        for (index, token) in tokens.iter().enumerate() {
+            if token.kind != TokenKind::Word || token.text != function.name {
+                continue;
+            }
+            // A definition of the function is not a call.
+            if is_type_preceded(&tokens, index) {
+                continue;
+            }
+            let Some(open) = punct_after(&tokens, index, "(") else {
+                continue;
+            };
+            let Some(close) = matching_paren(source, &mask, open) else {
+                continue;
+            };
+            for argument in argument_ranges(source, &mask, open + 1, close) {
+                let text = &source[argument.0..argument.1];
+                let trimmed = text.trim();
+                if !is_name(trimmed) || symbols.lookup(trimmed) != Some(Ty::Array) {
+                    continue;
+                }
+                // The space in front of the argument belongs to it.
+                let space = &text[..text.len() - text.trim_start().len()];
+                edits.push(Edit {
+                    start: argument.0,
+                    end: argument.1,
+                    text: format!("{space}{trimmed}[0]"),
+                });
+            }
+        }
+    }
+
+    apply_edits(source, edits)
+}
+
+/// The functions of the source whose parameter is an array.
+fn array_functions(tokens: &[Token<'_>]) -> Vec<ArrayFunction> {
+    let mut functions = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Word {
+            continue;
+        }
+        // A definition of a function: a type, the name of the function and
+        // a parenthesis.
+        if !is_type_preceded(tokens, index) {
+            continue;
+        }
+        let Some(open) = punct_after(tokens, index, "(") else {
+            continue;
+        };
+        let open = tokens
+            .iter()
+            .position(|token| token.start == open)
+            .unwrap_or(index + 1);
+        let Some(close) = closing_token(tokens, open) else {
+            continue;
+        };
+
+        // The parameters that are an array: a name and an array specifier.
+        let mut parameters = Vec::new();
+        let mut cursor = open + 1;
+        while cursor < close {
+            let current = tokens[cursor];
+            if current.kind == TokenKind::Punct && current.text == "[" {
+                let Some(name) = cursor.checked_sub(1).and_then(|index| tokens.get(index)) else {
+                    break;
+                };
+                if name.kind == TokenKind::Word {
+                    let Some(end) = closing_token(tokens, cursor) else {
+                        break;
+                    };
+                    parameters.push((name.text.to_string(), current.start, tokens[end].end));
+                    cursor = end + 1;
+                    continue;
+                }
+            }
+            cursor += 1;
+        }
+        if parameters.is_empty() {
+            continue;
+        }
+
+        // The body of the function: the brace behind the parenthesis.
+        let Some(body) = tokens.get(close + 1) else {
+            continue;
+        };
+        if body.kind != TokenKind::Punct || body.text != "{" {
+            continue;
+        }
+        let Some(end) = closing_token(tokens, close + 1) else {
+            continue;
+        };
+
+        functions.push(ArrayFunction {
+            name: token.text.to_string(),
+            parameters,
+            body: (body.start, tokens[end].end),
+        });
+    }
+
+    functions
+}
+
+/// The accesses to an array in the body of a function.
+fn array_accesses(tokens: &[Token<'_>], body: (usize, usize), name: &str) -> Vec<Edit> {
+    let mut edits = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Word || token.text != name {
+            continue;
+        }
+        if token.start < body.0 || token.end > body.1 {
+            continue;
+        }
+        // The name is followed by a bracket: it is an access to the array.
+        let Some(next) = tokens.get(index + 1) else {
+            continue;
+        };
+        if next.kind != TokenKind::Punct || next.text != "[" {
+            continue;
+        }
+        let Some(close) = closing_token(tokens, index + 1) else {
+            continue;
+        };
+        edits.push(Edit {
+            start: token.start,
+            end: tokens[close].end,
+            text: name.to_string(),
+        });
+    }
+
+    edits
+}
+
+/// Whether the name of the token `index` follows the type of a declaration.
+fn is_type_preceded(tokens: &[Token<'_>], index: usize) -> bool {
+    let Some(previous) = index.checked_sub(1).and_then(|index| tokens.get(index)) else {
+        return false;
+    };
+    previous.kind == TokenKind::Word && keyword_type(previous.text).is_some()
+}
+
+/// The index of the token that closes the bracket of the token `open`.
+fn closing_token(tokens: &[Token<'_>], open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        if token.kind != TokenKind::Punct {
+            continue;
+        }
+        match token.text {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+/// Whether a text is the name of a variable.
+fn is_name(text: &str) -> bool {
+    let mut characters = text.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if first.is_ascii_digit() {
+        return false;
+    }
+    text.chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+/// The constructor of a sampler: the texture and the sampler it combines.
+struct SamplerConstructor<'a> {
+    /// The type of the sampler.
+    sampler_type: &'a str,
+    /// The texture of the constructor.
+    texture: &'a str,
+}
+
+/// The constructor of a sampler, if the text is one.
+///
+/// The engine builds a sampler with a constructor:
+/// `sampler2D(g_Texture0, _wm_sampler)` combines the texture and the
+/// sampler into the sampler the call samples with.
+fn sampler_constructor(text: &str) -> Option<SamplerConstructor<'_>> {
+    let mask = CodeMask::new(text);
+    let tokens = tokenize(text, &mask);
+
+    if tokens.len() < 2 || tokens[0].kind != TokenKind::Word {
+        return None;
+    }
+    if tokens[1].kind != TokenKind::Punct || tokens[1].text != "(" {
+        return None;
+    }
+    let close = closing_token(&tokens, 1)?;
+    let arguments = argument_ranges(text, &mask, tokens[1].end, tokens[close].start);
+    if arguments.len() != 2 {
+        return None;
+    }
+
+    Some(SamplerConstructor {
+        sampler_type: tokens[0].text,
+        texture: text[arguments[0].0..arguments[0].1].trim(),
+    })
+}
+
+/// Rewrite the calls of the textures the engine builds with a sampler.
+///
+/// The engine writes `texture(sampler2D(g_Texture0, _wm_sampler), uv)`: the
+/// sampler is a constructor that combines the texture and the sampler.
+/// GLSL has no such constructor - the sampler is a separate binding - so
+/// the call is rewritten into the form the pipeline uses: the texture of
+/// the constructor and the sampler of the pipeline.
+///
+/// The coordinate of the call is truncated to the number of the components
+/// the texture takes: the engine truncates it, naga does not, and a
+/// coordinate that is too wide is an "unknown function" for naga.
+///
+/// A call whose first argument is not a constructor is not touched: the
+/// plain `texture(s, uv)` of the compat stage and a legal GLSL sampler stay
+/// as they are.
+fn rewrite_texture_calls(source: &str) -> String {
+    let mask = CodeMask::with_macro_bodies(source);
+    let symbols = collect_symbols(source, &CodeMask::new(source));
+    let tokens = tokenize(source, &mask);
+
+    let mut edits: Vec<Edit> = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Word {
+            continue;
+        }
+        let Some((_, arguments_of_the_call)) = TEXTURE_FUNCTIONS
+            .iter()
+            .find(|(name, _)| *name == token.text)
+        else {
+            continue;
+        };
+        let Some(open) = punct_after(&tokens, index, "(") else {
+            continue;
+        };
+        let Some(close) = matching_paren(source, &mask, open) else {
+            continue;
+        };
+        let arguments = argument_ranges(source, &mask, open + 1, close);
+        // A call with more arguments has a bias: its coordinate is a
+        // `vec3` that naga does not truncate.
+        if arguments.len() != *arguments_of_the_call {
+            continue;
+        }
+
+        // The first argument is the combined form: a constructor that
+        // makes a sampler out of a texture and a sampler.
+        let first = source[arguments[0].0..arguments[0].1].trim();
+        let Some(constructor) = sampler_constructor(first) else {
+            continue;
+        };
+        let Some((_, components)) = SAMPLER_COORDINATES
+            .iter()
+            .find(|(name, _)| *name == constructor.sampler_type)
+        else {
+            continue;
+        };
+
+        // The call samples the texture of the constructor with the sampler
+        // of the pipeline.
+        edits.push(Edit {
+            start: arguments[0].0,
+            end: arguments[0].1,
+            text: format!("sampler2D({}, {})", constructor.texture, PIPELINE_SAMPLER),
+        });
+
+        // The coordinate is truncated to the number of the components the
+        // texture takes.
+        let text = &source[arguments[1].0..arguments[1].1];
+        let trimmed = text.trim();
+        let Ty::Vector(size) = estimate_type(trimmed, &symbols) else {
+            continue;
+        };
+        if size <= *components {
+            continue;
+        }
+        let space = &text[..text.len() - text.trim_start().len()];
+        let swizzle = &"xyzw"[..*components as usize];
+        let replacement = if is_name(trimmed) {
+            format!("{space}{trimmed}.{swizzle}")
+        } else {
+            format!("{space}({trimmed}).{swizzle}")
+        };
+        edits.push(Edit {
+            start: arguments[1].0,
+            end: arguments[1].1,
+            text: replacement,
+        });
+    }
+
+    apply_edits(source, edits)
+}
+
+/// The uniforms of the engine that a shader uses and does not declare.
+///
+/// naga reports an unknown variable for a name that is used and not
+/// declared, so the pipeline declares the ones the shader uses.  The
+/// declaration is a uniform of the block of the effect: the layout of the
+/// effect has room for it and the material of the effect can write it.
+///
+/// A shader that declares the name itself keeps its own declaration, and a
+/// shader that does not use the name does not get it: the layout would
+/// carry a uniform nobody needs.
+///
+/// The macros of the shader are not taken into account: a shader that
+/// defines the name as a macro uses the macro, but the uniform is
+/// harmless - the macro wins in the body of the shader.
+pub(crate) fn engine_uniforms(source: &str) -> Vec<(&'static str, &'static str)> {
+    let symbols = collect_symbols(source, &CodeMask::new(source));
+    let mask = CodeMask::with_macro_bodies(source);
+    let tokens = tokenize(source, &mask);
+
+    let mut uniforms = Vec::new();
+    for (name, ty) in ENGINE_UNIFORMS {
+        // The shader declares the name itself: it knows what it wants.
+        if symbols.lookup(name).is_some() {
+            continue;
+        }
+        // The shader does not use the name: the layout would carry a
+        // uniform nobody needs.
+        if !tokens
+            .iter()
+            .any(|token| token.kind == TokenKind::Word && token.text == *name)
+        {
+            continue;
+        }
+        uniforms.push((*name, *ty));
+    }
+
+    uniforms
 }
 
 /// Rewrite the built-in globals the engine spells differently.
@@ -2497,6 +3329,157 @@ mod tests {
         let source = "void main() { int f = TEX8FORMAT; }\n";
         let normalized = normalize(source);
         assert!(normalized.contains("#define TEX8FORMAT 0"));
+    }
+
+    /// The `lerp` of the engine is the `mix` of GLSL.
+    #[test]
+    fn the_lerp_of_the_engine_is_a_mix() {
+        let source = "vec3 albedo = v_Color;\nfloat a = lerp(albedo, albedo, 0.5);\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("mix(albedo, albedo, vec3(0.5))"));
+        assert!(!normalized.contains("lerp"));
+    }
+
+    /// The `mix` of GLSL is not touched.
+    #[test]
+    fn the_mix_of_glsl_is_not_changed() {
+        let source = "vec3 albedo = v_Color;\nfloat a = mix(albedo, albedo, 0.5);\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("mix(albedo, albedo, vec3(0.5))"));
+    }
+
+    /// A shader that defines a function of that name keeps it: the shader
+    /// knows what its own function does.
+    #[test]
+    fn a_function_of_the_shader_keeps_its_name() {
+        let source = "float lerp(float a, float b, float t) { return a; }\n\
+             void main() { float x = lerp(1.0, 2.0, 0.5); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("float lerp(float a, float b, float t)"));
+        assert!(!normalized.contains("mix("));
+    }
+
+    /// The call of a texture that is built with a sampler uses the texture
+    /// and the sampler of the pipeline.
+    #[test]
+    fn the_combined_sampler_uses_the_texture_and_the_sampler_of_the_pipeline() {
+        let source = "layout(binding=0) uniform texture2D g_Texture0;\n\
+             layout(binding=1) uniform sampler _wm_sampler;\n\
+             void main() { vec4 c = texture(sampler2D(g_Texture0, _wm_sampler), uv); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("texture(sampler2D(g_Texture0, _wm_sampler), uv)"));
+    }
+
+    /// A plain `texture(s, uv)` is not touched: the rule only fires on the
+    /// combined form.
+    #[test]
+    fn a_plain_texture_call_is_not_changed() {
+        let source = "layout(binding=0) uniform texture2D g_Texture0;\n\
+             void main() { vec4 c = texture(g_Texture0, uv); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("texture(g_Texture0, uv)"));
+    }
+
+    /// A legal GLSL sampler is not changed either.
+    #[test]
+    fn a_legal_glsl_sampler_is_not_changed() {
+        let source = "uniform sampler2D g_Texture0;\n\
+             void main() { vec4 c = texture(g_Texture0, uv); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("texture(g_Texture0, uv)"));
+    }
+
+    /// The coordinate of a texture is truncated to the number of the
+    /// components the texture takes: the engine truncates it, naga does not.
+    #[test]
+    fn the_coordinate_of_a_texture_is_truncated() {
+        let source = "layout(binding=0) uniform texture2D g_Texture0;\n\
+             layout(binding=1) uniform sampler _wm_sampler;\n\
+             in vec4 v_TexCoord;\n\
+             void main() { vec4 c = texture(sampler2D(g_Texture0, _wm_sampler), v_TexCoord); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("texture(sampler2D(g_Texture0, _wm_sampler), v_TexCoord.xy)"));
+    }
+
+    /// The longer operand of a binary operation is truncated to the
+    /// number of the components of the shorter one.
+    ///
+    /// The type aware stage has that rule already, but it cannot see the
+    /// type of a macro: the macros are expanded by the shader compiler,
+    /// after the type aware stage has run.
+    #[test]
+    fn the_longer_operand_of_a_binary_operation_is_truncated() {
+        let source = "#define scaleCenter (u_Center * 2.0 - 1.0)\n\
+             uniform vec2 u_Center;\n\
+             in vec4 v_TexCoord;\n\
+             void main() { vec2 v = v_TexCoord * 2.0 - 1.0 - scaleCenter; }\n";
+        let normalized = normalize(source);
+        assert!(
+            normalized.contains("(v_TexCoord * 2.0 - 1.0).xy"),
+            "the operand is not truncated:\n{normalized}"
+        );
+    }
+
+    /// A binary operation whose operands have the same number of
+    /// components is not touched.
+    #[test]
+    fn a_binary_operation_of_two_vectors_is_not_changed() {
+        let source = "#define scaleCenter (u_Center * 2.0 - 1.0)\n\
+             uniform vec2 u_Center;\n\
+             in vec2 v_TexCoord;\n\
+             void main() { vec2 v = v_TexCoord * 2.0 - 1.0 - scaleCenter; }\n";
+        let normalized = normalize(source);
+        assert!(!normalized.contains(".xy)"));
+    }
+
+    /// The built-in function of the engine that reads the audio spectrum is
+    /// provided by the pipeline: it is in none of the headers of the assets.
+    #[test]
+    fn the_built_in_function_of_the_audio_is_provided() {
+        let source = "void main() { float a = CreateAudioResponse(left, right); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("float CreateAudioResponse("));
+    }
+
+    /// A function whose parameter is an array cannot be compiled by naga:
+    /// the parameter becomes a scalar and the call passes the first element
+    /// of the array.
+    #[test]
+    fn a_function_with_an_array_parameter_is_rewritten() {
+        let source = "uniform float g_Spectrum[16];\n\
+             float Response(float bufferLeft[16], float bufferRight[16])\n\
+             {\n\
+             \treturn bufferLeft[0] + bufferRight[0];\n\
+             }\n\
+             void main() { float a = Response(g_Spectrum, g_Spectrum); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("float Response(float bufferLeft, float bufferRight)"));
+        assert!(normalized.contains("return bufferLeft + bufferRight;"));
+        assert!(normalized.contains("Response(g_Spectrum[0], g_Spectrum[0])"));
+    }
+
+    /// The uniform of the engine that a shader uses is declared: naga
+    /// reports an unknown variable for a name that is used and not
+    /// declared.
+    #[test]
+    fn the_uniform_of_the_engine_is_declared() {
+        let source = "void main() { vec2 v = res * 0.5; }\n";
+        assert_eq!(engine_uniforms(source), vec![("res", "vec2")]);
+    }
+
+    /// A shader that does not use the uniform does not get it: the layout
+    /// would carry a uniform nobody needs.
+    #[test]
+    fn a_uniform_that_is_not_used_is_not_declared() {
+        let source = "void main() { vec2 v = g_TexCoord * 0.5; }\n";
+        assert!(engine_uniforms(source).is_empty());
+    }
+
+    /// A shader that declares the uniform itself keeps its declaration.
+    #[test]
+    fn a_uniform_that_is_declared_is_not_declared_again() {
+        let source = "uniform vec2 res;\nvoid main() { vec2 v = res * 0.5; }\n";
+        assert!(engine_uniforms(source).is_empty());
     }
 
     /// The shaders of the engine compile once they are normalised.

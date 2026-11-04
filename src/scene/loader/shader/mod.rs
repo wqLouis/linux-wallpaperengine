@@ -42,8 +42,51 @@ use wgpu::naga::ShaderStage;
 pub use asset::ShaderProgram;
 pub use header::{WM_SAMPLER_BINDING, get_headers};
 pub use layout::EffectLayout;
-pub use layout::collect_layout;
 pub(crate) use layout::{align_up, type_align, type_size};
+
+/// Collect the interface of a pair of shaders.
+///
+/// The layout is collected when the scene is loaded, before the material of
+/// an effect is known: the default values of the combos of the shader and
+/// the macros of the shader itself are the best guess that is available
+/// then.  The layout is collected again when the shader is compiled, with
+/// the macros of the material.
+///
+/// The uniforms the engine injects into an effect are added to the layout:
+/// a shader that uses one of them and does not declare it needs it, and
+/// the layout is what has room for it.
+pub fn collect_layout(source1: &str, source2: &str, headers: &Map<String, String>) -> EffectLayout {
+    let mut layout = layout::collect_layout(source1, source2, headers);
+    add_engine_uniforms(&mut layout, source1);
+    add_engine_uniforms(&mut layout, source2);
+    layout
+}
+
+/// Add the uniforms of the engine that a shader uses to the layout.
+///
+/// The uniform is a member of the block of the effect: the layout has room
+/// for it and the material of the effect can write it.  A shader that
+/// declares the name itself keeps its own declaration.
+fn add_engine_uniforms(layout: &mut EffectLayout, source: &str) {
+    for (name, ty) in dialect::engine_uniforms(source) {
+        if layout
+            .uniform_decls
+            .iter()
+            .any(|(declared, _)| declared == name)
+        {
+            continue;
+        }
+        layout
+            .uniform_decls
+            .push((name.to_string(), ty.to_string()));
+    }
+
+    // The declarations are sorted by name: the offsets of the uniform block
+    // depend on their order.
+    layout
+        .uniform_decls
+        .sort_by(|left, right| left.0.cmp(&right.0));
+}
 
 /// Collect `// [COMBO] {"combo":"NAME","default":N}` annotations from a
 /// shader source.
@@ -392,11 +435,16 @@ pub fn preprocess_pair_with_layout(
     has_subgroup: bool,
     use_immediates: bool,
 ) -> (String, String, EffectLayout) {
+    // The macros the source defines itself are not external: the source
+    // keeps its own definition of them.
+    let defines = external_defines(defines, vert, frag);
     // The layout is collected with the macros of this compilation, so that
     // it describes the branch that is really compiled: a uniform that is
     // only declared in a branch that is not taken must not be in the layout,
     // and a uniform of the branch that is taken has to be.
-    let mut layout = layout::collect_layout_with_defines(vert, frag, headers, defines);
+    let mut layout = layout::collect_layout_with_defines(vert, frag, headers, &defines);
+    add_engine_uniforms(&mut layout, vert);
+    add_engine_uniforms(&mut layout, frag);
     // The path of the shaders is in the layout: the warnings of the
     // preprocessing name the shader they are about.
     layout.shader_path = collected.shader_path.clone();
@@ -419,7 +467,7 @@ pub fn preprocess_pair_with_layout(
         ShaderStage::Vertex,
         &layout,
         headers,
-        defines,
+        &defines,
         has_subgroup,
     );
     let (mut frag_out, _) = preprocess_with_layout_tracked(
@@ -427,7 +475,7 @@ pub fn preprocess_pair_with_layout(
         ShaderStage::Fragment,
         &layout,
         headers,
-        defines,
+        &defines,
         has_subgroup,
     );
 
@@ -453,6 +501,44 @@ pub fn preprocess_pair_with_layout(
     }
 
     (vert_out, frag_out, layout)
+}
+
+/// The macros that come from outside the source.
+///
+/// The macros the source defines itself are collected with the branches
+/// that the default values of the combos select, and that is not always
+/// the branch that is compiled: the material of the effect can select
+/// another one.  The definition of the source is dropped when the value
+/// from outside differs from it - and the value from outside is not
+/// handed to the shader compiler, so the macro would be lost and the
+/// shader would not compile.
+///
+/// The macros the source defines are therefore not external: the source
+/// keeps its own definition of them, and the shader compiler expands it.
+/// A macro whose value comes from outside - the material of the effect
+/// overrides the definition of the source - stays external.
+///
+/// The macros of the dialect stage stay external as well: the dialect
+/// stage defines them again, before the block of the effect, and the
+/// block can need them (the size of an array uniform is a macro).
+fn external_defines(defines: &Map<String, String>, vert: &str, frag: &str) -> Map<String, String> {
+    let mut own = collect_source_defines(vert);
+    for (name, value) in collect_source_defines(frag) {
+        own.entry(name).or_insert(value);
+    }
+
+    let mut external = new_map();
+    for (name, value) in defines {
+        let is_the_macro_of_the_dialect_stage = dialect::ENGINE_MACROS
+            .iter()
+            .any(|(macro_name, _)| macro_name == name);
+        if !is_the_macro_of_the_dialect_stage && own.get(name) == Some(value) {
+            // The macro is the one of the source: the source keeps it.
+            continue;
+        }
+        external.insert(name.clone(), value.clone());
+    }
+    external
 }
 
 /// Declare the varyings the vertex shader does not produce.
@@ -1172,6 +1258,175 @@ void main() {
         );
 
         compile(&fragment, naga::ShaderStage::Fragment, &[]);
+    }
+
+    /// The fragment shader of the gradient colour effect of a workshop
+    /// wallpaper.
+    ///
+    /// The shader uses the `lerp` of the engine, which GLSL spells `mix`.
+    const WORKSHOP_GRADIENT_COLOR: &str = include_str!("fixtures/gradient_color.frag");
+
+    /// The fragment shader of the gaussian blur effect of a workshop
+    /// wallpaper.
+    ///
+    /// The shader uses a macro of its own - the radius of the kernel - in
+    /// a branch that the material of the effect selects.
+    const WORKSHOP_GAUSSIAN: &str = include_str!("fixtures/gaussian.frag");
+
+    /// The fragment shader of the clipping mask effect of a workshop
+    /// wallpaper.
+    ///
+    /// The shader samples a texture with a coordinate that is wider than
+    /// the texture needs, and it mixes a vector of the engine with a vector
+    /// of the shader.
+    const WORKSHOP_CLIPPING_MASK: &str = include_str!("fixtures/clipping_mask.frag");
+
+    /// The directory the shaders of Wallpaper Engine are in, if they are
+    /// installed.
+    fn assets_directory() -> Option<std::path::PathBuf> {
+        let mut candidates = Vec::new();
+
+        if let Ok(assets) = std::env::var("WALLPAPER_ENGINE_ASSETS") {
+            candidates.push(std::path::PathBuf::from(assets).join("shaders"));
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            let home = std::path::PathBuf::from(home);
+            for prefix in [
+                ".steam/steam",
+                ".steam/root",
+                ".local/share/Steam",
+                ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+            ] {
+                candidates.push(
+                    home.join(prefix)
+                        .join("steamapps/common/wallpaper_engine/assets/shaders"),
+                );
+            }
+        }
+        candidates.push(std::path::PathBuf::from(
+            "/mnt/DATA/Apps/Steam/steamapps/common/wallpaper_engine/assets/shaders",
+        ));
+
+        candidates.into_iter().find(|directory| directory.is_dir())
+    }
+
+    /// The uniform of the engine that a shader uses is a member of the
+    /// block of the effect: the layout has room for it and the material of
+    /// the effect can write it.
+    #[test]
+    fn the_uniform_of_the_engine_is_in_the_block_of_the_effect() {
+        let source = "void main() { vec2 v = res * 0.5; }\n";
+        let headers = new_map();
+        let layout = collect_layout(source, source, &headers);
+        assert!(
+            layout
+                .uniform_decls
+                .contains(&("res".to_string(), "vec2".to_string())),
+            "the uniform of the engine is not in the layout: {:?}",
+            layout.uniform_decls
+        );
+
+        let (_, fragment, _) = preprocess_pair_with_layout(
+            source,
+            source,
+            &headers,
+            &new_map(),
+            &layout,
+            false,
+            false,
+        );
+        assert!(
+            fragment.contains("vec2 res;"),
+            "the uniform of the engine is not in the block:\n{fragment}"
+        );
+    }
+
+    /// The shaders of the workshop wallpapers compile.
+    ///
+    /// The shaders of the workshop wallpapers are the ones that use the
+    /// constructs the dialect of the engine has and GLSL does not: the
+    /// `lerp` of the engine and a macro of the shader that the material of
+    /// the effect selects with a combo.
+    ///
+    /// The test needs the headers of the engine: the shaders include them.
+    /// When they are not installed, the test is skipped.
+    #[test]
+    fn the_shaders_of_the_workshop_wallpapers_compile() {
+        let Some(directory) = assets_directory() else {
+            eprintln!("the shaders of Wallpaper Engine are not installed: the test is skipped");
+            return;
+        };
+        let headers = get_headers(|key| {
+            let path = key.strip_prefix("shaders/")?;
+            std::fs::read(directory.join(path)).ok()
+        });
+
+        // The gradient colour effect: the `lerp` of the engine.
+        let (source, combos) = (
+            WORKSHOP_GRADIENT_COLOR,
+            vec![("BLENDMODE", "31"), ("AXIS", "0")],
+        );
+        let (fragment, defines) = preprocess_workshop(source, &headers, &combos);
+        compile(&fragment, naga::ShaderStage::Fragment, &defines);
+
+        // The gaussian blur effect: the macro of the radius of the kernel,
+        // in the branch that the material of the effect selects.
+        let (source, combos) = (
+            WORKSHOP_GAUSSIAN,
+            vec![
+                ("MODE", "0"),
+                ("BLENDMODE", "0"),
+                ("ANAMORPHIC", "0"),
+                ("QUALITY", "2"),
+                ("COC", "0"),
+                ("PRECISE", "1"),
+                ("VERTICAL", "1"),
+            ],
+        );
+        let (fragment, defines) = preprocess_workshop(source, &headers, &combos);
+        compile(&fragment, naga::ShaderStage::Fragment, &defines);
+
+        // The clipping mask effect: the coordinate of the texture is wider
+        // than the texture needs, and a vector of the engine is mixed with
+        // a vector of the shader.
+        let (source, combos) = (
+            WORKSHOP_CLIPPING_MASK,
+            vec![
+                ("BLENDMODE", "0"),
+                ("CLIPCOLOR", "0"),
+                ("INVERT", "0"),
+                ("PARALLAX", "0"),
+                ("ALIGNMENT", "0"),
+            ],
+        );
+        let (fragment, defines) = preprocess_workshop(source, &headers, &combos);
+        compile(&fragment, naga::ShaderStage::Fragment, &defines);
+    }
+
+    /// Preprocess the fragment shader of a workshop effect.
+    ///
+    /// The macros of the material of the effect are the ones of the scene:
+    /// they are the ones that select the branch of the shader that is
+    /// compiled.
+    fn preprocess_workshop<'a>(
+        source: &str,
+        headers: &Map<String, String>,
+        combos: &'a [(&'a str, &'a str)],
+    ) -> (String, Vec<(&'a str, &'a str)>) {
+        let mut defines = new_map();
+        for (name, value) in collect_default_defines(source, source) {
+            defines.insert(name, value);
+        }
+        for (name, value) in combos {
+            defines.insert(name.to_string(), value.to_string());
+        }
+
+        let layout = collect_layout(source, source, headers);
+        let (_vertex, fragment, _layout) =
+            preprocess_pair_with_layout(source, source, headers, &defines, &layout, false, false);
+
+        let define_refs: Vec<(&str, &str)> = combos.to_vec();
+        (fragment, define_refs)
     }
 
     /// Compile a GLSL source with naga and validate the result.
