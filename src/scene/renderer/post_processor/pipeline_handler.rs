@@ -164,29 +164,22 @@ fn compile_pipeline(
         .collect();
     let headers = &program.headers;
 
-    // First pass: use the layout parsed at load time to know uniform sizes.
-    // The path of the shaders is in the layout: the warnings of the
-    // preprocessing name the shader they are about.
+    // The layout parsed at load time, with the path of the shaders: the
+    // warnings of the preprocessing name the shader they are about.
     let mut layout_pre = program.layout.clone();
     layout_pre.shader_path = vert_path.trim_end_matches(".vert").to_string();
-    let total_uniform_size = layout_pre.total_uniform_size();
-    // Use immediates if available AND uniform block fits within immediate size limit.
-    // Vulkan push constants are typically 128–256 bytes; wgpu reports via Limits::max_immediate_size.
+    // The immediates are the push constants of the effect.  They are only
+    // used when the block of the uniforms fits into the limit of the
+    // device (Vulkan push constants are typically 128-256 bytes; wgpu
+    // reports the limit as Limits::max_immediate_size).  The decision is
+    // made by the shader module, with the layout that is really compiled:
+    // the layout of the load time can be a different size, because the
+    // macros of the material select the branch that is compiled.
     let max_immediate = if ctx.has_immediates {
         ctx.device.limits().max_immediate_size
     } else {
         0
     };
-    let use_immediates =
-        ctx.has_immediates && total_uniform_size > 0 && total_uniform_size <= max_immediate as u64;
-    if use_immediates {
-        log::info!(
-            "Shader {}: using immediates for {} bytes of uniforms (limit={})",
-            frag_path,
-            total_uniform_size,
-            max_immediate
-        );
-    }
 
     // Merge the shader source macros with the runtime combo defines
     // (combo defines take priority).
@@ -202,8 +195,16 @@ fn compile_pipeline(
         &merged_defines,
         &layout_pre,
         ctx.has_subgroup,
-        use_immediates,
+        max_immediate,
     );
+    if layout.use_immediates {
+        log::info!(
+            "Shader {}: using immediates for {} bytes of uniforms (limit={})",
+            frag_path,
+            layout.total_uniform_size(),
+            max_immediate
+        );
+    }
 
     // A broken shader - or a pipeline that cannot be built from it - must
     // not take the whole application down.  Build everything inside a
@@ -234,7 +235,7 @@ fn compile_pipeline(
         // immediate_size must exactly match the data passed to set_immediates().
         // Use the UniformLayout computed here (shared with EffectPipelineData below).
         let uniform_layout = UniformLayout::new(&layout.uniform_decls);
-        let immediate_size = if use_immediates {
+        let immediate_size = if layout.use_immediates {
             uniform_layout.total_size() as u32
         } else {
             0

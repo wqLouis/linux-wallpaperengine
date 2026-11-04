@@ -233,7 +233,7 @@ fn the_preprocessed_shader_compiles() {
         &new_map(),
         &layout,
         false,
-        false,
+        0,
     );
 
     // The multiplication of the vec4 with the vec2 has to be truncated.

@@ -241,7 +241,7 @@ fn measure(directory: &Path) -> Measurement {
             &merged,
             &program.layout,
             false,
-            false,
+            0,
         );
 
         let mut failures = Vec::new();

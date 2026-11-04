@@ -433,7 +433,7 @@ pub fn preprocess_pair_with_layout(
     defines: &Map<String, String>,
     collected: &EffectLayout,
     has_subgroup: bool,
-    use_immediates: bool,
+    max_immediate_size: u32,
 ) -> (String, String, EffectLayout) {
     // The macros the source defines itself are not external: the source
     // keeps its own definition of them.
@@ -460,7 +460,14 @@ pub fn preprocess_pair_with_layout(
             layout.uniform_decls
         );
     }
-    layout.use_immediates = use_immediates;
+    // The immediates are the push constants of the effect: they are
+    // only used when the block of the uniforms fits into the limit of the
+    // device.  The decision is made here, with the layout that is really
+    // compiled - a layout that was collected before the macros of the
+    // material were merged can be a different size.
+    layout.use_immediates = max_immediate_size > 0
+        && !layout.uniform_decls.is_empty()
+        && layout.total_uniform_size() <= u64::from(max_immediate_size);
 
     let (mut vert_out, vert_emitted) = preprocess_with_layout_tracked(
         vert,
@@ -547,11 +554,7 @@ fn external_defines(defines: &Map<String, String>, vert: &str, frag: &str) -> Ma
 /// shader and initialised with zero, so that the shader compiles: the
 /// fragment shader reads them, and a program whose fragment inputs have no
 /// vertex output is rejected by wgpu.
-fn synthesise_missing_varyings(
-    output: &str,
-    layout: &EffectLayout,
-    missing: &[&String],
-) -> String {
+fn synthesise_missing_varyings(output: &str, layout: &EffectLayout, missing: &[&String]) -> String {
     if missing.is_empty() {
         return output.to_string();
     }
@@ -712,7 +715,7 @@ mod tests {
         }
         let layout = collect_layout(source, source, &headers);
         let (_vertex, fragment, _) =
-            preprocess_pair_with_layout(source, source, &headers, &defines, &layout, false, false);
+            preprocess_pair_with_layout(source, source, &headers, &defines, &layout, false, 0);
         fragment
     }
 
@@ -874,29 +877,15 @@ mod tests {
         let source = "#include \"common.h\"\n#ifdef MYCONST\ntaken\n#endif\n";
         let headers_ref = &headers;
         let layout = collect_layout(source, source, headers_ref);
-        let (_, fragment, _) = preprocess_pair_with_layout(
-            source,
-            source,
-            headers_ref,
-            &new_map(),
-            &layout,
-            false,
-            false,
-        );
+        let (_, fragment, _) =
+            preprocess_pair_with_layout(source, source, headers_ref, &new_map(), &layout, false, 0);
         assert!(fragment.contains("taken"));
 
         // The macro of the header does not exist without the include.
         let source = "#ifdef MYCONST\ntaken\n#endif\n";
         let layout = collect_layout(source, source, headers_ref);
-        let (_, fragment, _) = preprocess_pair_with_layout(
-            source,
-            source,
-            headers_ref,
-            &new_map(),
-            &layout,
-            false,
-            false,
-        );
+        let (_, fragment, _) =
+            preprocess_pair_with_layout(source, source, headers_ref, &new_map(), &layout, false, 0);
         assert!(!fragment.contains("taken"));
     }
 
@@ -910,15 +899,8 @@ mod tests {
 
         let source = "#include \"base/model_vertex_v1.h\"\n#ifdef MYCONST\ntaken\n#endif\n";
         let layout = collect_layout(source, source, &headers);
-        let (_, fragment, _) = preprocess_pair_with_layout(
-            source,
-            source,
-            &headers,
-            &new_map(),
-            &layout,
-            false,
-            false,
-        );
+        let (_, fragment, _) =
+            preprocess_pair_with_layout(source, source, &headers, &new_map(), &layout, false, 0);
         assert!(fragment.contains("taken"));
     }
 
@@ -963,7 +945,7 @@ mod tests {
             &defines,
             &layout,
             false,
-            false,
+            0,
         );
 
         // The shader is usable: it has an entry point and the branch that
@@ -1009,7 +991,7 @@ mod tests {
             &defines,
             &layout,
             false,
-            false,
+            0,
         );
 
         assert!(
@@ -1031,15 +1013,8 @@ mod tests {
         let source = "uniform float g_Spectrum[32];\nvoid main() {}\n";
         let headers = new_map();
         let layout = collect_layout(source, source, &headers);
-        let (_, fragment, layout) = preprocess_pair_with_layout(
-            source,
-            source,
-            &headers,
-            &new_map(),
-            &layout,
-            false,
-            false,
-        );
+        let (_, fragment, layout) =
+            preprocess_pair_with_layout(source, source, &headers, &new_map(), &layout, false, 0);
 
         assert_eq!(
             layout.uniform_decls,
@@ -1096,7 +1071,7 @@ void main() {
             &defines,
             &layout,
             false,
-            false,
+            0,
         );
 
         // The definition of the source is dropped: the shader compiler gets
@@ -1140,15 +1115,8 @@ void main() {
 ";
         let headers = new_map();
         let layout = collect_layout(vertex, fragment, &headers);
-        let (vertex, fragment, _) = preprocess_pair_with_layout(
-            vertex,
-            fragment,
-            &headers,
-            &new_map(),
-            &layout,
-            false,
-            false,
-        );
+        let (vertex, fragment, _) =
+            preprocess_pair_with_layout(vertex, fragment, &headers, &new_map(), &layout, false, 0);
 
         // The fragment shader keeps the varying it reads.
         assert!(
@@ -1185,15 +1153,8 @@ void main() {
 ";
         let headers = new_map();
         let layout = collect_layout(vertex, fragment, &headers);
-        let (vertex, fragment, _) = preprocess_pair_with_layout(
-            vertex,
-            fragment,
-            &headers,
-            &new_map(),
-            &layout,
-            false,
-            false,
-        );
+        let (vertex, fragment, _) =
+            preprocess_pair_with_layout(vertex, fragment, &headers, &new_map(), &layout, false, 0);
 
         assert!(
             vertex.contains("out vec2 v_TexCoord[4];"),
@@ -1229,15 +1190,8 @@ void main() {
 ";
         let headers = new_map();
         let layout = collect_layout(vertex, fragment, &headers);
-        let (_, fragment, _) = preprocess_pair_with_layout(
-            vertex,
-            fragment,
-            &headers,
-            &new_map(),
-            &layout,
-            false,
-            false,
-        );
+        let (_, fragment, _) =
+            preprocess_pair_with_layout(vertex, fragment, &headers, &new_map(), &layout, false, 0);
 
         // The varying that is written to is renamed and copied into a local
         // variable.
@@ -1326,15 +1280,8 @@ void main() {
             layout.uniform_decls
         );
 
-        let (_, fragment, _) = preprocess_pair_with_layout(
-            source,
-            source,
-            &headers,
-            &new_map(),
-            &layout,
-            false,
-            false,
-        );
+        let (_, fragment, _) =
+            preprocess_pair_with_layout(source, source, &headers, &new_map(), &layout, false, 0);
         assert!(
             fragment.contains("vec2 res;"),
             "the uniform of the engine is not in the block:\n{fragment}"
@@ -1423,7 +1370,7 @@ void main() {
 
         let layout = collect_layout(source, source, headers);
         let (_vertex, fragment, _layout) =
-            preprocess_pair_with_layout(source, source, headers, &defines, &layout, false, false);
+            preprocess_pair_with_layout(source, source, headers, &defines, &layout, false, 0);
 
         let define_refs: Vec<(&str, &str)> = combos.to_vec();
         (fragment, define_refs)

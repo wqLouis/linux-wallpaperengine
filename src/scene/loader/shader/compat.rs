@@ -675,7 +675,6 @@ fn find_top_level_comma(s: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
-
     #[test]
     fn a_condition_that_ends_with_a_call_is_not_wrapped() {
         // The closing parenthesis of the condition belongs to the call:

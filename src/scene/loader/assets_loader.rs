@@ -403,9 +403,10 @@ impl AssetStore {
     /// Consume an audio asset, loading it from disk without caching.
     pub fn take_sound(&self, key: &str) -> Option<Vec<u8>> {
         if let Some(asset) = self.map.borrow_mut().remove(key)
-            && let Some(bytes) = asset.as_bytes() {
-                return Some(bytes);
-            }
+            && let Some(bytes) = asset.as_bytes()
+        {
+            return Some(bytes);
+        }
         self.read_disk(key)
     }
 
@@ -422,9 +423,10 @@ impl AssetStore {
     pub fn shader(&self, frag_path: &str, vert_path: &str) -> Option<Rc<ShaderProgram>> {
         let base = frag_path.trim_end_matches(".frag");
         if let Some(asset) = self.map.borrow().get(base)
-            && let Asset::Shader(program) = asset {
-                return Some(Rc::clone(program));
-            }
+            && let Asset::Shader(program) = asset
+        {
+            return Some(Rc::clone(program));
+        }
 
         let vertex = self.source_text(vert_path).unwrap_or_default();
         let fragment = self.source_text(frag_path).unwrap_or_default();
@@ -464,9 +466,10 @@ impl AssetStore {
         let mut bases: Vec<String> = Vec::new();
         for key in keys {
             if let Some(base) = key.strip_suffix(".frag")
-                && !bases.iter().any(|b| b == base) {
-                    bases.push(base.to_string());
-                }
+                && !bases.iter().any(|b| b == base)
+            {
+                bases.push(base.to_string());
+            }
         }
         for base in bases {
             self.shader(&format!("{base}.frag"), &format!("{base}.vert"));
@@ -566,7 +569,7 @@ void main() {
             &defines,
             &program.layout,
             false,
-            false,
+            0,
         );
         assert!(
             vertex.contains("void main()"),
