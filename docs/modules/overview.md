@@ -141,8 +141,8 @@ cargo test                 # the tests of the library and of the CLI
                                      │
                 ┌────────────────────┼────────────────────┐
                 ▼                    ▼                    ▼
-         Scene::new             ObjectMap            PostProcess
-         (.pkg or folder)      ::with_clear          ::new()
+         Scene::try_new_        ObjectMap            PostProcess
+         from_files            ::with_clear          ::new()
                     │         _color()
                     ▼                │
              DrawQueue::new()  ← Builds DrawObjects, pipelines, effect bindgroups
@@ -209,7 +209,7 @@ declarations — the entries are visited in sorted key order (`sorted_entries`
 linux-wallpaper-engine [OPTIONS]
 
 Options:
-  -p, --path <PATH>          Path to .pkg wallpaper file [default: ./scene.pkg]
+  -p, --path <PATH>          Path to a .pkg archive or to a wallpaper folder [default: ./scene.pkg]
   -m, --modes <MODES>        Display mode: wlr, winit, gnome or mac [default: wlr]
   --fit-mode <MODE>          Fit mode: cover, contain, stretch [default: cover]
   --no-effects               Bypass post-process effects, render as static image
@@ -228,7 +228,7 @@ linux-wallpaper-engine parser -p wallpaper.pkg -x output/  # unpack it
 
 ### Scene Loading Pipeline
 
-1. **`Scene::new(path, show_progress, no_mdl)`** — Parses the wallpaper (a `.pkg` file, or the files of a folder), classifying every file with `AssetType` and storing parsed `Asset`s (textures, models, JSON documents, shaders, audio, fonts, video, …)
+1. **`Scene::try_new_from_files(files, show_progress, no_mdl)`** — Parses the files of the wallpaper (the files of a `.pkg` archive or the files of a folder — they are the same thing once they are read), classifying every file with `AssetType` and storing parsed `Asset`s (textures, models, JSON documents, shaders, audio, fonts, video, …).  The files that could not be used are collected in `Scene::problems`.
 2. **`Scene::prepare()`** — Pre-parses each shader pair into a `ShaderProgram` (interface layout, combo defaults, source macros, resolved headers)
 3. **`ObjectMap::with_clear_color(objects, scene, clear_color, no_mdl)`** — Classifies each object via `ElementType`, converts them into `TextureObject`/`AudioObject`/`Node`, resolves parent-child transforms, propagates visibility, builds solid-colour fallback textures
 4. **`DrawQueue::new(...)`** — Creates GPU resources (`DrawObject`, `EffectBindGroup`, `PingPongTextures`) for each texture object

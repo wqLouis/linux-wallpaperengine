@@ -130,6 +130,7 @@ fn setup_logging(level_str: &str) {
     builder.format_timestamp_millis().init();
 }
 
+/// Checks that the path is a wallpaper: an archive or a folder.
 fn validate_pkg_path(path: &str) -> Result<(), String> {
     let p = Path::new(path);
 
@@ -148,6 +149,15 @@ fn validate_pkg_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks that the path is an archive: the parser only reads archives.
+fn validate_archive_path(path: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    if !p.is_file() || p.extension().unwrap_or_default() != "pkg" {
+        return Err(format!("Path '{}' is not a .pkg file", path));
+    }
+    Ok(())
+}
+
 fn print_error_list(paths: &[String], msg: &str) {
     eprintln!("{}", msg);
     for p in paths {
@@ -158,7 +168,7 @@ fn print_error_list(paths: &[String], msg: &str) {
 // ── Parser subcommand logic ──────────────────────────────────────────────────
 
 fn run_parser(args: ParserArgs) {
-    if let Err(e) = validate_pkg_path(&args.path) {
+    if let Err(e) = validate_archive_path(&args.path) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
@@ -276,7 +286,7 @@ fn main() {
                 "Unknown fit-mode '{}'. Valid: cover, contain, stretch",
                 cli.fit_mode
             );
-            return;
+            std::process::exit(1);
         }
     };
 
@@ -362,7 +372,7 @@ fn run_adapter(mode: &str, config: AdapterConfig) -> Result<(), EngineError> {
                 "Unknown display mode '{}'. Valid: wlr, winit, gnome, mac",
                 mode
             );
-            Ok(())
+            std::process::exit(1);
         }
     }
 }

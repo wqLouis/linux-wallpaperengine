@@ -195,36 +195,86 @@ pub struct Scene {
     pub root: Root,        // Parsed scene.json (or the synthetic video scene)
     pub assets: AssetStore, // Typed store of every parsed asset
     pub project: Option<Project>, // The package's project.json, when it has one
+    pub problems: Vec<EngineProblem>, // The files that could not be used
 }
 ```
 
+`problems` is the list the loader does not swallow: a file it cannot parse is
+skipped (the rest of the wallpaper may still be usable), but the problem is
+collected here so that the host application can tell the user about it.  The
+renderer takes them over (`WgpuApp::problems`) and the adapters report them
+to the host ([adapters.md](adapters.md#adapterconfig)).
+
 ### `Scene::new(path: String, show_progress: bool, no_mdl: bool) -> Self`
 
-Parses a `.pkg` file (the folder sources are read by the façade, which hands
-the very same files to the loader — see [the two shapes of a
-wallpaper](#the-two-shapes-of-a-wallpaper--the-folder-sources)):
+Parses a `.pkg` file.  A wallpaper that cannot be loaded does not take the
+application down: the reason is logged and an **empty scene** is returned, so
+the wallpaper is skipped and the application stays alive.  Use `try_new` (or
+`try_new_from_files`) when the caller wants the error itself.
 
-1. Uses `pkg_parser::parser::Pkg::new(path)` to open the package
-2. For each file, classifies it with `AssetType::from_path()`:
+### `Scene::try_new(path: String, show_progress: bool, no_mdl: bool) -> Result<Self, SceneError>`
+
+The same thing, but the failure is reported: an unreadable package, a missing
+or invalid `scene.json` and a video wallpaper without a video.
+
+### `Scene::try_new_from_files(files: Map<String, Vec<u8>>, show_progress: bool, no_mdl: bool) -> Result<Self, SceneError>`
+
+**The way in.**  The files are the input: a `.pkg` archive and a folder of
+wallpaper files are the same thing once they are read, so the loader does not
+care where they come from.  `try_new` reads an archive and hands its files
+over; a host that has the files already (the façade reading a folder, a
+browser that fetched them) hands them over directly.
+
+The files are keyed by their path inside the wallpaper (`"scene.json"`,
+`"materials/foo.json"`, …), exactly like the paths of an archive.
+
+The loading itself:
+
+1. Classifies every file with `AssetType::from_path()`:
    - `.tex` → decoded in parallel by a bounded worker pool via `Tex::new` + `parse_to_rgba()` (a `.tex` whose payload is a video container becomes a video asset instead)
    - `.mdl` → parsed via `MdlFile::new()` (skipped entirely when `no_mdl` is set). Parse failures are logged at error level and skipped, since the puppet format is only partially documented.
    - `.json` (scene/effects/materials/particles/presets) → stored as `Rc<String>`
    - `.frag`/`.vert`/`.h` → stored as text (shaders are paired and parsed in [`Scene::prepare`])
    - audio/font/video/scripts/other → stored as typed assets
-3. Shows a progress bar via `indicatif::ProgressBar`
-4. Reads the package's `project.json` (see `project.rs`) — it tells the loader what kind of wallpaper the package holds
-5. Parses `scene.json` as `Root` — or builds a **synthetic scene** for a video wallpaper (see below)
-6. Returns the complete `Scene`
+2. Shows a progress bar via `indicatif::ProgressBar` (hidden when `show_progress` is false)
+3. Reads the package's `project.json` (see `project.rs`) — it tells the loader what kind of wallpaper the package holds
+4. Parses `scene.json` as `Root` — or builds a **synthetic scene** for a video wallpaper (see below)
+5. Returns the complete `Scene`, with the files that could not be used in `problems`
 
-The archive is trusted to be well-formed: a package or asset that fails to
-parse is fatal rather than silently skipped. The one exception is `.mdl`
-models — the puppet format is only partially documented, so a model
-that fails to parse is logged at error level and skipped instead of aborting
-the scene. Asset *resolution* (model → material → texture) also stays lenient
-because it can legitimately fall back to the Wallpaper Engine `assets/`
-directory or reference runtime textures.
+A file that cannot be parsed is **skipped, not fatal**: the rest of the
+wallpaper may still be usable, and the failure is collected as an
+`EngineProblem`.  Only the wallpaper as a whole can fail — an unreadable
+package, a missing or broken `scene.json`, a video wallpaper without a video
+— and those are the errors of `SceneError`.  Asset *resolution* (model →
+material → texture) also stays lenient because it can legitimately fall back
+to the Wallpaper Engine `assets/` directory or reference runtime textures.
 
 **Threading:** `.tex` files are decoded by a worker pool sized to the available CPU cores (capped at the number of textures). Work is handed out through an atomic index, so threads stay busy even when individual textures decode at different speeds; no thread is spawned per file.
+
+### `SceneError` — why a wallpaper could not be loaded
+
+**File:** `scene_loader.rs`
+
+Every variant carries the error that caused it, so the chain of causes
+continues through `std::error::Error::source`: a `scene.json` that could not
+be parsed points at the serde error, a package that could not be read points
+at the io error.  The variants that have no error underneath them (the
+parsers that report a broken file by returning nothing) carry a static
+message instead.
+
+| Variant | The failure |
+|---------|-------------|
+| `Package(std::io::Error)` | the `.pkg` archive could not be read |
+| `MissingScene` | the archive holds no `scene.json` |
+| `Scene(serde_json::Error)` | the `scene.json` of the archive could not be parsed |
+| `MissingVideo` | the package is a video wallpaper, but it holds no video |
+| `Model(&'static str)` | a model of the wallpaper could not be parsed |
+| `Texture(&'static str)` | a texture of the wallpaper could not be decoded |
+| `Asset(&'static str)` | a file of the wallpaper could not be parsed |
+| `Video(&'static str)` | a video of the wallpaper could not be used |
+
+`EngineError::Scene` wraps a `SceneError` (see
+[engine.md](engine.md#the-errors)).
 
 ### The two shapes of a wallpaper — the folder sources
 

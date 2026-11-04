@@ -31,6 +31,42 @@ keeping the aspect ratio of the scene (`cover` overflows the viewport,
 `contain` leaves empty borders around it, `stretch` keeps the default
 behaviour).
 
+### `AdapterConfig`
+
+Every adapter takes the *same* configuration struct — there is one way to ask
+for a wallpaper, whatever the backend is:
+
+```rust
+pub struct AdapterConfig {
+    pub source: WallpaperSource,
+    pub fit_mode: FitMode,
+    pub no_effects: bool,
+    pub no_mdl: bool,
+    pub assets_path: Option<String>,
+    pub target_fps: Option<u32>,
+    pub show_progress: bool,
+    pub status: Option<Sender<EngineStatus>>,
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `source` | the wallpaper to render — an archive or a folder, they are the same thing here |
+| `fit_mode` | how the wallpaper is fitted to the output |
+| `no_effects` | render the wallpaper without its post-process effects |
+| `no_mdl` | render the MDL puppets as flat quads |
+| `assets_path` | the Wallpaper Engine assets directory (a lazy-loading fallback) |
+| `target_fps` | the rate the wallpaper is rendered at: `None` is "as fast as possible", `Some(0)` the static image mode |
+| `show_progress` | whether the loading progress is shown |
+| `status` | where the adapter reports what it is doing: the files that could not be used and the frames that could not be drawn are sent to the host, and without a channel they are only written to the log |
+
+`source` is the façade's `WallpaperSource`
+([engine.md](engine.md#sources--wallpapersource)): an archive and a folder are
+the same thing here — the loader reads the files of the source either way.
+The module offers the helper `wallpaper_source(path) -> WallpaperSource`,
+which picks the shape of the source by looking at the path (a directory is a
+folder, everything else is an archive).
+
 Module-level documentation describes the four adapters:
 
 - **`winit_adapter`** — Creates an always-on-bottom window using winit. Works on both X11 and Wayland (via XWayland). Supports cursor tracking for depth-parallax effects.
@@ -49,31 +85,24 @@ A standalone window adapter using the [winit](https://crates.io/crates/winit) cr
 ### Public API
 
 ```rust
-pub fn start(
-    pkg_path: String,
-    no_effects: bool,
-    no_mdl: bool,
-    assets_path: Option<String>,
-    target_fps: Option<u32>,
-    show_progress: bool,
-)
+pub fn start(config: AdapterConfig) -> Result<(), EngineError>
 ```
 
 | Parameter | Description |
 |-----------|-------------|
-| `pkg_path` | Path to the `.pkg` wallpaper file |
-| `no_effects` | Bypass post-process effects |
-| `no_mdl` | Ignore the MDL puppet models |
-| `assets_path` | Optional path to Wallpaper Engine assets/ dir for lazy-loading fallback |
-| `target_fps` | The rate the wallpaper is rendered at (`None`: as fast as possible, `Some(0)`: static image) |
-| `show_progress` | Whether the loading progress is shown |
+| `config` | the wallpaper to render and the options of the adapter (see [`AdapterConfig`](#adapterconfig)) |
 
 **Behavior:**
 - Creates a `WinitApp` that implements `ApplicationHandler`
-- On `resumed`: creates window, initializes `WgpuApp` with `InitAppSurface::Winit(window)`, sets `target_fps` and calls `load()`
-- On `RedrawRequested`: throttles the frame to `target_fps`, calls `app.render()` and requests the next frame (unless the mode is the static one, `target_fps == Some(0)`)
+- On `resumed`: creates window, initializes `WgpuApp` with `InitAppSurface::Winit(window)` — `WgpuApp::new` returns a `Result`, so a missing device is reported instead of taking the process down — sets `target_fps` and calls `load()`
+- On `RedrawRequested`: throttles the frame to `target_fps`, calls `app.render()` (a `Result<(), RenderError>`: a frame that cannot be drawn is counted and reported as a problem) and requests the next frame (unless the mode is the static one, `target_fps == Some(0)`)
 - On `Resized`: calls `app.resize()`
-- On `CursorMoved`: updates `app.user_params.cursor_position` (normalized to `[0,1]`)
+- On `CursorMoved`: replaces `app.user_params` with a `UserParams` whose `cursor_position` is normalized to `[0,1]`
+
+The event loop has no way to hand an error back, so a failure that happens
+inside it (the window could not be created, the wallpaper could not be
+loaded) is kept in `WinitApp::error` and returned by `start()` when the loop
+ends.
 
 ### `WinitApp` struct
 
@@ -82,13 +111,14 @@ struct WinitApp {
     app: Rc<RefCell<Option<WgpuApp>>>,
     window: Option<Arc<Window>>,
 
-    pkg_path: String,
-    no_effects: bool,
-    no_mdl: bool,
-    assets_path: Option<String>,
-    target_fps: Option<u32>,
-    show_progress: bool,
+    config: AdapterConfig,
     last_frame: Option<Instant>,
+    /// The frames that could not be drawn.
+    failures: Cell<u64>,
+    /// The render failure that was reported already.
+    reported_failure: Cell<Option<RenderError>>,
+    /// The failure that happened inside the event loop.
+    error: Option<EngineError>,
 }
 ```
 
@@ -106,7 +136,7 @@ Window::default_attributes()
 
 ### Cursor Tracking
 
-The winit adapter receives `CursorMoved` events and normalizes the cursor position to the `[0, 1]` range (top-left origin), updating `WgpuApp.user_params.cursor_position`. This is used by the parallax system (`g_ParallaxPosition` uniform). On Wayland (wlr adapter), cursor tracking is unavailable, so `user_params` stays at the default center `[0.5, 0.5]`.
+The winit adapter receives `CursorMoved` events and normalizes the cursor position to the `[0, 1]` range (top-left origin), replacing `WgpuApp.user_params` with a `UserParams` whose `cursor_position` holds it. This is used by the parallax system (`g_ParallaxPosition` uniform). On Wayland (wlr adapter), cursor tracking is unavailable, so `user_params` stays at the default center `[0.5, 0.5]`.
 
 ---
 
@@ -119,33 +149,34 @@ Wayland wlr-layer-shell adapter using the [smithay-client-toolkit](https://crate
 ### Public API
 
 ```rust
-pub fn start(
-    pkg_path: String,
-    fit_mode: FitMode,
-    no_effects: bool,
-    no_mdl: bool,
-    assets_path: Option<String>,
-    target_fps: Option<u32>,
-    show_progress: bool,
-)
+pub fn start(config: AdapterConfig) -> Result<(), EngineError>
 ```
 
 | Parameter | Description |
 |-----------|-------------|
-| `pkg_path` | Path to the `.pkg` wallpaper file |
-| `fit_mode` | How to fit wallpaper to output (Cover, Contain, Stretch) |
-| `no_effects` | Bypass post-process effects |
-| `no_mdl` | Ignore the MDL puppet models |
-| `assets_path` | Optional path to Wallpaper Engine assets/ dir for lazy-loading fallback |
-| `target_fps` | The rate the wallpaper is rendered at (`None`: as fast as possible, `Some(0)`: static image) |
-| `show_progress` | Whether the loading progress is shown |
+| `config` | the wallpaper to render and the options of the adapter (see [`AdapterConfig`](#adapterconfig)) |
+
+### `run` — the entry point that takes the commands of the host
+
+```rust
+pub fn run(
+    config: AdapterConfig,
+    commands: Option<Receiver<EngineCommand>>,
+) -> Result<(), EngineError>
+```
+
+`start(config)` is `run(config, None)`.  With a channel of commands the host
+stays in control of the wallpaper: the commands (`Switch`, `SetFps`, `Pause`,
+`Resume`, `Stop`) are polled every iteration of the loop, so the host never
+waits for more than a frame — and for more than a few milliseconds in the
+static mode, where the loop does not draw a frame every tick.
 
 **Behavior:**
 1. Connects to the Wayland display
 2. Binds required globals: compositor, wlr-layer-shell, `wp_fractional_scale_manager_v1`, `wp_viewporter` (the last two are optional)
 3. Creates a `wlr_layer_surface` as `Background` layer with full anchor, exclusive zone `-1`
 4. Creates raw window/display handles for wgpu (`RawWindowHandle::Wayland`)
-5. Initializes `WgpuApp` with `InitAppSurface::Raw(...)`, sets `target_fps` and loads the scene
+5. Initializes `WgpuApp` with `InitAppSurface::Raw(...)` (`WgpuApp::new` and `load()` both return a `Result`), sets `target_fps` and loads the scene
 6. Enters an event-loop-driven render loop (`dispatch_pending` + `render`)
 
 In the static mode (`target_fps == Some(0)`) the loop does not render frames
@@ -297,16 +328,12 @@ in the shell's background group.
 ### Public API
 
 ```rust
-pub fn start(
-    pkg_path: String,
-    fit_mode: FitMode,
-    no_effects: bool,
-    no_mdl: bool,
-    assets_path: Option<String>,
-    target_fps: Option<u32>,
-    show_progress: bool,
-)
+pub fn start(config: AdapterConfig) -> Result<(), EngineError>
 ```
+
+| Parameter | Description |
+|-----------|-------------|
+| `config` | the wallpaper to render and the options of the adapter (see [`AdapterConfig`](#adapterconfig)) |
 
 ### D-Bus protocol
 
@@ -393,16 +420,12 @@ The Rust side talks to it through a small C ABI:
 ### Public API
 
 ```rust
-pub fn start(
-    pkg_path: String,
-    fit_mode: FitMode,
-    no_effects: bool,
-    no_mdl: bool,
-    assets_path: Option<String>,
-    target_fps: Option<u32>,
-    show_progress: bool,
-)
+pub fn start(config: AdapterConfig) -> Result<(), EngineError>
 ```
+
+| Parameter | Description |
+|-----------|-------------|
+| `config` | the wallpaper to render and the options of the adapter (see [`AdapterConfig`](#adapterconfig)) |
 
 **Behavior:**
 1. Asks the Swift side for the size of the primary screen.
@@ -433,6 +456,11 @@ pub enum InitAppSurface {
 ```
 
 Re-exported from `crate::scene::renderer::app::InitAppSurface`.
+
+`AppSurface::new(surface, instance, adapter, device, size)` returns a
+`Result<Self, wgpu::CreateSurfaceError>`: when the driver refuses to create
+the surface, the failure is reported and the adapter hands it back to the
+caller (see [renderer.md](renderer.md#surface--appsurface)).
 
 The `AppSurface` holds a `SurfaceTarget`:
 

@@ -34,7 +34,9 @@ pub struct WgpuApp {
     pub surface: AppSurface,                          // Wgpu surface + config
     pub buffers: Option<Buffers>,                     // Vertex/index/projection buffers
     pub projection_bindgroup: ProjectionBindGroups,   // Camera matrix bindgroup
-    pub scene_path: String,                           // The wallpaper that is rendered
+    pub source: WallpaperSource,                      // The wallpaper that is rendered
+    pub title: Option<String>,                        // The title of its project.json
+    pub problems: Vec<EngineProblem>,                 // The files that could not be used
     pub assets_path: Option<String>,                  // Wallpaper Engine assets dir
     pub clear_color: Vec3,                            // Background color
     pub device: Device,                               // GPU device
@@ -60,7 +62,24 @@ pub struct WgpuApp {
 }
 ```
 
+`source` is a `WallpaperSource` ([engine.md](engine.md#sources--wallpapersource)):
+an archive and a folder are the same thing here — the loader reads the files of
+the source either way.  `title` and `problems` are what the app reports to the
+host: the title of the wallpaper and the files that could not be used.
+
 ### `WgpuApp::new(...)`
+
+```rust
+pub async fn new(
+    source: WallpaperSource,
+    surface: InitAppSurface,
+    size: [u32; 2],
+    no_effects: bool,
+    no_mdl: bool,
+    assets_path: Option<String>,
+    show_progress: bool,
+) -> Result<Self, EngineError>
+```
 
 The constructor takes the wallpaper to render, the surface it is rendered into,
 the initial size of the surface and the options of the wallpaper (`no_effects`,
@@ -94,24 +113,36 @@ uncaptured errors as fatal and panics, and the release profile is built with
 down.  The handler only logs the error, so the rest of the wallpaper keeps
 running.
 
-### `WgpuApp::load(&mut self)`
+Every step that can fail is reported as an `EngineError` that carries its
+cause: an adapter that was not found, a device that could not be created, a
+surface that could not be opened and an audio device that is not there.  Nothing
+here panics: a machine without a GPU must not take the process down.
+
+### `WgpuApp::load(&mut self) -> Result<(), EngineError>`
 
 Called after `new()`. Loads scene assets and builds the draw queue:
 
-1. `Scene::new(scene_path, show_progress, no_mdl)` — parses the wallpaper into the typed `AssetStore`
-2. Enables lazy-loading fallback if `assets_path` is set, then `Scene::prepare()` pre-parses shaders
-3. `PostProcess::new(device, queue, size, has_clear_texture)` — sampler + blank texture
-4. Creates the default `image_pipeline` and the `copy_pipeline` from `shader/image.wgsl` (entry points: `vs_main`, `fs_main`)
-5. `ObjectMap::with_clear_color(objects, scene, clear_color, no_mdl)` — converts to `TextureObject`/`AudioObject`
-6. Counts the geometry and allocates the GPU buffers once (`Buffers::new`)
-7. `DrawQueue::new(...)` — builds GPU draw objects
-8. `Projection::new(root).create_camera_uniform()` — camera projection matrix, and the projection bind group
-9. Loads audio via rodio
+1. `self.source.read_files()` — the files of the wallpaper (an archive or a folder, they are the same thing once they are read), then `Scene::try_new_from_files(files, show_progress, no_mdl)` — parses the wallpaper into the typed `AssetStore`
+2. Takes the title of the wallpaper and the files that could not be used over from the scene (`WgpuApp::title` and `WgpuApp::problems`)
+3. Enables lazy-loading fallback if `assets_path` is set, then `Scene::prepare()` pre-parses shaders
+4. `PostProcess::new(device, queue, size, has_clear_texture)` — sampler + blank texture
+5. Creates the default `image_pipeline` and the `copy_pipeline` from `shader/image.wgsl` (entry points: `vs_main`, `fs_main`)
+6. `ObjectMap::with_clear_color(objects, scene, clear_color, no_mdl)` — converts to `TextureObject`/`AudioObject`
+7. Counts the geometry and allocates the GPU buffers once (`Buffers::new`)
+8. `DrawQueue::new(...)` — builds GPU draw objects
+9. `Projection::new(root).create_camera_uniform()` — camera projection matrix, and the projection bind group
+10. Loads audio via rodio
+
+A wallpaper that cannot be loaded is reported: the reason is logged and the
+error is returned, so the caller decides what to do — the command line
+interface dies with the trace of the error, the runtime tells the host.  Only
+the scene is replaced: the device, the surface and the audio stream stay, so
+switching to another wallpaper is cheap.
 
 If the built-in image pipeline cannot be created, the loader logs the error and
 returns: the application stays alive, it simply has nothing to draw.
 
-### `WgpuApp::render(&mut self) -> Option<()>`
+### `WgpuApp::render(&mut self) -> Result<(), RenderError>`
 
 Called every frame. Performs:
 
@@ -119,11 +150,15 @@ Called every frame. Performs:
 2. **Parallax cursor** — reads `user_params.cursor_position` via `compute_parallax_cursor()`
 3. **Puppet skinning** — `draw::update_animated_meshes()` re-skins the animated puppets and rewrites their vertex range
 4. **Video frames** — `draw::update_video_textures()` picks the frame that covers the current time for every animated (video) object and uploads it into its texture (only when the frame changed). A clip that was decoded eagerly is played back by index (nothing is decoded), the other ones are streamed by the decoder
-5. **Uniform write** — calls `render_pass::write_effect_uniforms()` for all draw objects (time, projection, cursor, screen res, texture resolutions, material constants)
-6. **Intermediate passes** — if any object has effects, runs `render_intermediate_passes()` (replaces projection with identity for NDC rendering, then restores)
-7. **Final pass** — `render_final_pass()` draws all objects to swapchain
+5. **Uniform write** — calls `render_pass::write_effect_uniforms()` for all draw objects (time, cursor, screen res, texture resolutions, material constants)
+6. **Intermediate passes** — if any object has effects, runs `render_intermediate_passes()` (the effects work in NDC space, so the identity projection bind group is used)
+7. **Final pass** — `render_final_pass()` draws all objects to the render target (the swapchain, or the off-screen texture)
 
-`None` means that there was nothing to render (the scene was not loaded).
+The error is what happened: `RenderError::NotReady` when the scene is not
+loaded yet (there is nothing to draw) and `RenderError::Surface` when the
+surface did not give a frame to draw into.  A frame that cannot be drawn does
+not stop the wallpaper: the frame is skipped and the problem is reported to
+the host, which shows it to the user.
 
 ### The other methods of `WgpuApp`
 
@@ -175,12 +210,17 @@ pub struct OffscreenTarget {
 }
 ```
 
-### `AppSurface::new(surface, instance, adapter, device, size) -> Self`
+### `AppSurface::new(surface, instance, adapter, device, size) -> Result<Self, wgpu::CreateSurfaceError>`
 
 Creates the wgpu surface from the appropriate handle type:
 - `InitAppSurface::Raw` → `unsafe { instance.create_surface_unsafe(SurfaceTargetUnsafe::RawHandle { ... }) }` (wgpu 28.0 API)
 - `InitAppSurface::Winit` → `instance.create_surface(window)`
 - `InitAppSurface::Offscreen` → an sRGB texture (`Rgba8UnormSrgb`) with `RENDER_ATTACHMENT | COPY_SRC`, so that the bytes that are read back can be handed to a compositor as-is
+
+The surface of a window is created by the graphics driver: when it refuses,
+the failure is reported and the caller decides what to do.  Nothing here
+panics — the error travels up as `wgpu::CreateSurfaceError` and the adapter
+hands it back as an `EngineError::Surface`.
 
 A swapchain is configured with:
 - `RENDER_ATTACHMENT` usage

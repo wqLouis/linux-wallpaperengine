@@ -113,26 +113,36 @@ Builds draw objects for all texture objects. The `render_pipelines` map is share
 
 ### `render_final_pass(...)`
 
-Draws all objects to the swapchain surface.
+Draws all objects to the render target (the swapchain or the off-screen
+texture).
 
 ```rust
-pub fn render_final_pass(
-    device: &Device, queue: &Queue, surface: &AppSurface,
-    buffers: &Buffers, projection_bindgroup: &ProjectionBindGroups,
-    draw_queue: &DrawQueue, post_process: &PostProcess,
+pub fn render_final_pass<'a>(
+    encoder: &'a mut CommandEncoder,
+    device: &Device,
+    surface: &'a AppSurface,
+    buffers: &'a Buffers,
+    projection_bindgroup: &'a ProjectionBindGroups,
+    draw_queue: &'a DrawQueue,
     clear_color: Vec3,
-) -> Option<()>
+) -> Option<FinalFrame>
 ```
 
 **Behavior:**
-1. Acquires the next swapchain texture (handles `Lost`, `Outdated`, `Timeout` errors by reconfiguring)
-2. Creates a command encoder and begins a render pass with `clear_color` (divided by 255.0 for GPU)
+1. Acquires the next swapchain texture (handles `Lost`, `Outdated`, `Timeout` errors by reconfiguring) — or the off-screen view
+2. Begins a render pass in the encoder with `clear_color` (divided by 255.0 for GPU)
 3. For each `DrawObject`:
    - Uses the intermediate ping-pong result (`view_a`) if effects present, otherwise the original `bindgroup`
    - Sets `image_pipeline` for all objects
    - Sets vertex/index buffers and projection bindgroup
    - Draws indexed geometry (`draw_object.index_range`)
-4. Submits and presents
+4. Ends the render pass — the caller submits the encoder and presents the frame
+
+The result tells the caller what to do with the frame: `FinalFrame::Present`
+is a swapchain texture that has to be presented after the encoder is
+submitted, `FinalFrame::Offscreen` means that the scene was rendered into the
+off-screen texture and can be copied back to the CPU.  `None` means that the
+surface did not give a frame.
 
 ### `write_effect_uniforms(...)`
 
@@ -140,19 +150,28 @@ Writes per-frame uniform data into all effect bind group buffers.
 
 ```rust
 pub fn write_effect_uniforms(
-    queue: &Queue, objects: &[DrawObject],
-    elapsed: f32, projection: &[[f32; 4]; 4],
-    screen_res: [u32; 2], user_params: &UserParams,
+    queue: &Queue,
+    staging: &mut Vec<u8>,
+    objects: &[DrawObject],
+    elapsed: f32,
+    screen_res: [u32; 2],
+    user_params: &UserParams,
 )
 ```
 
-For each draw object's effects:
-1. Allocates a staging buffer sized to `uniform_layout.total_size()`
-2. Fills it with `UniformLayout::populate_effect_params(...)`:
+The staging buffer is the caller's: it is reused from frame to frame and
+resized when it is too small, so no heap is allocated per frame.  The effect
+pipelines work in NDC space, so the projection matrix that is written is the
+identity one.
+
+For each draw object's effect steps:
+1. Skips the steps that use immediates (push constants): their data is written
+   by `build_immediates_data()` straight into the render pass
+2. Fills the staging buffer with `UniformLayout::populate_effect_params(...)`:
    - `g_Time` — elapsed seconds (wrapped to 1 hour)
-   - `g_ModelViewProjectionMatrix` — projection matrix
+   - `g_ModelViewProjectionMatrix` — the identity matrix (the effects work in NDC space)
    - `g_Screen` — `[width, height, aspect_ratio]`
-   - `g_EffectTextureProjectionMatrix` — projection matrix
+   - `g_EffectTextureProjectionMatrix` — the identity matrix
    - `g_EffectTextureProjectionMatrixInverse` — identity
    - `g_ParallaxPosition` — cursor position from `user_params`
    - `g_TextureNResolution` — from `tex_resolutions`
@@ -241,26 +260,45 @@ Orchestrates the multi-pass rendering for objects with effects.
 
 ```rust
 pub fn render_intermediate_passes(
-    device, queue, buffers, projection_bindgroup,
-    projection_matrix, draw_queue, post_process,
-    elapsed, screen_res, user_params,
+    encoder: &mut CommandEncoder,
+    device: &Device,
+    draw_queue: &DrawQueue,
+    frame: &FrameParams,
+    staging: &mut Vec<u8>,
 )
 ```
 
+The parameters of the frame are gathered in a `FrameParams`:
+
+```rust
+pub struct FrameParams<'a> {
+    pub projection_bindgroup: &'a ProjectionBindGroups,
+    pub post_process: &'a PostProcess,
+    pub elapsed: f32,
+    pub screen_res: [u32; 2],
+    pub user_params: &'a UserParams,
+}
+```
+
+The passes are recorded into the *shared* encoder, so the intermediate and the
+final passes are submitted together.
+
 **Flow:**
 
-1. **Writes identity projection** — temporarily overrides the projection buffer with identity matrix for NDC rendering
-2. **Uploads uniforms** with identity projection
-3. **For each draw object with intermediate textures:**
-   - **Source pass** — renders the original texture to `view_a` using `image_pipeline`
-   - **Effect passes** — for each effect in order:
-     - Renders to current target (`view_a` or `view_b`)
-     - Applies the effect shader pipeline
-     - Creates intermediate bindgroup via `make_effect_intermediate_bindgroup` (replacing source with previous output)
-     - Swaps source/target each iteration
-   - **Copy-back** (if odd effect count) — copies the final result back to `view_a` for the final pass
-4. **Restores projection** — writes original projection back to buffer
-5. **Re-uploads uniforms** with the real projection matrix
+1. **Uses the identity projection bind group** for the NDC rendering (no
+   projection-buffer round-trip)
+2. **For each draw object with intermediate textures:**
+   - **Source pass** — clears the ping-pong textures (with the GPU-side clear
+     when the adapter has `CLEAR_TEXTURE`) and copies the original texture to
+     `view_a` with the copy pipeline
+   - **Effect passes** — for each step of the object, in order:
+     - A step with a named FBO target writes into that FBO, a step without one
+       writes into the other view of the ping-pong pair
+     - The step is drawn with its own pipeline (a compute pipeline when the
+       effect has one, a render pipeline otherwise) and the cached bind group
+       of the step
+   - **Copy-back** — when the last result is not in `view_a`, it is copied back
+     into it for the final pass
 
 ---
 
@@ -277,16 +315,13 @@ pub fn render_intermediate_passes(
      │                 ▼
      │  render_intermediate_passes()
      │  ┌──────────────────────────────────┐
-     │  │ 1. Write identity projection     │
-     │  │ 2. Upload uniforms (identity)    │
-     │  │ 3. For each object:              │
-     │  │    a. Source → view_a            │
+     │  │ 1. Identity projection bind group│
+     │  │ 2. For each object:              │
+     │  │    a. Clear + Source → view_a     │
      │  │    b. Effect0: view_a → view_b   │
      │  │       Effect1: view_b → view_a   │
      │  │       ...                        │
-     │  │    c. Copy-back if odd count     │
-     │  │ 4. Restore original projection   │
-     │  │ 5. Re-upload uniforms (real)     │
+     │  │    c. Copy-back into view_a      │
      │  └──────────────────────────────────┘
      │                 │
      └─ No ────────────┘

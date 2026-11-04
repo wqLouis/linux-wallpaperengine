@@ -50,13 +50,16 @@ pub struct Header {
 }
 ```
 
-### `Pkg::new(pkg_path: &Path) -> Pkg`
+### `Pkg::new(pkg_path: &Path) -> Result<Pkg, io::Error>`
 
 Opens and reads a `.pkg` file:
 
 1. **Reads header** — version string (prefixed with 4-byte length) and file count
 2. **Reads entries** — for each file: path string (prefixed with 4-byte length), offset (4 bytes), size (4 bytes)
 3. **Reads files** — sorts entries by offset for sequential reading, seeks to each offset + data_start, reads raw bytes
+
+A file that cannot be read (or a package that is malformed) comes back as an
+`io::Error`.
 
 ### `Pkg::save_pkg(&self, target, dry_run, parse_tex, parse_video, parse_mdl)`
 
