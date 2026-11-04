@@ -90,8 +90,8 @@ cargo build --release
 | 包 | 目录 | 产物 |
 |---|---|---|
 | `linux-wallpaper-engine` | `.` | 库（`linux_wallpaper_engine`） |
-| `linux-wallpaper-engine-cli` | `crates/lwe-cli` | 命令行界面（`linux-wallpaper-engine`） |
-| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | 图形界面（`linux-wallpaper-engine-gui`） |
+| `linux-wallpaper-engine-cli` | `crates/lwe-cli` | 命令行界面（`lwe-cli`） |
+| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | 图形界面（`lwe-gui`） |
 
 ```bash
 cargo build                # 库 + 命令行界面（默认成员）
@@ -117,8 +117,8 @@ cargo install --path crates/lwe-gui --profile release
 也可以手动复制可执行文件：
 
 ```bash
-sudo install -Dm755 target/release/linux-wallpaper-engine /usr/local/bin/
-sudo install -Dm755 target/release/linux-wallpaper-engine-gui /usr/local/bin/
+sudo install -Dm755 target/release/lwe-cli /usr/local/bin/
+sudo install -Dm755 target/release/lwe-gui /usr/local/bin/
 ```
 
 GNOME 后端还需要安装 Shell 扩展：
@@ -132,7 +132,7 @@ GNOME 后端还需要安装 Shell 扩展：
 ## 图形界面
 
 ```bash
-linux-wallpaper-engine-gui
+lwe-gui
 ```
 
 图形界面是一个系统托盘应用：它在 D-Bus 上注册一个 **StatusNotifierItem**（也就是桌面的托盘图标），并常驻后台。点击图标会打开一个选择器，列出所选创意工坊文件夹中的壁纸；选中的壁纸由引擎渲染为桌面背景 —— 在同一进程内、于工作线程上完成，因此界面始终保持响应。

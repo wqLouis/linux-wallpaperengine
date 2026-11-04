@@ -101,8 +101,8 @@ The repository is a cargo workspace with three packages:
 | Package | Directory | What it builds |
 |---------|-----------|----------------|
 | `linux-wallpaper-engine` | `.` | the library (`linux_wallpaper_engine`) |
-| `linux-wallpaper-engine-cli` | `crates/lwe-cli` | the CLI (`linux-wallpaper-engine`) |
-| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | the GUI (`linux-wallpaper-engine-gui`) |
+| `linux-wallpaper-engine-cli` | `crates/lwe-cli` | the CLI (`lwe-cli`) |
+| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | the GUI (`lwe-gui`) |
 
 ```bash
 cargo build                # the library + the CLI (the default members)
@@ -130,8 +130,8 @@ cargo install --path crates/lwe-gui --profile release
 or copy the binaries into your `PATH` by hand:
 
 ```bash
-sudo install -Dm755 target/release/linux-wallpaper-engine /usr/local/bin/
-sudo install -Dm755 target/release/linux-wallpaper-engine-gui /usr/local/bin/
+sudo install -Dm755 target/release/lwe-cli /usr/local/bin/
+sudo install -Dm755 target/release/lwe-gui /usr/local/bin/
 ```
 
 The GNOME backend additionally needs the shell extension:
@@ -145,7 +145,7 @@ The GNOME backend additionally needs the shell extension:
 ## The graphical interface
 
 ```bash
-linux-wallpaper-engine-gui
+lwe-gui
 ```
 
 The GUI is a system tray application: it puts a **StatusNotifierItem** on the

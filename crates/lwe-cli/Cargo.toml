@@ -5,7 +5,7 @@ edition = "2024"
 description = "Yet another linux wallpaper engine — command line interface"
 
 [[bin]]
-name = "linux-wallpaper-engine"
+name = "lwe-cli"
 path = "src/main.rs"
 
 [dependencies]

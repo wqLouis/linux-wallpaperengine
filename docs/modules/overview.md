@@ -8,7 +8,7 @@ The repository is a cargo workspace with three packages:
 |---------|-----------|------------|
 | `linux-wallpaper-engine` | `.` | the library — the engine itself (`lib` target `linux_wallpaper_engine`) |
 | `linux-wallpaper-engine-cli` | `crates/lwe-cli` | the command line interface (binary `linux-wallpaper-engine`) |
-| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | the graphical interface (binary `linux-wallpaper-engine-gui`) |
+| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | the graphical interface (binary `lwe-gui`) |
 
 The library stays at the root of the repository: every asset is embedded with
 `include_str!`, the `pkg_parser` submodule is referenced by a relative path and

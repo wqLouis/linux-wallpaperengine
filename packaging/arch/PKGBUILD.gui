@@ -24,8 +24,8 @@ optdepends=("linux-wallpaper-engine-git: the command line interface")
 # The graphical interface is optional: install it explicitly when it is
 # wanted.
 optional = yes
-provides=("linux-wallpaper-engine-gui")
-conflicts=("linux-wallpaper-engine-gui")
+provides=("lwe-gui")
+conflicts=("lwe-gui")
 source=("${pkgname}::git+https://github.com/wqLouis/linux-wallpaperengine.git")
 sha256sums=("SKIP")
 options=(!strip)
@@ -48,5 +48,5 @@ build() {
 
 package() {
   cd "$srcdir/$pkgname"
-  install -Dm0755 "target/release/linux-wallpaper-engine-gui" "${pkgdir}/usr/bin/linux-wallpaper-engine-gui"
+  install -Dm0755 "target/release/lwe-gui" "${pkgdir}/usr/bin/lwe-gui"
 }

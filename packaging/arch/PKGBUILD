@@ -18,8 +18,8 @@ makedepends=("git" "rustup")
 # The graphical interface is optional: the command line interface does not
 # need it.
 optdepends=("linux-wallpaper-engine-gui-git: the graphical interface (the tray app)")
-provides=("linux-wallpaper-engine")
-conflicts=("linux-wallpaper-engine")
+provides=("lwe-cli")
+conflicts=("lwe-cli")
 source=("${pkgname}::git+https://github.com/wqLouis/linux-wallpaperengine.git")
 sha256sums=("SKIP")
 options=(!strip)
@@ -42,5 +42,5 @@ build() {
 
 package() {
   cd "$srcdir/$pkgname"
-  install -Dm0755 "target/release/linux-wallpaper-engine" "${pkgdir}/usr/bin/linux-wallpaper-engine"
+  install -Dm0755 "target/release/lwe-cli" "${pkgdir}/usr/bin/lwe-cli"
 }

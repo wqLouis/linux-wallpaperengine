@@ -47,7 +47,7 @@ the workspace:
 |---------|-----------|--------|
 | `linux-wallpaper-engine` | `.` | — (the library `linux_wallpaper_engine`) |
 | `linux-wallpaper-engine-cli` | `crates/lwe-cli` | `linux-wallpaper-engine` |
-| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | `linux-wallpaper-engine-gui` |
+| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | `lwe-gui` |
 
 ## Decisions
 

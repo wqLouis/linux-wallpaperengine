@@ -90,8 +90,8 @@ cargo build --release
 | 套件 | 目錄 | 產物 |
 |---|---|---|
 | `linux-wallpaper-engine` | `.` | 函式庫（`linux_wallpaper_engine`） |
-| `linux-wallpaper-engine-cli` | `crates/lwe-cli` | 命令列介面（`linux-wallpaper-engine`） |
-| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | 圖形介面（`linux-wallpaper-engine-gui`） |
+| `linux-wallpaper-engine-cli` | `crates/lwe-cli` | 命令列介面（`lwe-cli`） |
+| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | 圖形介面（`lwe-gui`） |
 
 ```bash
 cargo build                # 函式庫 + 命令列介面（預設成員）
@@ -117,8 +117,8 @@ cargo install --path crates/lwe-gui --profile release
 亦可手動複製執行檔：
 
 ```bash
-sudo install -Dm755 target/release/linux-wallpaper-engine /usr/local/bin/
-sudo install -Dm755 target/release/linux-wallpaper-engine-gui /usr/local/bin/
+sudo install -Dm755 target/release/lwe-cli /usr/local/bin/
+sudo install -Dm755 target/release/lwe-gui /usr/local/bin/
 ```
 
 GNOME 後端尚需安裝 Shell 擴充功能：
@@ -132,7 +132,7 @@ GNOME 後端尚需安裝 Shell 擴充功能：
 ## 圖形介面
 
 ```bash
-linux-wallpaper-engine-gui
+lwe-gui
 ```
 
 圖形介面是一個系統匣應用程式：它於 D-Bus 上註冊一個 **StatusNotifierItem**（即桌面的系統匣圖示），並常駐背景。點選圖示會開啟一個選擇器，列出所選工作坊資料夾中的桌布；選中的桌布由引擎算繪為桌面背景 —— 於同一行程內、在工作執行緒上完成，故介面始終保持回應。

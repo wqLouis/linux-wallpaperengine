@@ -477,7 +477,7 @@ pub fn open_picker(cx: &mut App) -> Option<AnyWindowHandle> {
     let window = cx.open_window(
         gpui::WindowOptions::default()
             .window_bounds(gpui::WindowBounds::Windowed(bounds))
-            .app_id(Some("linux-wallpaper-engine".to_string()))
+            .app_id(Some("lwe-gui".to_string()))
             .titlebar(Some(gpui::TitlebarOptions {
                 title: Some("Wallpapers".into()),
                 ..Default::default()

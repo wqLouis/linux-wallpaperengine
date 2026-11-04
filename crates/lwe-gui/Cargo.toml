@@ -5,7 +5,7 @@ edition = "2024"
 description = "Yet another linux wallpaper engine — native GUI (gpui-ce)"
 
 [[bin]]
-name = "linux-wallpaper-engine-gui"
+name = "lwe-gui"
 path = "src/main.rs"
 
 [dependencies]

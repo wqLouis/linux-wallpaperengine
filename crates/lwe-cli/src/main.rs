@@ -16,7 +16,7 @@ use linux_wallpaper_engine::scene::error::EngineError;
 // ── Root CLI ─────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "linux-wallpaper-engine", version, about, long_about = None)]
+#[command(name = "lwe-cli", version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

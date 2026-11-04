@@ -64,7 +64,7 @@ impl ksni::Tray for WallpaperTray {
     fn id(&self) -> String {
         // The id has to be the same in every session: the desktop uses it
         // to remember the position of the icon.
-        "linux-wallpaper-engine".into()
+        "lwe-gui".into()
     }
 
     fn title(&self) -> String {
