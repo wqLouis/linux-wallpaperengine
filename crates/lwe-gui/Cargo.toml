@@ -9,4 +9,21 @@ name = "linux-wallpaper-engine-gui"
 path = "src/main.rs"
 
 [dependencies]
+# The crates.io package is `gpui-ce`, but the library it exposes is `gpui`.
+gpui = { package = "gpui-ce", version = "0.3" }
+# The crates.io package is `gpui_ce_platform` (with underscores).
+gpui_platform = { package = "gpui_ce_platform", version = "0.3" }
+# The tray: a StatusNotifierItem on D-Bus, in pure Rust.
+ksni = "0.3.7"
+# The tray runs on its own thread with its own runtime: gpui owns the main
+# thread, the two never share a runtime.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "signal"] }
+# The channel between the tray thread and the gpui thread.
+async-channel = "2"
+# The previews of the wallpapers are decoded and encoded here.
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
 linux-wallpaper-engine = { path = "../.." }
