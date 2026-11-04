@@ -14,6 +14,16 @@
 //!   required.
 //! * **`mac_app`** — (macOS, experimental) Creates an AppKit window at the
 //!   desktop window level and renders into its `CAMetalLayer`.
+//!
+//! Every adapter takes an [AdapterConfig] and returns a
+//! [Result](crate::scene::error::EngineError): an adapter that cannot show
+//! the wallpaper says why instead of dying on the spot.
+
+use std::path::PathBuf;
+use std::sync::mpsc::Sender;
+
+use crate::engine::runtime::EngineStatus;
+use crate::engine::source::WallpaperSource;
 
 /// How the wallpaper is fitted to the output.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,6 +70,47 @@ pub mod gnome_app;
 pub mod mac_app;
 pub mod winit_adapter;
 pub mod wlr_app;
+
+/// What an adapter needs to render a wallpaper.
+#[derive(Clone, Debug)]
+pub struct AdapterConfig {
+    /// The wallpaper to render.
+    ///
+    /// An archive and a folder are the same thing here: the loader reads
+    /// the files of the source either way.
+    pub source: WallpaperSource,
+    /// How the wallpaper is fitted to the output.
+    pub fit_mode: FitMode,
+    /// Render the wallpaper without its post-process effects.
+    pub no_effects: bool,
+    /// Render the MDL puppets as flat quads.
+    pub no_mdl: bool,
+    /// The Wallpaper Engine assets directory (a lazy-loading fallback).
+    pub assets_path: Option<String>,
+    /// The rate the wallpaper is rendered at.
+    ///
+    /// [None] is "as fast as possible" and [Some](0) the static image
+    /// mode.
+    pub target_fps: Option<u32>,
+    /// Whether the loading progress is shown.
+    pub show_progress: bool,
+    /// Where the adapter reports what it is doing.
+    ///
+    /// The adapter sends the problems it runs into — the files of the
+    /// wallpaper that could not be used and the frames that could not be
+    /// drawn — to the host, which shows them to the user.  Without a
+    /// channel the problems are only written to the log.
+    pub status: Option<Sender<EngineStatus>>,
+}
+
+/// The source of the wallpaper at `path`.
+///
+/// The shape of the source is decided by the path itself: a folder is a
+/// folder and everything else is an archive, so a folder works exactly
+/// like an archive.
+pub fn wallpaper_source(path: impl Into<PathBuf>) -> WallpaperSource {
+    WallpaperSource::auto(path.into())
+}
 
 #[cfg(test)]
 mod tests {
@@ -123,5 +174,21 @@ mod tests {
 
         assert_eq!(scale.0, 1.0, "{scale:?}");
         assert!(scale.1 > 1.0, "{scale:?}");
+    }
+
+    /// The shape of the source is decided by the path itself.
+    ///
+    /// A folder works exactly like an archive: the loader reads the files
+    /// of the source either way.
+    #[test]
+    fn the_shape_of_the_source_is_decided_by_the_path() {
+        let folder = wallpaper_source(std::env::temp_dir());
+        assert!(matches!(folder, WallpaperSource::Folder(_)), "{folder:?}");
+
+        let archive = wallpaper_source(std::env::temp_dir().join("scene.pkg"));
+        assert!(
+            matches!(archive, WallpaperSource::Package(_)),
+            "{archive:?}"
+        );
     }
 }

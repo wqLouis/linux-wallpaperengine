@@ -4,7 +4,12 @@
 //! wayland winit). Cursor tracking works because winit windows receive
 //! pointer events even when stacked behind other windows.
 
-use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+    time::Instant,
+};
 
 use log;
 use pollster::block_on;
@@ -15,19 +20,26 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window},
 };
 
+use crate::engine::runtime::EngineStatus;
+use crate::scene::adapters::AdapterConfig;
+use crate::scene::error::{EngineError, EngineProblem, RenderError, WindowError};
 use crate::scene::renderer::app::WgpuApp;
 
 struct WinitApp {
     app: Rc<RefCell<Option<WgpuApp>>>,
     window: Option<Arc<Window>>,
 
-    pkg_path: String,
-    no_effects: bool,
-    no_mdl: bool,
-    assets_path: Option<String>,
-    target_fps: Option<u32>,
-    show_progress: bool,
+    config: AdapterConfig,
     last_frame: Option<Instant>,
+    /// The frames that could not be drawn.
+    failures: Cell<u64>,
+    /// The render failure that was reported already.
+    reported_failure: Cell<Option<RenderError>>,
+    /// The failure that happened inside the event loop.
+    ///
+    /// The event loop has no way to hand an error back, so the failure is
+    /// kept here and reported when the loop ends.
+    error: Option<EngineError>,
 }
 
 impl ApplicationHandler for WinitApp {
@@ -54,7 +66,14 @@ impl ApplicationHandler for WinitApp {
             .with_cursor(CursorIcon::Default)
             .with_title("Linux wallpaper engine");
 
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        let window = match event_loop.create_window(window_attributes) {
+            Ok(window) => Arc::new(window),
+            Err(error) => {
+                self.fail(EngineError::Window(WindowError::Create(error)));
+                event_loop.exit();
+                return;
+            }
+        };
 
         // Re-assert the standard pointer on the created window: the
         // attribute above only describes the *initial* cursor, and some
@@ -63,21 +82,36 @@ impl ApplicationHandler for WinitApp {
 
         let size = window.inner_size();
 
-        let mut wgpu_app = block_on(WgpuApp::new(
-            self.pkg_path.clone(),
+        let mut wgpu_app = match block_on(WgpuApp::new(
+            self.config.source.clone(),
             crate::scene::renderer::app::InitAppSurface::Winit(Arc::clone(&window)),
             [size.width, size.height],
-            self.no_effects,
-            self.no_mdl,
-            self.assets_path.clone(),
-            self.show_progress,
-        ));
+            self.config.no_effects,
+            self.config.no_mdl,
+            self.config.assets_path.clone(),
+            self.config.show_progress,
+        )) {
+            Ok(app) => app,
+            Err(error) => {
+                self.fail(error);
+                event_loop.exit();
+                return;
+            }
+        };
 
         // The rate at which the wallpaper is rendered: the videos are
         // played back at that rate.
-        wgpu_app.target_fps = self.target_fps;
+        wgpu_app.target_fps = self.config.target_fps;
 
-        wgpu_app.load();
+        if let Err(error) = wgpu_app.load() {
+            self.fail(error);
+            event_loop.exit();
+            return;
+        }
+
+        // The wallpaper is up: the host is told about it, together with
+        // the files that could not be used.
+        report(&self.config.status, &mut wgpu_app, true);
 
         self.app.borrow_mut().replace(wgpu_app);
         self.window = Some(window);
@@ -94,7 +128,7 @@ impl ApplicationHandler for WinitApp {
         match event {
             WindowEvent::RedrawRequested => {
                 // Throttle to target_fps if set.
-                if let Some(target_fps) = self.target_fps
+                if let Some(target_fps) = self.config.target_fps
                     && target_fps > 0
                     && let Some(last) = self.last_frame
                 {
@@ -106,25 +140,49 @@ impl ApplicationHandler for WinitApp {
 
                 self.last_frame = Some(Instant::now());
 
-                let app = app.as_mut().unwrap();
-                self.window.as_ref().unwrap().pre_present_notify();
+                // The window may be gone already: there is nothing to
+                // draw into then.
+                let Some(window) = self.window.as_ref() else {
+                    return;
+                };
+
+                let Some(app) = app.as_mut() else {
+                    return;
+                };
+
+                window.pre_present_notify();
 
                 log::trace!("RedrawRequested: calling render...");
-                let render_result = app.render();
-                if render_result.is_none() {
-                    log::warn!("render returned None");
+                if let Err(error) = app.render() {
+                    self.failures.set(self.failures.get().wrapping_add(1));
+                    log::warn!("render failed: {error}");
+
+                    // The same failure is reported once: the user does not
+                    // have to be told about every single frame that was
+                    // skipped.
+                    if self.reported_failure.get() != Some(error) {
+                        self.reported_failure.set(Some(error));
+                        app.problems.push(EngineProblem::Render(error));
+                        report(&self.config.status, app, false);
+                    }
                 }
+
                 // Don't request the next redraw when target_fps is 0
                 // (static image mode).
-                if self.target_fps != Some(0) {
-                    self.window.as_ref().unwrap().request_redraw();
+                if self.config.target_fps != Some(0) {
+                    window.request_redraw();
                     log::trace!("requested next redraw");
                 }
             }
             WindowEvent::Resized(physical_size) => {
-                let app = app.as_mut().unwrap();
+                let Some(app) = app.as_mut() else {
+                    return;
+                };
+
                 app.resize([physical_size.width, physical_size.height]);
-                self.window.as_ref().unwrap().request_redraw();
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
             }
             WindowEvent::CursorMoved {
                 device_id: _,
@@ -147,26 +205,64 @@ impl ApplicationHandler for WinitApp {
     }
 }
 
-pub fn start(
-    pkg_path: String,
-    no_effects: bool,
-    no_mdl: bool,
-    assets_path: Option<String>,
-    target_fps: Option<u32>,
-    show_progress: bool,
-) {
-    let event_loop = EventLoop::new().unwrap();
+impl WinitApp {
+    /// Remembers the failure that happened inside the event loop.
+    fn fail(&mut self, error: EngineError) {
+        log::error!("{}", error.trace());
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
+}
+
+/// Sends the status of the wallpaper to the host.
+///
+/// The problems that appeared since the last status are sent with it: a
+/// problem is reported once, never twice.  `force` sends the status even
+/// when there is nothing new to say: the first status tells the host that
+/// the wallpaper is up.
+fn report(status: &Option<std::sync::mpsc::Sender<EngineStatus>>, app: &mut WgpuApp, force: bool) {
+    let problems = std::mem::take(&mut app.problems);
+    if problems.is_empty() && !force {
+        return;
+    }
+
+    let Some(status) = status else {
+        return;
+    };
+
+    let _ = status.send(EngineStatus::Running {
+        title: app.title.clone(),
+        problems,
+    });
+}
+
+/// Start the wallpaper engine with the winit backend.
+///
+/// The window is created on the main thread (the windowing system wants
+/// it there) and the wallpaper is rendered until the window is closed.
+pub fn start(config: AdapterConfig) -> Result<(), EngineError> {
+    let event_loop =
+        EventLoop::new().map_err(|error| EngineError::Window(WindowError::EventLoop(error)))?;
     let mut app = WinitApp {
-        pkg_path,
-        no_effects,
-        no_mdl,
-        assets_path,
-        target_fps,
-        show_progress,
+        config,
         last_frame: None,
+        failures: Cell::new(0),
+        reported_failure: Cell::new(None),
+        error: None,
         app: Rc::new(RefCell::new(None)),
         window: None,
     };
 
-    event_loop.run_app(&mut app).unwrap();
+    let result = event_loop
+        .run_app(&mut app)
+        .map_err(|error| EngineError::Window(WindowError::EventLoop(error)));
+
+    // The failure that happened inside the event loop (the window could
+    // not be created, the wallpaper could not be loaded) is reported: the
+    // event loop itself has no way to hand an error back.
+    match app.error {
+        Some(error) => Err(error),
+        None => result,
+    }
 }

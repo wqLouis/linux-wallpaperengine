@@ -358,6 +358,23 @@ impl AssetStore {
         None
     }
 
+    /// The videos of the store whose container could not be probed.
+    ///
+    /// A video that cannot be probed has no size, so the renderer cannot
+    /// draw it: the loader reports it as a problem of the wallpaper.
+    pub fn broken_videos(&self) -> Vec<String> {
+        let map = self.map.borrow();
+        sorted_keys(&map)
+            .into_iter()
+            .filter_map(|key| match &map[key] {
+                Asset::Video(video) if video.info.width == 0 || video.info.height == 0 => {
+                    Some(key.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Insert (or replace) a parsed asset.
     pub fn insert(&self, key: &str, asset: Asset) {
         self.map.borrow_mut().insert(key.to_string(), asset);

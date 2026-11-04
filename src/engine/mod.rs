@@ -19,7 +19,9 @@ use std::path::PathBuf;
 
 use crate::scene::adapters::FitMode;
 
-pub use crate::scene::error::EngineError;
+pub use crate::scene::error::{EngineError, EngineProblem};
+pub use metadata::{describe, resolve_thumbnail, scan_wallpapers, Thumbnail, WallpaperInfo};
+pub use runtime::{EngineCommand, EngineStatus, WallpaperHandle};
 pub use source::WallpaperSource;
 
 /// How a wallpaper is rendered.

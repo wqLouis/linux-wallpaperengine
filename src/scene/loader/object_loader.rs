@@ -684,6 +684,7 @@ mod tests {
             root: Root::default(),
             assets: AssetStore::new(map, None),
             project: None,
+            problems: Vec::new(),
         }
     }
 

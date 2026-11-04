@@ -3,6 +3,7 @@
 
 use std::{io::Cursor, path::Path};
 
+use crate::scene::error::EngineError;
 use crate::scene::{
     loader::{
         mip_loader::MipChainGenerator,
@@ -25,9 +26,43 @@ use wgpu::*;
 use rodio::{OutputStream, Source};
 
 impl WgpuApp {
-    /// load assets
-    pub fn load(&mut self) {
-        let mut scene = Scene::new(self.scene_path.clone(), self.show_progress, self.no_mdl);
+    /// Loads the wallpaper of the source into the app.
+    ///
+    /// The files of the source are the input of the loader: an archive and
+    /// a folder of wallpaper files are the same thing once they are read.
+    /// Only the scene is replaced — the device, the surface and the audio
+    /// stream stay, so switching to another wallpaper is cheap.
+    ///
+    /// A wallpaper that cannot be loaded is reported: the reason is logged
+    /// (the application stays alive) and the error is returned, so the
+    /// caller decides what to do — the command line interface dies with the
+    /// trace of the error, the runtime tells the host.
+    ///
+    /// The files the loader could not use are kept in
+    /// [`WgpuApp::problems`]: they are not swallowed, the host shows them.
+    pub fn load(&mut self) -> Result<(), EngineError> {
+        let files = self.source.read_files()?;
+
+        let mut scene = match Scene::try_new_from_files(files, self.show_progress, self.no_mdl) {
+            Ok(scene) => scene,
+            Err(error) => {
+                log::error!(
+                    "failed to load the wallpaper '{}': {}",
+                    self.source.path().display(),
+                    error
+                );
+                return Err(EngineError::Scene(error));
+            }
+        };
+
+        // The title of the wallpaper and the files that could not be used
+        // are reported to the host.
+        self.title = scene
+            .project
+            .as_ref()
+            .map(|project| project.title.clone())
+            .filter(|title| !title.is_empty());
+        self.problems = std::mem::take(&mut scene.problems);
 
         // Enable lazy-loading fallback to Wallpaper Engine assets directory.
         if let Some(ref assets_path) = self.assets_path {
@@ -57,7 +92,7 @@ impl WgpuApp {
                 log::error!(
                     "the built-in image pipeline could not be created - the wallpaper will not be rendered"
                 );
-                return;
+                return Ok(());
             }
         };
         let objects = ObjectMap::with_clear_color(
@@ -121,6 +156,8 @@ impl WgpuApp {
         self.resolution = Some(size);
 
         self.post_process = Some(post_process);
+
+        Ok(())
     }
 }
 

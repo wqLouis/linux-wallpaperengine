@@ -40,6 +40,11 @@ pub enum EngineError {
     Unsupported(UnsupportedError),
     /// A file could not be read.
     Io(std::io::Error),
+    /// The session bus is not reachable.
+    ///
+    /// The GNOME backend talks to the Shell extension over the session
+    /// bus: when the bus is not there, the wallpaper cannot be shown.
+    Bus(zbus::Error),
     /// The failure has no error of its own: the string is the message.
     ///
     /// This is the leaf of the enum: the static string is what the failure
@@ -70,6 +75,21 @@ pub enum EngineProblem {
     },
     /// The audio device is not available: the wallpaper plays without sound.
     Audio(rodio::StreamError),
+    /// The renderer could not draw the wallpaper.
+    Render(RenderError),
+}
+
+/// Why the renderer could not draw a frame.
+///
+/// A frame that cannot be drawn does not stop the wallpaper: the frame is
+/// skipped and the problem is reported to the host, which shows it to the
+/// user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderError {
+    /// The scene is not loaded: there is nothing to draw yet.
+    NotReady,
+    /// The surface did not give a frame to draw into.
+    Surface,
 }
 
 impl fmt::Display for EngineProblem {
@@ -84,16 +104,20 @@ impl fmt::Display for EngineProblem {
             EngineProblem::Audio(error) => {
                 write!(f, "the audio device is not available: {error}")
             }
+            EngineProblem::Render(error) => {
+                write!(f, "the wallpaper could not be drawn: {error}")
+            }
         }
     }
 }
 
 impl std::error::Error for EngineProblem {
-    fn source(&self) -> Option<&(dyn std::error:: Error + 'static)> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             EngineProblem::Asset { error, .. } => Some(error),
             EngineProblem::Unsupported { error, .. } => Some(error),
             EngineProblem::Audio(error) => Some(error),
+            EngineProblem::Render(error) => Some(error),
         }
     }
 }
@@ -109,6 +133,14 @@ pub enum WindowError {
     Protocol(wayland_client::backend::WaylandError),
     /// The windowing system refused to create its event loop.
     EventLoop(winit::error::EventLoopError),
+    /// The windowing system refused to create the window.
+    Create(winit::error::OsError),
+    /// The display server sent an event that could not be dispatched.
+    Dispatch(wayland_client::DispatchError),
+    /// The globals of the display server could not be read.
+    Globals(wayland_client::globals::GlobalError),
+    /// A protocol of the display server could not be bound.
+    Bind(wayland_client::globals::BindError),
 }
 
 /// Why a feature is not available.
@@ -153,6 +185,7 @@ impl fmt::Display for EngineError {
             EngineError::Window(error) => write!(f, "the output window could not be created: {error}"),
             EngineError::Unsupported(error) => write!(f, "{error}"),
             EngineError::Io(error) => write!(f, "a file could not be read: {error}"),
+            EngineError::Bus(error) => write!(f, "the session bus is not reachable: {error}"),
             EngineError::Failed(message) => f.write_str(message),
         }
     }
@@ -170,6 +203,7 @@ impl std::error::Error for EngineError {
             EngineError::Window(error) => Some(error),
             EngineError::Unsupported(error) => Some(error),
             EngineError::Io(error) => Some(error),
+            EngineError::Bus(error) => Some(error),
             EngineError::Failed(_) => None,
         }
     }
@@ -184,6 +218,16 @@ impl fmt::Display for WindowError {
             }
             WindowError::Protocol(error) => write!(f, "the display server reported an error: {error}"),
             WindowError::EventLoop(error) => write!(f, "the event loop failed: {error}"),
+            WindowError::Create(error) => write!(f, "the window could not be created: {error}"),
+            WindowError::Dispatch(error) => {
+                write!(f, "the display server sent an event that failed: {error}")
+            }
+            WindowError::Globals(error) => {
+                write!(f, "the display server did not answer: {error}")
+            }
+            WindowError::Bind(error) => {
+                write!(f, "the display server does not offer the protocol: {error}")
+            }
         }
     }
 }
@@ -195,9 +239,24 @@ impl std::error::Error for WindowError {
             WindowError::MissingProtocol(_) => None,
             WindowError::Protocol(error) => Some(error),
             WindowError::EventLoop(error) => Some(error),
+            WindowError::Create(error) => Some(error),
+            WindowError::Dispatch(error) => Some(error),
+            WindowError::Globals(error) => Some(error),
+            WindowError::Bind(error) => Some(error),
         }
     }
 }
+
+impl fmt::Display for RenderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RenderError::NotReady => write!(f, "the scene is not loaded"),
+            RenderError::Surface => write!(f, "the surface did not give a frame"),
+        }
+    }
+}
+
+impl std::error::Error for RenderError {}
 
 impl fmt::Display for UnsupportedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

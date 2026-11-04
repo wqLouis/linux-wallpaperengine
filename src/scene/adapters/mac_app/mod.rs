@@ -27,9 +27,11 @@ use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
 
+use crate::scene::adapters::AdapterConfig;
+use crate::scene::error::{EngineError, EngineProblem, RenderError};
 use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
 
-use super::{FitMode, fit_scale};
+use super::fit_scale;
 
 // The Swift side of the adapter (see `native/MacDesktop.swift`).
 unsafe extern "C" {
@@ -60,22 +62,18 @@ impl Drop for DesktopWindow {
 ///
 /// Creates an AppKit window in the desktop layer, renders the scene into its
 /// Metal layer and keeps the AppKit event loop going.
-pub fn start(
-    pkg_path: String,
-    fit_mode: FitMode,
-    no_effects: bool,
-    no_mdl: bool,
-    assets_path: Option<String>,
-    target_fps: Option<u32>,
-    show_progress: bool,
-) {
+///
+/// Every failure is reported: the adapter hands the error that caused it
+/// back to the caller.
+pub fn start(config: AdapterConfig) -> Result<(), EngineError> {
     // The size of the screen in points and its scale factor.
     let (mut width, mut height, mut scale) = (0.0f64, 0.0f64, 1.0f64);
     unsafe { lwe_mac_screen_size(&mut width, &mut height, &mut scale) };
 
     if width <= 0.0 || height <= 0.0 {
-        eprintln!("error: cannot determine the size of the screen");
-        return;
+        return Err(EngineError::Failed(
+            "cannot determine the size of the screen",
+        ));
     }
 
     log::info!(
@@ -88,8 +86,7 @@ pub fn start(
     // The window has to be created on the main thread.
     let view = unsafe { lwe_mac_create_window(width, height) };
     if view.is_null() {
-        eprintln!("error: cannot create the desktop window");
-        return;
+        return Err(EngineError::Failed("cannot create the desktop window"));
     }
 
     // Closes the window when the adapter stops.
@@ -97,7 +94,7 @@ pub fn start(
 
     let display_handle = RawDisplayHandle::AppKit(AppKitDisplayHandle::new());
     let window_handle = RawWindowHandle::AppKit(AppKitWindowHandle::new(
-        NonNull::new(view).expect("the view pointer is not null"),
+        NonNull::new(view).ok_or(EngineError::Failed("the desktop window is null"))?,
     ));
 
     // The Metal layer draws in device pixels.
@@ -107,32 +104,36 @@ pub fn start(
     ];
 
     let mut app = block_on(WgpuApp::new(
-        pkg_path,
+        config.source.clone(),
         InitAppSurface::Raw((display_handle, window_handle)),
         size,
-        no_effects,
-        no_mdl,
-        assets_path,
-        show_progress,
-    ));
+        config.no_effects,
+        config.no_mdl,
+        config.assets_path.clone(),
+        config.show_progress,
+    ))?;
     // The rate at which the wallpaper is rendered: the videos are played
     // back at that rate.
-    app.target_fps = target_fps;
-    app.load();
+    app.target_fps = config.target_fps;
+    app.load()?;
 
     // The fit mode is applied to the camera projection.
     if let Some(scene) = app.resolution {
-        let (sx, sy) = fit_scale(fit_mode, scene, size);
-        log::info!("fit mode {:?}: ndc scale {}x{}", fit_mode, sx, sy);
+        let (sx, sy) = fit_scale(config.fit_mode, scene, size);
+        log::info!("fit mode {:?}: ndc scale {}x{}", config.fit_mode, sx, sy);
         app.set_view_scale(sx, sy);
     }
 
     let mut last_frame: Option<Instant> = None;
     let mut frame_count: u64 = 0;
+    // The frames that could not be drawn.
+    let mut failures: u64 = 0;
+    // The render failure that was reported already.
+    let mut reported_failure: Option<RenderError> = None;
 
     loop {
         // ── FPS limiting ──────────────────────────────────────────────
-        if let Some(target_fps) = target_fps
+        if let Some(target_fps) = config.target_fps
             && target_fps > 0
             && let Some(last) = last_frame
         {
@@ -145,8 +146,20 @@ pub fn start(
 
         // ── Render ────────────────────────────────────────────────────
         log::trace!("frame {}: rendering...", frame_count);
-        if app.render().is_none() {
-            log::warn!("frame {}: render returned None", frame_count);
+        if let Err(error) = app.render() {
+            failures = failures.wrapping_add(1);
+            log::warn!(
+                "frame {}: the frame could not be drawn: {}",
+                frame_count,
+                error
+            );
+
+            // The same failure is reported once: the user does not have to
+            // be told about every single frame that was skipped.
+            if reported_failure != Some(error) {
+                reported_failure = Some(error);
+                app.problems.push(EngineProblem::Render(error));
+            }
         }
         frame_count = frame_count.wrapping_add(1);
 

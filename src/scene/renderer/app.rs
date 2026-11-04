@@ -11,6 +11,8 @@ use log;
 use wgpu::*;
 
 use crate::MAX_TEXTURE;
+use crate::engine::source::WallpaperSource;
+use crate::scene::error::{EngineError, EngineProblem, RenderError};
 
 use super::{
     buffer::Buffers,
@@ -43,7 +45,18 @@ pub struct WgpuApp {
     pub surface: AppSurface,
     pub buffers: Option<Buffers>,
     pub projection_bindgroup: ProjectionBindGroups,
-    pub scene_path: String,
+    /// The wallpaper the app renders.
+    ///
+    /// A source is either an archive or a folder: the app does not care,
+    /// the loader reads the files of the source either way.
+    pub source: WallpaperSource,
+    /// The title of the wallpaper, when its `project.json` has one.
+    pub title: Option<String>,
+    /// The files of the wallpaper that could not be used.
+    ///
+    /// The loader collects them and the renderer adds its own: they are
+    /// reported to the host, which shows them to the user.
+    pub problems: Vec<EngineProblem>,
     pub assets_path: Option<String>,
     pub clear_color: Vec3,
     pub device: Device,
@@ -85,15 +98,23 @@ impl WgpuApp {
         self.user_params.cursor_position
     }
 
+    /// Creates the app: the graphics device, the surface and the audio
+    /// stream.
+    ///
+    /// Every step that can fail is reported: an adapter that was not
+    /// found, a device that could not be created, a surface that could not
+    /// be opened and an audio device that is not there all come back as an
+    /// [EngineError] that carries its cause.  Nothing here panics: a
+    /// machine without a GPU must not take the process down.
     pub async fn new(
-        scene_path: String,
+        source: WallpaperSource,
         surface: InitAppSurface,
         size: [u32; 2],
         no_effects: bool,
         no_mdl: bool,
         assets_path: Option<String>,
         show_progress: bool,
-    ) -> Self {
+    ) -> Result<Self, EngineError> {
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::VULKAN | Backends::METAL,
             ..Default::default()
@@ -106,7 +127,7 @@ impl WgpuApp {
                 compatible_surface: None,
             })
             .await
-            .unwrap();
+            .map_err(EngineError::Adapter)?;
 
         let required = Features::TEXTURE_BINDING_ARRAY
             | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
@@ -152,7 +173,7 @@ impl WgpuApp {
                 trace: Trace::Off,
             })
             .await
-            .unwrap();
+            .map_err(EngineError::Device)?;
 
         // wgpu treats uncaptured errors as fatal by default: it logs
         // "Handling wgpu errors as fatal by default" and panics.  The
@@ -171,16 +192,20 @@ impl WgpuApp {
         let has_clear_texture = enabled_features.contains(Features::CLEAR_TEXTURE);
         let has_subgroup = enabled_features.contains(Features::SUBGROUP);
 
-        let surface = AppSurface::new(surface, &instance, &adapter, &device, size);
+        let surface = AppSurface::new(surface, &instance, &adapter, &device, size)
+            .map_err(EngineError::Surface)?;
         // Buffers are allocated later in load() once we know geometry size.
         let projection_bindgroup = ProjectionBindGroups::new(&device);
-        let audio_stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
+        let audio_stream =
+            rodio::OutputStreamBuilder::open_default_stream().map_err(EngineError::Audio)?;
 
-        Self {
+        Ok(Self {
             surface,
             buffers: None,
             projection_bindgroup,
-            scene_path,
+            source,
+            title: None,
+            problems: Vec::new(),
             assets_path,
             clear_color: Vec3::ZERO,
             device,
@@ -203,18 +228,27 @@ impl WgpuApp {
             view_scale: [1.0, 1.0],
             readback_buffer: None,
             target_fps: None,
-        }
+        })
     }
 
-    pub fn render(&mut self) -> Option<()> {
+    /// Draws one frame of the wallpaper.
+    ///
+    /// A frame that cannot be drawn is reported: the caller counts the
+    /// failures and tells the host about them, so the user learns that
+    /// something is wrong instead of watching a frozen wallpaper.
+    pub fn render(&mut self) -> Result<(), RenderError> {
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.start_time);
         self.start_time = now;
         self.elapsed_ms = self.elapsed_ms.wrapping_add(delta.as_millis() as u64);
         let elapsed = (self.elapsed_ms % 3_600_000) as f32 / 1000.0;
 
-        let draw_queue = self.draw_queue.as_ref()?;
-        let post_process = self.post_process.as_ref()?;
+        let Some(draw_queue) = self.draw_queue.as_ref() else {
+            return Err(RenderError::NotReady);
+        };
+        let Some(post_process) = self.post_process.as_ref() else {
+            return Err(RenderError::NotReady);
+        };
         let screen_res = [self.surface.config.width, self.surface.config.height];
 
         let mut params = self.user_params.clone();
@@ -263,7 +297,7 @@ impl WgpuApp {
             );
         }
 
-        let buffers = self.buffers.as_ref()?;
+        let buffers = self.buffers.as_ref().ok_or(RenderError::NotReady)?;
 
         let output = render_pass::render_final_pass(
             &mut encoder,
@@ -280,10 +314,10 @@ impl WgpuApp {
         match output {
             Some(FinalFrame::Present(frame)) => {
                 frame.present();
-                Some(())
+                Ok(())
             }
-            Some(FinalFrame::Offscreen) => Some(()),
-            None => None,
+            Some(FinalFrame::Offscreen) => Ok(()),
+            None => Err(RenderError::Surface),
         }
     }
 

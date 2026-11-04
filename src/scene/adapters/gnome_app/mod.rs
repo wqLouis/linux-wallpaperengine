@@ -27,13 +27,16 @@
 mod frame;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use log;
 use pollster::block_on;
 use zbus::blocking::{Connection, Proxy};
 
+use crate::engine::runtime::EngineStatus;
+use crate::scene::adapters::AdapterConfig;
+use crate::scene::error::{EngineError, EngineProblem, RenderError};
 use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
 
 use super::{FitMode, fit_scale};
@@ -93,56 +96,33 @@ impl SharedState {
 ///
 /// Connects to the session bus, waits for the GNOME Shell extension, renders
 /// the scene off-screen and pushes the frames to the extension.
-pub fn start(
-    pkg_path: String,
-    fit_mode: FitMode,
-    no_effects: bool,
-    no_mdl: bool,
-    assets_path: Option<String>,
-    target_fps: Option<u32>,
-    show_progress: bool,
-) {
-    let connection = match Connection::session() {
-        Ok(connection) => connection,
-        Err(e) => {
-            eprintln!("error: cannot connect to the session bus: {}", e);
-            return;
-        }
-    };
+///
+/// Every failure is reported: the adapter hands the error that caused it
+/// back to the caller.
+pub fn start(config: AdapterConfig) -> Result<(), EngineError> {
+    let connection = Connection::session().map_err(EngineError::Bus)?;
 
     if !wait_for_extension(&connection, EXTENSION_TIMEOUT) {
-        eprintln!(
-            "error: the GNOME Shell extension '{}' is not available.",
-            EXTENSION_NAME
-        );
-        eprintln!("       install it with: gnome-extension/install.sh");
-        eprintln!("       then log out and back in (Wayland) to activate it");
-        return;
+        return Err(EngineError::Failed(
+            "the GNOME Shell extension is not available (install it with: gnome-extension/install.sh, then log out and back in)",
+        ));
     }
 
-    let proxy = match Proxy::new(
+    let proxy = Proxy::new(
         &connection,
         EXTENSION_NAME,
         EXTENSION_PATH,
         EXTENSION_INTERFACE,
-    ) {
-        Ok(proxy) => proxy,
-        Err(e) => {
-            eprintln!("error: cannot reach the GNOME Shell extension: {}", e);
-            return;
-        }
-    };
+    )
+    .map_err(EngineError::Bus)?;
 
     // Ask the extension for the geometry of the output.
-    let output = match proxy.call::<_, _, (u32, u32, u32)>("GetOutput", &()) {
-        Ok((width, height, scale)) => OutputInfo {
-            logical: [width.max(1), height.max(1)],
-            scale: scale.max(1),
-        },
-        Err(e) => {
-            eprintln!("error: cannot query the output geometry: {}", e);
-            return;
-        }
+    let (width, height, scale) = proxy
+        .call::<_, _, (u32, u32, u32)>("GetOutput", &())
+        .map_err(EngineError::Bus)?;
+    let output = OutputInfo {
+        logical: [width.max(1), height.max(1)],
+        scale: scale.max(1),
     };
 
     log::info!(
@@ -155,46 +135,48 @@ pub fn start(
     let physical = output.physical();
 
     let mut app = block_on(WgpuApp::new(
-        pkg_path,
+        config.source.clone(),
         InitAppSurface::Offscreen {
             width: physical[0],
             height: physical[1],
         },
         physical,
-        no_effects,
-        no_mdl,
-        assets_path,
-        show_progress,
-    ));
+        config.no_effects,
+        config.no_mdl,
+        config.assets_path.clone(),
+        config.show_progress,
+    ))?;
     // The rate at which the wallpaper is rendered: the videos are played
     // back at that rate.
-    app.target_fps = target_fps;
-    app.load();
+    app.target_fps = config.target_fps;
+    app.load()?;
+
+    // The wallpaper is up: the host is told about it, together with the
+    // files that could not be used.
+    report(&config.status, &mut app, true);
 
     // The fit mode is applied to the camera projection.
-    apply_fit(&mut app, fit_mode, physical);
+    apply_fit(&mut app, config.fit_mode, physical);
 
     let shared = Arc::new(SharedState::new());
-    *shared.output.lock().unwrap() = Some(output);
+    *lock(&shared.output) = Some(output);
 
     // Listen for the output changes and the pointer position.
     spawn_listener(shared.clone());
 
-    let mut writer = match FrameWriter::new(&std::process::id().to_string()) {
-        Ok(writer) => writer,
-        Err(e) => {
-            eprintln!("error: cannot create the shared frame files: {}", e);
-            return;
-        }
-    };
+    let mut writer = FrameWriter::new(&std::process::id().to_string()).map_err(EngineError::Io)?;
 
     let mut frame = vec![0u8; frame_size(physical)];
     let mut current_output = output;
     let mut last_frame: Option<Instant> = None;
     let mut frame_count: u64 = 0;
-    let static_mode = target_fps == Some(0);
+    let static_mode = config.target_fps == Some(0);
     // In static mode only a new frame is rendered when something changed.
     let mut dirty = true;
+    // The frames that could not be drawn.
+    let mut failures: u64 = 0;
+    // The render failure that was reported already.
+    let mut reported_failure: Option<RenderError> = None;
 
     loop {
         if !shared.alive.load(Ordering::Relaxed) {
@@ -203,7 +185,7 @@ pub fn start(
         }
 
         // ── Output changes ───────────────────────────────────────────
-        let new_output = *shared.output.lock().unwrap();
+        let new_output = *lock(&shared.output);
         if let Some(new_output) = new_output
             && new_output != current_output
         {
@@ -216,7 +198,7 @@ pub fn start(
             );
             current_output = new_output;
             app.resize(physical);
-            apply_fit(&mut app, fit_mode, physical);
+            apply_fit(&mut app, config.fit_mode, physical);
             frame = vec![0u8; frame_size(physical)];
             dirty = true;
         }
@@ -230,14 +212,27 @@ pub fn start(
 
         // ── Pointer position (depth parallax) ─────────────────────────
         {
-            let cursor = *shared.cursor.lock().unwrap();
+            let cursor = *lock(&shared.cursor);
             app.user_params.cursor_position = cursor;
         }
 
         // ── Render ────────────────────────────────────────────────────
         log::trace!("frame {}: rendering...", frame_count);
-        if app.render().is_none() {
-            log::warn!("frame {}: render returned None", frame_count);
+        if let Err(error) = app.render() {
+            failures = failures.wrapping_add(1);
+            log::warn!(
+                "frame {}: the frame could not be drawn: {}",
+                frame_count,
+                error
+            );
+
+            // The same failure is reported once: the user does not have
+            // to be told about every single frame that was skipped.
+            if reported_failure != Some(error) {
+                reported_failure = Some(error);
+                app.problems.push(EngineProblem::Render(error));
+                report(&config.status, &mut app, false);
+            }
         }
         frame_count = frame_count.wrapping_add(1);
 
@@ -248,17 +243,13 @@ pub fn start(
 
         let path = match writer.write(&frame) {
             Ok(path) => path.to_string_lossy().to_string(),
-            Err(e) => {
-                eprintln!("error: cannot write the shared frame: {}", e);
-                break;
-            }
+            Err(e) => return Err(EngineError::Io(e)),
         };
 
         let size = current_output.physical();
         if let Err(e) = proxy.call_method("PushFrame", &(path, size[0], size[1])) {
             log::error!("cannot push the frame to the extension: {}", e);
-            eprintln!("error: the GNOME Shell extension is not responding: {}", e);
-            break;
+            return Err(EngineError::Bus(e));
         }
 
         if static_mode {
@@ -266,7 +257,7 @@ pub fn start(
         }
 
         // ── FPS limiting ──────────────────────────────────────────────
-        if let Some(target_fps) = target_fps
+        if let Some(target_fps) = config.target_fps
             && target_fps > 0
             && let Some(last) = last_frame
         {
@@ -280,6 +271,39 @@ pub fn start(
 
     // Hide the background again when the app stops.
     let _ = proxy.call_method("SetVisible", &(false,));
+
+    Ok(())
+}
+
+/// Sends the status of the wallpaper to the host.
+///
+/// The problems that appeared since the last status are sent with it: a
+/// problem is reported once, never twice.  `force` sends the status even
+/// when there is nothing new to say: the first status tells the host that
+/// the wallpaper is up.
+fn report(status: &Option<std::sync::mpsc::Sender<EngineStatus>>, app: &mut WgpuApp, force: bool) {
+    let problems = std::mem::take(&mut app.problems);
+    if problems.is_empty() && !force {
+        return;
+    }
+
+    let Some(status) = status else {
+        return;
+    };
+
+    let _ = status.send(EngineStatus::Running {
+        title: app.title.clone(),
+        problems,
+    });
+}
+
+/// Locks the mutex, even when it is poisoned.
+///
+/// A poisoned mutex means that a thread died while it held the lock: the
+/// data it guards is still there, and unwrapping the poison would take
+/// the whole process down (the release profile aborts on a panic).
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The size (in bytes) of an RGBA frame.
@@ -362,7 +386,7 @@ fn spawn_listener(shared: Arc<SharedState>) {
                         logical: [width.max(1), height.max(1)],
                         scale: scale.max(1),
                     };
-                    let mut current = shared.output.lock().unwrap();
+                    let mut current = lock(&shared.output);
                     if current.as_ref() != Some(&output) {
                         log::info!(
                             "gnome: the extension reports a {}x{} output (scale {})",
@@ -377,7 +401,7 @@ fn spawn_listener(shared: Arc<SharedState>) {
                     let Ok((x, y)) = message.body().deserialize::<(f64, f64)>() else {
                         continue;
                     };
-                    *shared.cursor.lock().unwrap() = [x as f32, y as f32];
+                    *lock(&shared.cursor) = [x as f32, y as f32];
                 }
                 _ => {}
             }

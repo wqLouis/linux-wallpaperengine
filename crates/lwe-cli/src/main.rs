@@ -1,12 +1,17 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 use clap::Parser;
 use log::LevelFilter;
 
+use linux_wallpaper_engine::engine::EngineStatus;
 use linux_wallpaper_engine::scene::adapters::FitMode;
-use linux_wallpaper_engine::scene::adapters::{gnome_app, winit_adapter, wlr_app};
 #[cfg(target_os = "macos")]
 use linux_wallpaper_engine::scene::adapters::mac_app;
+use linux_wallpaper_engine::scene::adapters::{
+    AdapterConfig, gnome_app, wallpaper_source, winit_adapter, wlr_app,
+};
+use linux_wallpaper_engine::scene::error::EngineError;
 
 // ── Root CLI ─────────────────────────────────────────────────────────────────
 
@@ -276,52 +281,79 @@ fn main() {
 
     let target_fps = cli.target_fps;
 
-    match cli.modes.as_str() {
-        "winit" => winit_adapter::start(
-            cli.path,
-            cli.no_effects,
-            cli.no_mdl,
-            cli.assets_path,
-            target_fps,
-            show_progress,
-        ),
-        "wlr" => wlr_app::start(
-            cli.path,
-            fit_mode,
-            cli.no_effects,
-            cli.no_mdl,
-            cli.assets_path,
-            target_fps,
-            show_progress,
-        ),
-        "gnome" => gnome_app::start(
-            cli.path,
-            fit_mode,
-            cli.no_effects,
-            cli.no_mdl,
-            cli.assets_path,
-            target_fps,
-            show_progress,
-        ),
+    // The engine reports the files of the wallpaper that could not be
+    // used: they are printed, one per line, while the wallpaper keeps
+    // running.  The adapter runs in the foreground, so the reports are
+    // printed by a thread of their own.
+    let (status_tx, status_rx) = mpsc::channel();
+    let reporter = std::thread::spawn(move || {
+        for status in status_rx {
+            match status {
+                EngineStatus::Running { problems, .. } => {
+                    for problem in problems {
+                        eprintln!("warning: {problem}");
+                    }
+                }
+                EngineStatus::Failed(error) => {
+                    eprintln!("error: {}", error.trace());
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let config = AdapterConfig {
+        // A folder works exactly like an archive: the shape of the source
+        // is decided by the path itself.
+        source: wallpaper_source(PathBuf::from(&cli.path)),
+        fit_mode,
+        no_effects: cli.no_effects,
+        no_mdl: cli.no_mdl,
+        assets_path: cli.assets_path,
+        target_fps,
+        show_progress,
+        status: Some(status_tx.clone()),
+    };
+
+    let result = run_adapter(&cli.modes, config);
+
+    // The adapter is done: the status channel is closed and the thread
+    // that prints the problems ends.
+    drop(status_tx);
+    let _ = reporter.join();
+
+    // A wallpaper that cannot be shown is fatal: the error is reported
+    // with its whole chain of causes and the command line dies with it.
+    if let Err(error) = result {
+        eprintln!("error: {}", error.trace());
+        std::process::exit(1);
+    }
+}
+
+/// Runs the adapter of the display mode.
+fn run_adapter(mode: &str, config: AdapterConfig) -> Result<(), EngineError> {
+    match mode {
+        "winit" => winit_adapter::start(config),
+        "wlr" => wlr_app::start(config),
+        "gnome" => gnome_app::start(config),
         "mac" => {
             #[cfg(target_os = "macos")]
-            mac_app::start(
-                cli.path,
-                fit_mode,
-                cli.no_effects,
-                cli.no_mdl,
-                cli.assets_path,
-                target_fps,
-                show_progress,
-            );
+            {
+                mac_app::start(config)
+            }
             #[cfg(not(target_os = "macos"))]
-            eprintln!("The 'mac' display mode is only available on macOS");
+            {
+                let _ = config;
+                eprintln!("The 'mac' display mode is only available on macOS");
+                Ok(())
+            }
         }
         _ => {
             eprintln!(
                 "Unknown display mode '{}'. Valid: wlr, winit, gnome, mac",
-                cli.modes
+                mode
             );
+            Ok(())
         }
     }
 }

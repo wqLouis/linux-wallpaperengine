@@ -13,6 +13,7 @@ use super::scene::{
     BindUserProperty, Camera, General, Object, Orthogonalprojection, Root, Vectors,
 };
 use crate::collections::{Map, new_map};
+use crate::scene::error::EngineProblem;
 
 /// The key of the synthetic material of a video wallpaper.
 const VIDEO_MATERIAL: &str = "materials/video.json";
@@ -27,16 +28,44 @@ const VIDEO_TEXTURE: &str = "video";
 ///
 /// The loader reports the problem instead of panicking: a wallpaper that
 /// cannot be loaded is skipped and the application stays alive.
+///
+/// Every variant carries the error that caused it, so the chain of causes
+/// continues through [`std::error::Error::source`]: a `scene.json` that
+/// could not be parsed points at the serde error, a package that could not
+/// be read points at the io error.  The variants that have no error
+/// underneath them (a missing file, a malformed file) carry a static
+/// message instead.
 #[derive(Debug)]
 pub enum SceneError {
     /// The `.pkg` archive could not be read.
-    Package(String),
+    Package(std::io::Error),
     /// The archive holds no `scene.json`.
     MissingScene,
     /// The `scene.json` of the archive could not be parsed.
-    Scene(String),
+    Scene(serde_json::Error),
     /// The package is a video wallpaper, but it holds no video.
     MissingVideo,
+    /// A model of the wallpaper could not be parsed.
+    ///
+    /// The model parser reports a broken file by returning nothing: there
+    /// is no error object to point at, so the static message is the whole
+    /// information.
+    Model(&'static str),
+    /// A texture of the wallpaper could not be decoded.
+    ///
+    /// The texture parser reports a broken file by returning nothing, so
+    /// the static message is the whole information.
+    Texture(&'static str),
+    /// A file of the wallpaper could not be parsed.
+    ///
+    /// The parsers report a broken file by returning nothing, so the static
+    /// message is the whole information.
+    Asset(&'static str),
+    /// A video of the wallpaper could not be used.
+    ///
+    /// The video parser reports a broken container by handing out a clip
+    /// without a size, so the static message is the whole information.
+    Video(&'static str),
 }
 
 impl std::fmt::Display for SceneError {
@@ -50,11 +79,37 @@ impl std::fmt::Display for SceneError {
                 write!(f, "the scene.json could not be parsed: {}", reason)
             }
             SceneError::MissingVideo => write!(f, "the video wallpaper holds no video"),
+            SceneError::Model(reason) => {
+                write!(f, "the model could not be parsed: {}", reason)
+            }
+            SceneError::Texture(reason) => {
+                write!(f, "the texture could not be decoded: {}", reason)
+            }
+            SceneError::Asset(reason) => {
+                write!(f, "the file could not be parsed: {}", reason)
+            }
+            SceneError::Video(reason) => {
+                write!(f, "the video could not be used: {}", reason)
+            }
         }
     }
 }
 
-impl std::error::Error for SceneError {}
+impl std::error::Error for SceneError {
+    /// The error that caused this one, when there is one.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            SceneError::Package(error) => Some(error),
+            SceneError::Scene(error) => Some(error),
+            SceneError::MissingScene
+            | SceneError::MissingVideo
+            | SceneError::Model(_)
+            | SceneError::Texture(_)
+            | SceneError::Asset(_)
+            | SceneError::Video(_) => None,
+        }
+    }
+}
 
 pub struct Scene {
     pub root: Root,
@@ -66,6 +121,14 @@ pub struct Scene {
     /// package by a single looping clip.
     #[allow(dead_code)]
     pub project: Option<Project>,
+    /// The files that could not be used.
+    ///
+    /// The loader does not swallow them: a file it cannot parse is skipped
+    /// (the rest of the wallpaper may still be usable), but the problem is
+    /// collected here so that the host application can tell the user about
+    /// it.  The log line the loader writes is for the developer, this list
+    /// is for the user.
+    pub problems: Vec<EngineProblem>,
 }
 
 impl Scene {
@@ -98,23 +161,45 @@ impl Scene {
     /// video.
     pub fn try_new(path: String, show_progress: bool, no_mdl: bool) -> Result<Self, SceneError> {
         let path = Path::new(&path);
-        let pkg = Pkg::new(path).map_err(|error| SceneError::Package(error.to_string()))?;
+        let pkg = Pkg::new(path).map_err(SceneError::Package)?;
 
+        Self::try_new_from_files(pkg.files, show_progress, no_mdl)
+    }
+
+    /// Load a wallpaper scene from the files of a wallpaper source.
+    ///
+    /// The files are the input: a `.pkg` archive and a folder of wallpaper
+    /// files are the same thing once they are read, so the loader does not
+    /// care where they come from.  [`Scene::try_new`] reads an archive and
+    /// hands its files over; a host that has the files already (a folder
+    /// that was read itself, a browser that fetched them) hands them over
+    /// directly.
+    ///
+    /// The files are keyed by their path inside the wallpaper ("scene.json",
+    /// "materials/foo.json", …), exactly like the paths of an archive.
+    pub fn try_new_from_files(
+        files: Map<String, Vec<u8>>,
+        show_progress: bool,
+        no_mdl: bool,
+    ) -> Result<Self, SceneError> {
         let mut assets: Map<String, Asset> = new_map();
         // Texture decoding is the expensive part, so collect the textures
         // first and decode them in parallel below.
         let mut textures: Vec<(String, Vec<u8>)> = Vec::new();
+        // The files that could not be used: they are reported to the host
+        // application, not only to the log.
+        let mut problems: Vec<EngineProblem> = Vec::new();
 
         // A no-op stand-in used when the progress bar is disabled. All
         // `pb.inc(1)` / `pb.finish_and_clear()` calls below then become
         // free no-ops without scattering `if show_progress` checks.
         let pb = if show_progress {
-            ProgressBar::new(pkg.files.len() as u64)
+            ProgressBar::new(files.len() as u64)
         } else {
             ProgressBar::hidden()
         };
 
-        for (key, val) in pkg.files.into_iter() {
+        for (key, val) in files.into_iter() {
             match AssetType::from_path(&key) {
                 AssetType::Texture => textures.push((key, val)),
 
@@ -143,6 +228,10 @@ impl Scene {
                                 key,
                                 val.len()
                             );
+                            problems.push(EngineProblem::Asset {
+                                path: key,
+                                error: SceneError::Model("the MDL file is malformed"),
+                            });
                         }
                     }
                 }
@@ -157,14 +246,19 @@ impl Scene {
                         }
                         None => {
                             log::error!("pkg: failed to parse asset '{}' - skipping", key);
+                            problems.push(EngineProblem::Asset {
+                                path: key,
+                                error: SceneError::Asset("the file is malformed"),
+                            });
                         }
                     }
                 }
             }
         }
 
-        for (key, decoded) in parse_textures(textures, &pb) {
-            let asset = match decoded {
+        let decoded = parse_textures(textures, &pb);
+        for (key, texture) in decoded.textures {
+            let asset = match texture {
                 DecodedTexture::Image(tex) => Asset::Texture(Rc::new(tex)),
                 DecodedTexture::Video(bytes) => {
                     Asset::Video(Rc::new(VideoAsset::from_bytes(Rc::from(bytes))))
@@ -172,10 +266,26 @@ impl Scene {
             };
             assets.insert(key, asset);
         }
+        for (key, reason) in decoded.failures {
+            problems.push(EngineProblem::Asset {
+                path: key,
+                error: SceneError::Texture(reason),
+            });
+        }
 
         pb.finish_and_clear();
 
         let assets = AssetStore::new(assets, None);
+
+        // A video whose container could not be probed has no size: the
+        // renderer cannot draw it, so it is reported as a problem.
+        for key in assets.broken_videos() {
+            log::error!("pkg: the video '{}' could not be probed", key);
+            problems.push(EngineProblem::Asset {
+                path: key,
+                error: SceneError::Video("the video container could not be probed"),
+            });
+        }
 
         // The project manifest describes the wallpaper as a whole (its title
         // and what kind of wallpaper it is).
@@ -201,8 +311,7 @@ impl Scene {
             }
             _ => {
                 let scene_string = assets.json("scene.json").ok_or(SceneError::MissingScene)?;
-                serde_json::from_str(scene_string.as_str())
-                    .map_err(|error| SceneError::Scene(error.to_string()))?
+                serde_json::from_str(scene_string.as_str()).map_err(SceneError::Scene)?
             }
         };
 
@@ -210,6 +319,7 @@ impl Scene {
             root,
             assets,
             project,
+            problems,
         })
     }
 
@@ -218,11 +328,15 @@ impl Scene {
     /// It is the scene of a wallpaper that could not be loaded: the
     /// wallpaper is skipped, but the application still has a projection to
     /// render (an empty picture).
+    ///
+    /// The scene holds no problems: the failure that led to it is reported
+    /// as the error of the loading call, not as a problem of the scene.
     fn empty() -> Self {
         Self {
             root: Root::default(),
             assets: AssetStore::new(new_map(), None),
             project: None,
+            problems: Vec::new(),
         }
     }
 
@@ -350,6 +464,15 @@ enum DecodedTexture {
     Video(Vec<u8>),
 }
 
+/// The result of the texture decoding: the textures that could be decoded
+/// and the ones that could not.
+struct DecodedTextures {
+    /// The decoded textures, with the key they were stored under.
+    textures: Vec<(String, DecodedTexture)>,
+    /// The textures that were skipped, with the reason why.
+    failures: Vec<(String, &'static str)>,
+}
+
 /// Decode textures with a bounded worker pool.
 ///
 /// Uses one worker per available CPU core (capped at the number of textures)
@@ -358,12 +481,15 @@ enum DecodedTexture {
 ///
 /// A `.tex` file that carries a video container (Wallpaper Engine stores its
 /// video textures that way) is not decoded here: it becomes a video asset.
-fn parse_textures(
-    textures: Vec<(String, Vec<u8>)>,
-    pb: &ProgressBar,
-) -> Vec<(String, DecodedTexture)> {
+///
+/// The textures that cannot be decoded are not swallowed: they are handed
+/// back with the reason why, so the caller can report them.
+fn parse_textures(textures: Vec<(String, Vec<u8>)>, pb: &ProgressBar) -> DecodedTextures {
     if textures.is_empty() {
-        return Vec::new();
+        return DecodedTextures {
+            textures: Vec::new(),
+            failures: Vec::new(),
+        };
     }
 
     let workers = thread::available_parallelism()
@@ -380,6 +506,7 @@ fn parse_textures(
             let textures = &textures;
             handles.push(scope.spawn(move || {
                 let mut decoded = Vec::new();
+                let mut failures = Vec::new();
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some((key, val)) = textures.get(index) else {
@@ -391,6 +518,7 @@ fn parse_textures(
                     let Some(mut tex) = Tex::new(val) else {
                         pb.inc(1);
                         log::error!("pkg: invalid texture '{}' - skipping", key);
+                        failures.push((key.clone(), "the .tex file is malformed"));
                         continue;
                     };
 
@@ -405,6 +533,7 @@ fn parse_textures(
                     if tex.parse_to_rgba().is_none() {
                         pb.inc(1);
                         log::error!("pkg: failed to decode texture '{}' - skipping", key);
+                        failures.push((key.clone(), "the pixels could not be decoded"));
                         continue;
                     }
                     tex.build_mip_chain();
@@ -412,14 +541,20 @@ fn parse_textures(
                     pb.inc(1);
                     decoded.push((key.clone(), DecodedTexture::Image(tex)));
                 }
-                decoded
+                (decoded, failures)
             }));
         }
 
-        handles
-            .into_iter()
-            .flat_map(|handle| handle.join().expect("texture worker panicked"))
-            .collect()
+        let mut decoded = DecodedTextures {
+            textures: Vec::new(),
+            failures: Vec::new(),
+        };
+        for handle in handles {
+            let (textures, failures) = handle.join().expect("texture worker panicked");
+            decoded.textures.extend(textures);
+            decoded.failures.extend(failures);
+        }
+        decoded
     })
 }
 
@@ -548,6 +683,7 @@ mod tests {
             root,
             assets,
             project: Some(project),
+            problems: Vec::new(),
         };
 
         let objects =
@@ -878,5 +1014,184 @@ mod pkg_tests {
         // The empty scene still has a projection the renderer can use.
         assert!(scene.root.general.orthogonalprojection.width > 0);
         assert!(scene.root.general.orthogonalprojection.height > 0);
+
+        // The empty scene holds no problems: the failure itself is the
+        // error of the loading call.
+        assert!(scene.problems.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod files_tests {
+    use super::*;
+    use crate::collections::new_map;
+
+    /// The files of a scene wallpaper, as a folder (or an archive) holds
+    /// them.
+    fn scene_files() -> Map<String, Vec<u8>> {
+        // The scene.json of a real package holds every field of the scene
+        // types, so the default scene is serialized to get a valid one.
+        let mut root = serde_json::to_value(Root::default()).expect("the scene must serialize");
+        root["general"]["orthogonalprojection"]["width"] = serde_json::json!(800);
+        root["general"]["orthogonalprojection"]["height"] = serde_json::json!(600);
+        let scene_json = serde_json::to_string(&root).expect("the scene must serialize");
+
+        let mut files = new_map();
+        files.insert(
+            "project.json".to_string(),
+            br#"{"title":"My Scene","type":"Scene","file":"scene.json"}"#.to_vec(),
+        );
+        files.insert("scene.json".to_string(), scene_json.into_bytes());
+        files
+    }
+
+    /// The loader takes the files of a wallpaper, not its path: a folder
+    /// and an archive are the same thing once they are read.
+    #[test]
+    fn a_wallpaper_is_loaded_from_its_files() {
+        let scene = Scene::try_new_from_files(scene_files(), false, true)
+            .expect("the wallpaper must be loaded");
+
+        assert_eq!(scene.root.general.orthogonalprojection.width, 800);
+        assert_eq!(scene.root.general.orthogonalprojection.height, 600);
+
+        let project = scene.project.as_ref().expect("the manifest must be there");
+        assert_eq!(project.title, "My Scene");
+
+        // Everything could be used, so there is nothing to report.
+        assert!(scene.problems.is_empty());
+    }
+
+    /// A file that cannot be used is not swallowed: the wallpaper is still
+    /// loaded, but the file is reported as a problem.
+    #[test]
+    fn a_file_that_cannot_be_used_is_reported_as_a_problem() {
+        let mut files = scene_files();
+        files.insert(
+            "materials/broken.tex".to_string(),
+            b"not a texture".to_vec(),
+        );
+        files.insert("models/broken.mdl".to_string(), b"not a model".to_vec());
+
+        let scene =
+            Scene::try_new_from_files(files, false, false).expect("the wallpaper must be loaded");
+
+        // The rest of the wallpaper is usable.
+        assert_eq!(scene.root.general.orthogonalprojection.width, 800);
+
+        // The files that could not be used are reported.
+        let paths: Vec<&str> = scene
+            .problems
+            .iter()
+            .filter_map(|problem| match problem {
+                EngineProblem::Asset { path, .. } => Some(path.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(paths.len(), 2, "unexpected problems: {:?}", scene.problems);
+        assert!(paths.contains(&"materials/broken.tex"));
+        assert!(paths.contains(&"models/broken.mdl"));
+    }
+
+    /// A model that does not parse is skipped, but the user is told about
+    /// it.
+    #[test]
+    fn a_broken_model_is_a_problem_of_the_scene() {
+        let mut files = scene_files();
+        files.insert("models/broken.mdl".to_string(), b"not a model".to_vec());
+
+        let scene =
+            Scene::try_new_from_files(files, false, false).expect("the wallpaper must be loaded");
+
+        assert_eq!(scene.problems.len(), 1);
+        match &scene.problems[0] {
+            EngineProblem::Asset { path, error } => {
+                assert_eq!(path, "models/broken.mdl");
+                assert!(matches!(error, SceneError::Model(_)));
+            }
+            other => panic!("unexpected problem: {other:?}"),
+        }
+    }
+
+    /// A video that cannot be probed has no size: the renderer cannot draw
+    /// it, so it is reported as a problem of the scene.
+    #[test]
+    fn a_broken_video_is_a_problem_of_the_scene() {
+        let mut files = scene_files();
+        files.insert("materials/broken.mp4".to_string(), b"not a video".to_vec());
+
+        let scene =
+            Scene::try_new_from_files(files, false, true).expect("the wallpaper must be loaded");
+
+        assert_eq!(scene.problems.len(), 1);
+        match &scene.problems[0] {
+            EngineProblem::Asset { path, error } => {
+                assert_eq!(path, "materials/broken.mp4");
+                assert!(matches!(error, SceneError::Video(_)));
+            }
+            other => panic!("unexpected problem: {other:?}"),
+        }
+    }
+
+    /// A scene that cannot be parsed points at the error that caused it.
+    #[test]
+    fn a_broken_scene_points_at_the_json_error() {
+        let mut files = scene_files();
+        files.insert("scene.json".to_string(), b"{ this is not json".to_vec());
+
+        let error = match Scene::try_new_from_files(files, false, true) {
+            Ok(_) => panic!("the broken scene must be reported"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, SceneError::Scene(_)));
+
+        // The chain of causes continues: the error points at the serde
+        // error of the parser.
+        let source = std::error::Error::source(&error).expect("the cause must be there");
+        assert!(source.downcast_ref::<serde_json::Error>().is_some());
+    }
+
+    /// A package that cannot be read points at the io error.
+    #[test]
+    fn a_package_that_cannot_be_read_points_at_the_io_error() {
+        let path = std::env::temp_dir().join(format!(
+            "linux-wallpaperengine-no-package-{}.pkg",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let error = match Scene::try_new(path.to_string_lossy().to_string(), false, true) {
+            Ok(_) => panic!("the missing package must be reported"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, SceneError::Package(_)));
+
+        // The chain of causes continues: the error points at the io error
+        // of the file system.
+        let source = std::error::Error::source(&error).expect("the cause must be there");
+        let io_error = source
+            .downcast_ref::<std::io::Error>()
+            .expect("the cause is an io error");
+        assert_eq!(io_error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// A wallpaper without a scene is an error, not a panic.
+    #[test]
+    fn a_wallpaper_without_a_scene_is_reported() {
+        let mut files = new_map();
+        files.insert(
+            "project.json".to_string(),
+            br#"{"title":"My Scene","type":"Scene","file":"scene.json"}"#.to_vec(),
+        );
+
+        let error = match Scene::try_new_from_files(files, false, true) {
+            Ok(_) => panic!("the missing scene must be reported"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, SceneError::MissingScene));
     }
 }

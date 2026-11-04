@@ -43,26 +43,29 @@ pub enum InitAppSurface {
 }
 
 impl AppSurface {
+    /// Creates the render target of the app.
+    ///
+    /// The surface of a window is created by the graphics driver: when it
+    /// refuses, the failure is reported and the caller decides what to do.
+    /// Nothing here panics.
     pub fn new(
         surface: InitAppSurface,
         instance: &Instance,
         adapter: &Adapter,
         device: &Device,
         size: [u32; 2],
-    ) -> Self {
+    ) -> Result<Self, wgpu::CreateSurfaceError> {
         match surface {
             InitAppSurface::Offscreen { width, height } => {
-                Self::new_offscreen(device, width.max(1), height.max(1))
+                Ok(Self::new_offscreen(device, width.max(1), height.max(1)))
             }
             InitAppSurface::Raw((raw_display_handle, raw_window_handle)) => {
                 let wgpu_surface: Surface<'_> = unsafe {
-                    instance
-                        .create_surface_unsafe(SurfaceTargetUnsafe::RawHandle {
-                            raw_display_handle,
-                            raw_window_handle,
-                        })
-                        .unwrap()
-                };
+                    instance.create_surface_unsafe(SurfaceTargetUnsafe::RawHandle {
+                        raw_display_handle,
+                        raw_window_handle,
+                    })
+                }?;
 
                 let cap = wgpu_surface.get_capabilities(adapter);
 
@@ -73,7 +76,7 @@ impl AppSurface {
                 // the app renders as fast as possible), Immediate has no vsync.
                 let present_mode = pick_present_mode(&cap.present_modes);
 
-                Self {
+                Ok(Self {
                     target: SurfaceTarget::Swapchain(wgpu_surface),
                     config: SurfaceConfiguration {
                         usage: TextureUsages::RENDER_ATTACHMENT,
@@ -85,14 +88,14 @@ impl AppSurface {
                         view_formats: vec![],
                         desired_maximum_frame_latency: 2,
                     },
-                }
+                })
             }
             InitAppSurface::Winit(window) => {
-                let wgpu_surface = instance.create_surface(window).unwrap();
+                let wgpu_surface = instance.create_surface(window)?;
                 let cap = wgpu_surface.get_capabilities(adapter);
                 let present_mode = pick_present_mode(&cap.present_modes);
 
-                Self {
+                Ok(Self {
                     target: SurfaceTarget::Swapchain(wgpu_surface),
                     config: SurfaceConfiguration {
                         usage: TextureUsages::RENDER_ATTACHMENT,
@@ -104,7 +107,7 @@ impl AppSurface {
                         view_formats: vec![],
                         desired_maximum_frame_latency: 2,
                     },
-                }
+                })
             }
         }
     }
