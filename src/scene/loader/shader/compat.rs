@@ -556,6 +556,21 @@ pub fn replace_float_as_bool(line: &str) -> String {
                 search_start = abs_q + 1;
                 continue;
             }
+            // Skip if the parenthesis belongs to a function call: the
+            // closing parenthesis of the condition is then the one of the
+            // call, and wrapping its argument would change the call into
+            // another one (`sign(x)` would become `signbool(x)`).
+            if open_pos > 0 {
+                let before_paren = result[..open_pos].trim_end();
+                if before_paren
+                    .chars()
+                    .last()
+                    .is_some_and(|last| last.is_alphanumeric() || last == '_')
+                {
+                    search_start = abs_q + 1;
+                    continue;
+                }
+            }
             // Check if already wrapped with bool()
             if open_pos >= 5 && &result[open_pos - 5..open_pos] == "bool(" {
                 search_start = abs_q + 1;
@@ -659,6 +674,31 @@ fn find_top_level_comma(s: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn a_condition_that_ends_with_a_call_is_not_wrapped() {
+        // The closing parenthesis of the condition belongs to the call:
+        // wrapping its argument would turn sign(x) into signbool(x),
+        // which naga does not know.
+        let line = "notch = sign(a) == sign(b) && sign(c) == sign(quadrant.y) ? notch : -1e5;";
+        let rewritten = replace_float_as_bool(line);
+        assert_eq!(rewritten, line);
+        assert!(!rewritten.contains("signbool"));
+    }
+
+    #[test]
+    fn a_condition_that_is_a_parenthesised_expression_is_wrapped() {
+        // A float used as a condition is wrapped, so that it becomes a
+        // boolean.  A condition that is a comparison already is one and
+        // stays as it is.
+        let line = "float x = (a) ? 1.0 : 0.0;";
+        let rewritten = replace_float_as_bool(line);
+        assert!(rewritten.contains("bool("), "{rewritten}");
+
+        let comparison = "float x = (a < b) ? 1.0 : 0.0;";
+        assert_eq!(replace_float_as_bool(comparison), comparison);
+    }
 
     #[test]
     fn test_replace_mul_vec_matrix() {
