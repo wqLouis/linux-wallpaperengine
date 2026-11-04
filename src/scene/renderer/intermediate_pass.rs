@@ -31,24 +31,35 @@ pub struct FrameParams<'a> {
 ///
 /// Writes into the shared `encoder` so the caller can batch intermediate
 /// and final passes into a single submission.
+///
+/// A pass that cannot run does not take the process down: the pass is
+/// skipped and the reason is returned, so the caller can report it to the
+/// host and draw the wallpaper without it.
 pub fn render_intermediate_passes(
     encoder: &mut CommandEncoder,
     device: &Device,
     draw_queue: &DrawQueue,
     frame: &FrameParams,
     staging: &mut Vec<u8>,
-) {
+) -> Vec<&'static str> {
     log::trace!(
         "starting intermediate passes, {} objects",
         draw_queue.queue.len()
     );
 
+    // The reasons the passes could not run: they are reported to the
+    // host, which shows them to the user.
+    let mut failures: Vec<&'static str> = Vec::new();
+
     // Use the identity projection bind group for NDC-space rendering.
-    let proj_bg = frame
-        .projection_bindgroup
-        .identity
-        .as_ref()
-        .expect("identity projection bindgroup not initialized");
+    let Some(proj_bg) = frame.projection_bindgroup.identity.as_ref() else {
+        // Without the identity projection the passes cannot be drawn at
+        // all: the wallpaper is drawn without its effects instead of
+        // taking the process down.
+        log::error!("the identity projection is missing: the effects are not drawn");
+        failures.push("the identity projection is missing");
+        return failures;
+    };
 
     for (obj_idx, draw_object) in draw_queue.queue.iter().enumerate() {
         let Some(ref pp) = draw_object.intermediates else {
@@ -91,25 +102,29 @@ pub fn render_intermediate_passes(
         for step in &draw_object.effect_steps {
             // Select the correct pre-cached intermediate bind group.
             let inter_bg = if cur_is_a {
-                step.cached_bg_a.as_ref().unwrap_or_else(|| {
-                    log::error!("cached_bg_a missing for step, recreating");
-                    panic!("cached_bg_a missing")
-                })
+                step.cached_bg_a.as_ref()
             } else {
-                step.cached_bg_b.as_ref().unwrap_or_else(|| {
-                    log::error!("cached_bg_b missing for step, recreating");
-                    panic!("cached_bg_b missing")
-                })
+                step.cached_bg_b.as_ref()
+            };
+            let Some(inter_bg) = inter_bg else {
+                // The bind group of the step is missing: the step cannot
+                // be drawn, the rest of the wallpaper still can.
+                log::error!("the bind group of an effect is missing: the pass is skipped");
+                failures.push("the bind group of an effect is missing");
+                continue;
             };
 
-            let target_view = match &step.target {
+            // The target of the step: the framebuffer it names or the
+            // other view of the ping-pong pair.
+            let (target_view, target_size) = match &step.target {
                 Some(fbo_name) => match draw_object.fbos.get(fbo_name) {
                     Some(fbo) => {
                         // FBO writes don't advance ping-pong state.
-                        &fbo.view
+                        (&fbo.view, (fbo.width, fbo.height))
                     }
                     None => {
                         log::error!("unknown FBO '{}', skipping step", fbo_name);
+                        failures.push("an effect writes to an unknown framebuffer");
                         continue;
                     }
                 },
@@ -117,7 +132,7 @@ pub fn render_intermediate_passes(
                     // Ping-pong: write to the other view.
                     let dst = if cur_is_a { &pp.view_b } else { &pp.view_a };
                     cur_is_a = !cur_is_a;
-                    dst
+                    (dst, (pp.width, pp.height))
                 }
             };
 
@@ -146,13 +161,7 @@ pub fn render_intermediate_passes(
                 drop(pass); // End the render pass before starting a compute pass.
 
                 // Determine target dimensions for workgroup dispatch.
-                let (target_w, target_h) = match &step.target {
-                    Some(fbo_name) => {
-                        let fbo = draw_object.fbos.get(fbo_name).unwrap();
-                        (fbo.width, fbo.height)
-                    }
-                    None => (pp.width, pp.height),
-                };
+                let (target_w, target_h) = target_size;
 
                 let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
                 cpass.set_pipeline(compute_pipeline);
@@ -213,6 +222,8 @@ pub fn render_intermediate_passes(
     }
 
     log::trace!("intermediate passes done");
+
+    failures
 }
 
 fn copy_texture(

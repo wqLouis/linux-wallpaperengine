@@ -1,8 +1,10 @@
 use indicatif::ProgressBar;
 use pkg_parser::pkg_parser::{mdl_parser::MdlFile, parser::Pkg, tex_parser::Tex};
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::Mutex,
     sync::atomic::{AtomicUsize, Ordering},
     thread,
 };
@@ -473,6 +475,26 @@ struct DecodedTextures {
     failures: Vec<(String, &'static str)>,
 }
 
+/// What the decoding of a texture gives back.
+///
+/// The failure is returned, not panicked: the release profile aborts on a
+/// panic, so a broken texture must not take the process down.
+fn decode_texture(val: &[u8]) -> Result<DecodedTexture, &'static str> {
+    // A texture that cannot be parsed is skipped: the rest of the
+    // wallpaper may still be usable.
+    let mut tex = Tex::new(val).ok_or("the .tex file is malformed")?;
+
+    // A video texture: the payload is the video container, not pixels.
+    if is_video_payload(&tex.payload) {
+        return Ok(DecodedTexture::Video(tex.payload));
+    }
+
+    tex.parse_to_rgba().ok_or("the pixels could not be decoded")?;
+    tex.build_mip_chain();
+
+    Ok(DecodedTexture::Image(tex))
+}
+
 /// Decode textures with a bounded worker pool.
 ///
 /// Uses one worker per available CPU core (capped at the number of textures)
@@ -498,64 +520,87 @@ fn parse_textures(textures: Vec<(String, Vec<u8>)>, pb: &ProgressBar) -> Decoded
         .min(textures.len());
     let next = AtomicUsize::new(0);
 
+    // The results are collected in a mutex: a worker that dies does not
+    // take the work it already did with it.
+    let results = Mutex::new(DecodedTextures {
+        textures: Vec::new(),
+        failures: Vec::new(),
+    });
+    // The keys of the textures: the ones no worker handled are reported
+    // when a worker dies.
+    let keys: Vec<String> = textures.iter().map(|(key, _)| key.clone()).collect();
+
     thread::scope(|scope| {
         let mut handles = Vec::with_capacity(workers);
 
         for _ in 0..workers {
             let next = &next;
             let textures = &textures;
+            let results = &results;
             handles.push(scope.spawn(move || {
-                let mut decoded = Vec::new();
-                let mut failures = Vec::new();
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some((key, val)) = textures.get(index) else {
                         break;
                     };
 
-                    // A texture that cannot be parsed is skipped: the rest
-                    // of the wallpaper may still be usable.
-                    let Some(mut tex) = Tex::new(val) else {
-                        pb.inc(1);
-                        log::error!("pkg: invalid texture '{}' - skipping", key);
-                        failures.push((key.clone(), "the .tex file is malformed"));
-                        continue;
-                    };
-
-                    // A video texture: the payload is the video container,
-                    // not pixels.
-                    if is_video_payload(&tex.payload) {
-                        pb.inc(1);
-                        decoded.push((key.clone(), DecodedTexture::Video(tex.payload)));
-                        continue;
+                    match decode_texture(val) {
+                        Ok(texture) => {
+                            pb.inc(1);
+                            results
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .textures
+                                .push((key.clone(), texture));
+                        }
+                        Err(reason) => {
+                            pb.inc(1);
+                            log::error!(
+                                "pkg: the texture '{}' could not be used: {} - skipping",
+                                key,
+                                reason
+                            );
+                            results
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .failures
+                                .push((key.clone(), reason));
+                        }
                     }
-
-                    if tex.parse_to_rgba().is_none() {
-                        pb.inc(1);
-                        log::error!("pkg: failed to decode texture '{}' - skipping", key);
-                        failures.push((key.clone(), "the pixels could not be decoded"));
-                        continue;
-                    }
-                    tex.build_mip_chain();
-
-                    pb.inc(1);
-                    decoded.push((key.clone(), DecodedTexture::Image(tex)));
                 }
-                (decoded, failures)
             }));
         }
 
-        let mut decoded = DecodedTextures {
-            textures: Vec::new(),
-            failures: Vec::new(),
-        };
         for handle in handles {
-            let (textures, failures) = handle.join().expect("texture worker panicked");
-            decoded.textures.extend(textures);
-            decoded.failures.extend(failures);
+            // A worker that died takes the process down with it when the
+            // profile aborts on a panic, so this is only reached in a
+            // build that unwinds.  The textures it did not decode are
+            // reported below.
+            if handle.join().is_err() {
+                log::error!("pkg: a texture worker died - the textures it did not decode are skipped");
+            }
         }
-        decoded
-    })
+    });
+
+    let mut decoded = results
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // The textures no worker handled are reported: the wallpaper is still
+    // loaded, but the texture is missing.
+    let handled: HashSet<String> = decoded
+        .textures
+        .iter()
+        .map(|(key, _)| key.clone())
+        .chain(decoded.failures.iter().map(|(key, _)| key.clone()))
+        .collect();
+    for key in keys {
+        if !handled.contains(&key) {
+            decoded.failures.push((key, "the texture worker died"));
+        }
+    }
+
+    decoded
 }
 
 #[cfg(test)]
@@ -1092,6 +1137,37 @@ mod files_tests {
         assert_eq!(paths.len(), 2, "unexpected problems: {:?}", scene.problems);
         assert!(paths.contains(&"materials/broken.tex"));
         assert!(paths.contains(&"models/broken.mdl"));
+    }
+
+    /// A texture that cannot be decoded does not stop the wallpaper: the
+    /// texture is reported as a problem of the scene.
+    ///
+    /// The textures are decoded on worker threads: a texture that cannot
+    /// be decoded is handed back as a failure, not as a panic of the
+    /// worker.
+    #[test]
+    fn a_texture_that_cannot_be_decoded_is_a_problem_of_the_scene() {
+        let mut files = scene_files();
+        files.insert(
+            "materials/broken.tex".to_string(),
+            b"not a texture".to_vec(),
+        );
+
+        let scene =
+            Scene::try_new_from_files(files, false, true).expect("the wallpaper must be loaded");
+
+        // The rest of the wallpaper is usable.
+        assert_eq!(scene.root.general.orthogonalprojection.width, 800);
+
+        // The texture that could not be decoded is reported.
+        assert_eq!(scene.problems.len(), 1, "{:?}", scene.problems);
+        match &scene.problems[0] {
+            EngineProblem::Asset { path, error } => {
+                assert_eq!(path, "materials/broken.tex");
+                assert!(matches!(error, SceneError::Texture(_)), "{error:?}");
+            }
+            other => panic!("unexpected problem: {other:?}"),
+        }
     }
 
     /// A model that does not parse is skipped, but the user is told about

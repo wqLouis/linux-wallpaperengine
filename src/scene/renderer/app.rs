@@ -89,6 +89,13 @@ pub struct WgpuApp {
     /// down (contain) so the wallpaper keeps its aspect ratio.
     pub view_scale: [f32; 2],
 
+    /// The failures of the post-processing that were reported already.
+    ///
+    /// The same failure is reported once: a wallpaper whose effects
+    /// cannot be drawn fails on every frame, and the channel of the host
+    /// must not be flooded with it.
+    pub(crate) reported_passes: Vec<&'static str>,
+
     /// Staging buffer used to copy off-screen frames back to the CPU.
     readback_buffer: Option<Buffer>,
 }
@@ -228,6 +235,7 @@ impl WgpuApp {
             view_scale: [1.0, 1.0],
             readback_buffer: None,
             target_fps: None,
+            reported_passes: Vec::new(),
         })
     }
 
@@ -288,13 +296,27 @@ impl WgpuApp {
                 screen_res,
                 user_params: &params,
             };
-            intermediate_pass::render_intermediate_passes(
+            let failures = intermediate_pass::render_intermediate_passes(
                 &mut encoder,
                 &self.device,
                 draw_queue,
                 &frame,
                 &mut self.uniform_staging,
             );
+
+            // A pass that could not be drawn is a problem of the
+            // wallpaper, not a fatal error: the wallpaper is drawn
+            // without it and the user is told about it.  The same
+            // failure is reported once: it happens on every frame.
+            for reason in failures {
+                if self.reported_passes.contains(&reason) {
+                    continue;
+                }
+                self.reported_passes.push(reason);
+                log::error!("the effects could not be drawn: {reason}");
+                self.problems
+                    .push(EngineProblem::Render(RenderError::Pass(reason)));
+            }
         }
 
         let buffers = self.buffers.as_ref().ok_or(RenderError::NotReady)?;
@@ -395,7 +417,12 @@ impl WgpuApp {
                 mapped_at_creation: false,
             }));
         }
-        let buffer = self.readback_buffer.as_ref().unwrap();
+        // The buffer is there: it was just created when it was missing
+        // or too small.
+        let Some(buffer) = self.readback_buffer.as_ref() else {
+            log::error!("the readback buffer is missing");
+            return false;
+        };
 
         let mut encoder = self
             .device

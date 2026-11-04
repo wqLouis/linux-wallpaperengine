@@ -27,8 +27,9 @@ use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
 
-use crate::scene::adapters::AdapterConfig;
-use crate::scene::error::{EngineError, EngineProblem, RenderError};
+use crate::engine::runtime::EngineStatus;
+use crate::scene::adapters::{AdapterConfig, RenderFailures};
+use crate::scene::error::EngineError;
 use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
 
 use super::fit_scale;
@@ -56,6 +57,28 @@ impl Drop for DesktopWindow {
     fn drop(&mut self) {
         unsafe { lwe_mac_destroy_window() };
     }
+}
+
+/// Sends the status of the wallpaper to the host.
+///
+/// The problems that appeared since the last status are sent with it: a
+/// problem is reported once, never twice.  `force` sends the status even
+/// when there is nothing new to say: the first status tells the host that
+/// the wallpaper is up.
+fn report(status: &Option<std::sync::mpsc::Sender<EngineStatus>>, app: &mut WgpuApp, force: bool) {
+    let problems = std::mem::take(&mut app.problems);
+    if problems.is_empty() && !force {
+        return;
+    }
+
+    let Some(status) = status else {
+        return;
+    };
+
+    let _ = status.send(EngineStatus::Running {
+        title: app.title.clone(),
+        problems,
+    });
 }
 
 /// Start the wallpaper engine with the macOS backend.
@@ -124,12 +147,15 @@ pub fn start(config: AdapterConfig) -> Result<(), EngineError> {
         app.set_view_scale(sx, sy);
     }
 
+    // The wallpaper is up: the host is told about it, together with the
+    // files that could not be used.
+    report(&config.status, &mut app, true);
+
     let mut last_frame: Option<Instant> = None;
     let mut frame_count: u64 = 0;
-    // The frames that could not be drawn.
-    let mut failures: u64 = 0;
-    // The render failure that was reported already.
-    let mut reported_failure: Option<RenderError> = None;
+    // The frames that could not be drawn: they are counted and reported
+    // to the host.
+    let mut failures = RenderFailures::new(config.status.clone());
 
     loop {
         // ── FPS limiting ──────────────────────────────────────────────
@@ -147,21 +173,18 @@ pub fn start(config: AdapterConfig) -> Result<(), EngineError> {
         // ── Render ────────────────────────────────────────────────────
         log::trace!("frame {}: rendering...", frame_count);
         if let Err(error) = app.render() {
-            failures = failures.wrapping_add(1);
-            log::warn!(
-                "frame {}: the frame could not be drawn: {}",
-                frame_count,
-                error
-            );
-
-            // The same failure is reported once: the user does not have to
-            // be told about every single frame that was skipped.
-            if reported_failure != Some(error) {
-                reported_failure = Some(error);
-                app.problems.push(EngineProblem::Render(error));
-            }
+            // The frame that could not be drawn is counted and reported:
+            // the same failure is reported once, the user does not have
+            // to be told about every single frame that was skipped.
+            failures.record(error, app.title.as_deref());
         }
         frame_count = frame_count.wrapping_add(1);
+
+        // The problems of the wallpaper — the files that could not be
+        // used, the effects that could not be drawn — are reported to the
+        // host.  They are taken out of the list, so a problem is reported
+        // once.
+        report(&config.status, &mut app, false);
 
         // The Rust loop is not an AppKit run loop, so the events have to be
         // pumped by hand.

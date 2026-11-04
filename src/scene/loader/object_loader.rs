@@ -239,7 +239,16 @@ impl ObjectMap {
             let Some(tex_obj) = texture_map.remove(&id) else {
                 continue;
             };
-            let obj = Rc::into_inner(tex_obj).unwrap().into_inner();
+            // The object is taken out of its cell when it is the last
+            // holder of it.  When it is shared, the value is cloned out
+            // of the cell instead: the object is still drawn.
+            let obj = match Rc::try_unwrap(tex_obj) {
+                Ok(obj) => obj.into_inner(),
+                Err(shared) => {
+                    let obj = shared.borrow();
+                    (*obj).clone()
+                }
+            };
             if !obj.visible {
                 continue;
             }

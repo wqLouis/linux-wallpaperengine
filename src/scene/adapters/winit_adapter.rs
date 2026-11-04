@@ -5,7 +5,7 @@
 //! pointer events even when stacked behind other windows.
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     rc::Rc,
     sync::Arc,
     time::Instant,
@@ -21,8 +21,8 @@ use winit::{
 };
 
 use crate::engine::runtime::EngineStatus;
-use crate::scene::adapters::AdapterConfig;
-use crate::scene::error::{EngineError, EngineProblem, RenderError, WindowError};
+use crate::scene::adapters::{AdapterConfig, RenderFailures};
+use crate::scene::error::{EngineError, WindowError};
 use crate::scene::renderer::app::WgpuApp;
 
 struct WinitApp {
@@ -32,9 +32,10 @@ struct WinitApp {
     config: AdapterConfig,
     last_frame: Option<Instant>,
     /// The frames that could not be drawn.
-    failures: Cell<u64>,
-    /// The render failure that was reported already.
-    reported_failure: Cell<Option<RenderError>>,
+    ///
+    /// The failures are counted and reported to the host: a frame that
+    /// cannot be drawn is a failure the user must know about.
+    failures: RenderFailures,
     /// The failure that happened inside the event loop.
     ///
     /// The event loop has no way to hand an error back, so the failure is
@@ -154,18 +155,18 @@ impl ApplicationHandler for WinitApp {
 
                 log::trace!("RedrawRequested: calling render...");
                 if let Err(error) = app.render() {
-                    self.failures.set(self.failures.get().wrapping_add(1));
-                    log::warn!("render failed: {error}");
-
-                    // The same failure is reported once: the user does not
-                    // have to be told about every single frame that was
-                    // skipped.
-                    if self.reported_failure.get() != Some(error) {
-                        self.reported_failure.set(Some(error));
-                        app.problems.push(EngineProblem::Render(error));
-                        report(&self.config.status, app, false);
-                    }
+                    // The frame that could not be drawn is counted and
+                    // reported: the same failure is reported once, the
+                    // user does not have to be told about every single
+                    // frame that was skipped.
+                    self.failures.record(error, app.title.as_deref());
                 }
+
+                // The problems of the wallpaper — the files that could
+                // not be used, the effects that could not be drawn — are
+                // reported to the host.  They are taken out of the list,
+                // so a problem is reported once.
+                report(&self.config.status, app, false);
 
                 // Don't request the next redraw when target_fps is 0
                 // (static image mode).
@@ -244,11 +245,12 @@ fn report(status: &Option<std::sync::mpsc::Sender<EngineStatus>>, app: &mut Wgpu
 pub fn start(config: AdapterConfig) -> Result<(), EngineError> {
     let event_loop =
         EventLoop::new().map_err(|error| EngineError::Window(WindowError::EventLoop(error)))?;
+    // The failures of the frames are reported to the host.
+    let failures = RenderFailures::new(config.status.clone());
     let mut app = WinitApp {
         config,
         last_frame: None,
-        failures: Cell::new(0),
-        reported_failure: Cell::new(None),
+        failures,
         error: None,
         app: Rc::new(RefCell::new(None)),
         window: None,

@@ -65,11 +65,14 @@ pub fn fit_scale(fit_mode: FitMode, scene: [u32; 2], target: [u32; 2]) -> (f32, 
     }
 }
 
+pub mod failures;
 pub mod gnome_app;
 #[cfg(target_os = "macos")]
 pub mod mac_app;
 pub mod winit_adapter;
 pub mod wlr_app;
+
+pub use failures::RenderFailures;
 
 /// What an adapter needs to render a wallpaper.
 #[derive(Clone, Debug)]

@@ -53,8 +53,8 @@ use wayland_protocols::wp::{
 
 use crate::engine::runtime::{EngineCommand, EngineStatus};
 use crate::engine::source::WallpaperSource;
-use crate::scene::adapters::AdapterConfig;
-use crate::scene::error::{EngineError, EngineProblem, RenderError, WindowError};
+use crate::scene::adapters::{AdapterConfig, RenderFailures};
+use crate::scene::error::{EngineError, EngineProblem, WindowError};
 use crate::scene::renderer::app::{InitAppSurface, WgpuApp};
 
 /// Main state for the wlr-layer-shell adapter.
@@ -84,6 +84,12 @@ pub struct WlrState {
     /// Set to true when reconfigure changes the swapchain (so we re-render once
     /// in static-image mode) and initially true for the first frame.
     needs_render: bool,
+    /// The failures of the adapter that were reported already.
+    ///
+    /// The same failure is reported once: the display server can send the
+    /// same event on every frame, and the channel of the host must not be
+    /// flooded with it.
+    reported_failures: Vec<&'static str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -150,14 +156,17 @@ impl OutputHandler for WlrState {
 
 impl Dispatch<WpFractionalScaleManagerV1, FractionalScaleData, WlrState> for WlrState {
     fn event(
-        _: &mut WlrState,
+        state: &mut WlrState,
         _: &WpFractionalScaleManagerV1,
         _: <WpFractionalScaleManagerV1 as Proxy>::Event,
         _: &FractionalScaleData,
         _: &Connection,
         _: &QueueHandle<WlrState>,
     ) {
-        unreachable!()
+        // The manager has no event: the display server does not send one.
+        // A protocol error must not take the process down, so it is
+        // reported and the wallpaper carries on.
+        state.report_failure("the display server sent the fractional scale manager an event");
     }
 }
 
@@ -179,27 +188,33 @@ impl Dispatch<WpFractionalScaleV1, FractionalScaleData, WlrState> for WlrState {
 
 impl Dispatch<WpViewporter, FractionalScaleData, WlrState> for WlrState {
     fn event(
-        _: &mut WlrState,
+        state: &mut WlrState,
         _: &WpViewporter,
         _: <WpViewporter as Proxy>::Event,
         _: &FractionalScaleData,
         _: &Connection,
         _: &QueueHandle<WlrState>,
     ) {
-        unreachable!()
+        // The viewporter has no event: the display server does not send
+        // one.  A protocol error must not take the process down, so it is
+        // reported and the wallpaper carries on.
+        state.report_failure("the display server sent the viewporter an event");
     }
 }
 
 impl Dispatch<WpViewport, FractionalScaleData, WlrState> for WlrState {
     fn event(
-        _: &mut WlrState,
+        state: &mut WlrState,
         _: &WpViewport,
         _: <WpViewport as Proxy>::Event,
         _: &FractionalScaleData,
         _: &Connection,
         _: &QueueHandle<WlrState>,
     ) {
-        unreachable!()
+        // The viewport has no event: the display server does not send
+        // one.  A protocol error must not take the process down, so it is
+        // reported and the wallpaper carries on.
+        state.report_failure("the display server sent the viewport an event");
     }
 }
 
@@ -208,6 +223,22 @@ impl Dispatch<WpViewport, FractionalScaleData, WlrState> for WlrState {
 // ---------------------------------------------------------------------------
 
 impl WlrState {
+    /// Reports a failure of the adapter.
+    ///
+    /// The failure is logged and told to the host, once: the display
+    /// server can send the same event on every frame, and the channel of
+    /// the host must not be flooded with it.  The wallpaper carries on:
+    /// a failure of the protocol is not a fatal error.
+    fn report_failure(&mut self, what: &'static str) {
+        if self.reported_failures.contains(&what) {
+            return;
+        }
+        self.reported_failures.push(what);
+
+        log::error!("the adapter could not carry out what was asked of it: {what}");
+        self.app.problems.push(EngineProblem::Adapter(what));
+    }
+
     /// Recompute the layer-surface size and WGPU swapchain dimensions
     /// based on the current logical size, fit mode, wallpaper resolution,
     /// and fractional scale.
@@ -246,19 +277,23 @@ impl WlrState {
             return;
         }
 
-        let Some(ref layer) = self.last_layer else {
-            return;
-        };
         let (wp_w, wp_h) = (self.wp_resolution[0] as f32, self.wp_resolution[1] as f32);
 
         // Compute layer-surface size from fit mode + logical size.
-        let (layer_w, layer_h) = match self.fit_mode {
+        let fit_mode = self.fit_mode;
+        let (layer_w, layer_h) = match fit_mode {
             super::FitMode::Stretch => (log_w, log_h),
             _ => {
-                let s = match self.fit_mode {
+                let s = match fit_mode {
                     super::FitMode::Cover => f32::max(log_w as f32 / wp_w, log_h as f32 / wp_h),
                     super::FitMode::Contain => f32::min(log_w as f32 / wp_w, log_h as f32 / wp_h),
-                    _ => unreachable!(),
+                    // A fit mode the adapter does not know: the surface
+                    // keeps the size of the wallpaper instead of taking
+                    // the process down.
+                    _ => {
+                        self.report_failure("the fit mode of the wallpaper is not known");
+                        1.0
+                    }
                 };
                 ((wp_w * s).round() as u32, (wp_h * s).round() as u32)
             }
@@ -274,6 +309,9 @@ impl WlrState {
             vp.set_destination(layer_w as i32, layer_h as i32);
         }
 
+        let Some(ref layer) = self.last_layer else {
+            return;
+        };
         layer.set_size(layer_w, layer_h);
         let _ = layer.set_buffer_scale(1);
 
@@ -475,6 +513,7 @@ pub fn run(
         target_fps: config.target_fps,
         last_frame: None,
         needs_render: true,
+        reported_failures: Vec::new(),
     };
 
     let mut control = Control::new(config.status, commands);
@@ -503,6 +542,10 @@ pub fn run(
             std::thread::sleep(Duration::from_millis(50));
             dispatch(&mut event_queue, &mut state)?;
 
+            // The problems of the wallpaper — a file that could not be
+            // used, a failure of the protocol — are reported to the host.
+            control.report(&mut state, false);
+
             if state.needs_render && !control.paused {
                 state.needs_render = false;
                 state.last_frame = Some(Instant::now());
@@ -513,6 +556,10 @@ pub fn run(
 
         // ── Normal / animated mode ───────────────────────────────────
         dispatch(&mut event_queue, &mut state)?;
+
+        // The problems of the wallpaper — a file that could not be used,
+        // a failure of the protocol — are reported to the host.
+        control.report(&mut state, false);
 
         if control.paused {
             // The wallpaper is paused: the events are still dispatched,
@@ -547,6 +594,10 @@ pub fn run(
         state.last_frame = Some(Instant::now());
 
         control.render(&mut state, &mut frame_count)?;
+
+        // The problems the renderer ran into — an effect that could not
+        // be drawn — are reported to the host.
+        control.report(&mut state, false);
     }
 
     Ok(())
@@ -573,9 +624,10 @@ struct Control {
     /// Whether the wallpaper is paused.
     paused: bool,
     /// The frames that could not be drawn.
-    failures: u64,
-    /// The render failure that was reported already.
-    reported_failure: Option<RenderError>,
+    ///
+    /// They are counted and reported to the host: a frame that cannot be
+    /// drawn is a failure the user must know about.
+    failures: RenderFailures,
 }
 
 impl Control {
@@ -586,10 +638,9 @@ impl Control {
     ) -> Self {
         Self {
             commands,
-            status,
+            status: status.clone(),
             paused: false,
-            failures: 0,
-            reported_failure: None,
+            failures: RenderFailures::new(status),
         }
     }
 
@@ -713,20 +764,10 @@ impl Control {
         log::trace!("frame {}: calling render...", frame_count);
 
         if let Err(error) = state.app.render() {
-            self.failures = self.failures.wrapping_add(1);
-            log::warn!(
-                "frame {}: the frame could not be drawn: {}",
-                frame_count,
-                error
-            );
-
-            // The same failure is reported once: the user does not have to
-            // be told about every single frame that was skipped.
-            if self.reported_failure != Some(error) {
-                self.reported_failure = Some(error);
-                state.app.problems.push(EngineProblem::Render(error));
-                self.report(state, false);
-            }
+            // The frame that could not be drawn is counted and reported:
+            // the same failure is reported once, the user does not have
+            // to be told about every single frame that was skipped.
+            self.failures.record(error, state.app.title.as_deref());
         }
 
         *frame_count = frame_count.wrapping_add(1);

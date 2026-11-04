@@ -77,6 +77,13 @@ pub enum EngineProblem {
     Audio(rodio::StreamError),
     /// The renderer could not draw the wallpaper.
     Render(RenderError),
+    /// The adapter could not carry out what was asked of it.
+    ///
+    /// The adapter carries on with a sane default: a failure of the
+    /// protocol must not take the whole process down, the release profile
+    /// aborts on a panic and the panic would take the tray application
+    /// of the graphical interface with it.
+    Adapter(&'static str),
 }
 
 /// Why the renderer could not draw a frame.
@@ -90,6 +97,11 @@ pub enum RenderError {
     NotReady,
     /// The surface did not give a frame to draw into.
     Surface,
+    /// A post-process pass could not be drawn.
+    ///
+    /// The wallpaper is drawn without the pass: the reason says what
+    /// could not run.
+    Pass(&'static str),
 }
 
 impl fmt::Display for EngineProblem {
@@ -107,6 +119,9 @@ impl fmt::Display for EngineProblem {
             EngineProblem::Render(error) => {
                 write!(f, "the wallpaper could not be drawn: {error}")
             }
+            EngineProblem::Adapter(what) => {
+                write!(f, "the adapter could not carry out what was asked of it: {what}")
+            }
         }
     }
 }
@@ -118,6 +133,7 @@ impl std::error::Error for EngineProblem {
             EngineProblem::Unsupported { error, .. } => Some(error),
             EngineProblem::Audio(error) => Some(error),
             EngineProblem::Render(error) => Some(error),
+            EngineProblem::Adapter(_) => None,
         }
     }
 }
@@ -255,6 +271,9 @@ impl fmt::Display for RenderError {
         match self {
             RenderError::NotReady => write!(f, "the scene is not loaded"),
             RenderError::Surface => write!(f, "the surface did not give a frame"),
+            RenderError::Pass(reason) => {
+                write!(f, "the effects could not be drawn: {reason}")
+            }
         }
     }
 }

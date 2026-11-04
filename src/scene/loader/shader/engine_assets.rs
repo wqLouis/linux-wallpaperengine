@@ -179,7 +179,16 @@ fn assets_directory() -> Option<PathBuf> {
 
 /// Preprocess and compile every pair of the directory, the way the pipeline
 /// of an effect does.
+///
+/// Only the tests call this: the directory of the shaders is read when
+/// the shaders of Wallpaper Engine are installed.
 fn measure(directory: &Path) -> Measurement {
+    let mut measurement = Measurement {
+        compiled: Vec::new(),
+        failed: Vec::new(),
+        skipped: Vec::new(),
+    };
+
     // The headers of the engine, exactly as the loader of the scene loads
     // them: the key of a header is its path in the assets directory.
     let headers: Rc<Map<String, String>> = Rc::new(get_headers(|key| {
@@ -187,24 +196,25 @@ fn measure(directory: &Path) -> Measurement {
         std::fs::read(directory.join(path)).ok()
     }));
 
-    let mut names: Vec<String> = std::fs::read_dir(directory)
-        .expect("the directory of the shaders can be read")
+    // The directory cannot be read: there is nothing to measure.
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return measurement;
+    };
+
+    let mut names: Vec<String> = entries
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().to_string())
         .filter(|name| name.ends_with(".frag"))
         .collect();
     names.sort();
 
-    let mut measurement = Measurement {
-        compiled: Vec::new(),
-        failed: Vec::new(),
-        skipped: Vec::new(),
-    };
-
     for name in names {
         let base = name.trim_end_matches(".frag").to_string();
-        let fragment = std::fs::read_to_string(directory.join(&name))
-            .expect("the fragment shader of a pair can be read");
+        // The shader cannot be read: the pair is skipped.
+        let Ok(fragment) = std::fs::read_to_string(directory.join(&name)) else {
+            measurement.skipped.push((base, "the fragment shader cannot be read".to_string()));
+            continue;
+        };
         let vertex_path = directory.join(format!("{base}.vert"));
         let Ok(vertex) = std::fs::read_to_string(&vertex_path) else {
             // A pair without a vertex stage has no `main`: the pipeline

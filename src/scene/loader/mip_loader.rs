@@ -146,7 +146,14 @@ impl MipChainGenerator {
         // for `set_pipeline` below, but we don't want to hold the borrow
         // across the encode calls.
         let pipeline_ref = self.pipelines.borrow();
-        let pipeline = pipeline_ref.get(&format).expect("just inserted");
+        let Some(pipeline) = pipeline_ref.get(&format) else {
+            // The pipeline was inserted right above, so it cannot be
+            // missing.  A texture that cannot be downsampled is drawn
+            // without the missing mip levels instead of taking the
+            // process down.
+            log::error!("mipgen: the pipeline of {format:?} is missing");
+            return 0;
+        };
 
         // Walk the source dimensions down to the mip just before the
         // first missing level, so each render pass samples from the

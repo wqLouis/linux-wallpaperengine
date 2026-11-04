@@ -63,6 +63,9 @@ impl WgpuApp {
             .map(|project| project.title.clone())
             .filter(|title| !title.is_empty());
         self.problems = std::mem::take(&mut scene.problems);
+        // The failures of the post-processing belong to the wallpaper
+        // that is loaded now: they are reported again if they happen.
+        self.reported_passes.clear();
 
         // Enable lazy-loading fallback to Wallpaper Engine assets directory.
         if let Some(ref assets_path) = self.assets_path {
@@ -111,11 +114,14 @@ impl WgpuApp {
             total_verts as usize * std::mem::size_of::<Vertex>()
                 + total_indices as usize * std::mem::size_of::<u32>()
         );
-        self.buffers = Some(crate::scene::renderer::buffer::Buffers::new(
+        // The buffers of the frame are built here and given to the app at
+        // the end: the borrow of them does not fight with the borrow of
+        // the app.
+        let mut buffers = crate::scene::renderer::buffer::Buffers::new(
             &self.device,
             total_indices as u64,
             total_verts as u64,
-        ));
+        );
 
         let mipgen = MipChainGenerator::new(&self.device);
         let draw_ctx = DrawContext {
@@ -132,9 +138,10 @@ impl WgpuApp {
             no_effects: self.no_effects,
             target_fps: self.target_fps,
         };
+
         let draw_queue = DrawQueue::new(
             &draw_ctx,
-            self.buffers.as_mut().unwrap(),
+            &mut buffers,
             objects.texture,
             pipeline,
             copy_pipeline,
@@ -146,7 +153,7 @@ impl WgpuApp {
 
         let camera_uniform = Projection::new(&scene.root).create_camera_uniform();
         self.projection_bindgroup.create_projection_bindgroup(
-            self.buffers.as_ref().unwrap(),
+            &buffers,
             &self.device,
             &self.queue,
             &camera_uniform,
@@ -156,6 +163,8 @@ impl WgpuApp {
         self.resolution = Some(size);
 
         self.post_process = Some(post_process);
+
+        self.buffers = Some(buffers);
 
         Ok(())
     }
