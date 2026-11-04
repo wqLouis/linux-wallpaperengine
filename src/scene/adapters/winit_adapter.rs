@@ -73,6 +73,10 @@ impl ApplicationHandler for WinitApp {
             self.show_progress,
         ));
 
+        // The rate at which the wallpaper is rendered: the videos are
+        // played back at that rate.
+        wgpu_app.target_fps = self.target_fps;
+
         wgpu_app.load();
 
         self.app.borrow_mut().replace(wgpu_app);

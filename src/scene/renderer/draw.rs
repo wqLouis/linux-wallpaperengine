@@ -131,6 +131,12 @@ pub struct DrawContext<'a> {
     pub effects: EffectContext<'a>,
     pub mipgen: &'a MipChainGenerator,
     pub no_effects: bool,
+    /// The rate at which the wallpaper is rendered, in frames per second.
+    ///
+    /// `None` means "as fast as possible" and `Some(0)` the static image
+    /// mode.  The videos are played back at that rate: the frames that
+    /// are never shown are then not decoded at all.
+    pub target_fps: Option<u32>,
 }
 
 pub struct DrawQueue {
@@ -207,8 +213,14 @@ impl DrawObject {
         let post_process = effects.post_process;
         let index_start = buffers.index_len;
 
-        let (_texture, source_view, video) =
-            Self::upload_texture(device, queue, &texture_object, ctx.mipgen, yuv);
+        let (_texture, source_view, video) = Self::upload_texture(
+            device,
+            queue,
+            &texture_object,
+            ctx.mipgen,
+            yuv,
+            ctx.target_fps,
+        );
 
         let bindgroup = device.create_bind_group(&BindGroupDescriptor {
             label: None,
@@ -282,11 +294,8 @@ impl DrawObject {
                 socket: socket.to_string(),
                 parent_id,
                 parent: usize::MAX,
-                local: Buffers::quad_vertices(
-                    texture_object.size,
-                    texture_object.uv_scale,
-                )
-                .to_vec(),
+                local: Buffers::quad_vertices(texture_object.size, texture_object.uv_scale)
+                    .to_vec(),
                 local_model: texture_object.local_model,
                 vertex_offset,
             }),
@@ -299,12 +308,8 @@ impl DrawObject {
                 mesh.vertices.len(),
                 mesh.indices.len(),
             );
-            let range = buffers.draw_mesh(
-                queue,
-                &mesh.vertices,
-                &mesh.indices,
-                texture_object.model,
-            );
+            let range =
+                buffers.draw_mesh(queue, &mesh.vertices, &mesh.indices, texture_object.model);
             let skinning = if texture_object.animations.is_empty() {
                 None
             } else {
@@ -356,6 +361,7 @@ impl DrawObject {
         tex_obj: &TextureObject,
         mipgen: &MipChainGenerator,
         yuv: Option<&YuvConverter>,
+        target_fps: Option<u32>,
     ) -> (Texture, TextureView, Option<VideoDrawState>) {
         match &tex_obj.source {
             TextureSource::Static(tex) => {
@@ -363,7 +369,9 @@ impl DrawObject {
                 let view = texture.create_view(&Default::default());
                 (texture, view, None)
             }
-            TextureSource::Video(video) => Self::upload_video_texture(device, queue, video, yuv),
+            TextureSource::Video(video) => {
+                Self::upload_video_texture(device, queue, video, yuv, target_fps)
+            }
         }
     }
 
@@ -543,6 +551,7 @@ impl DrawObject {
         queue: &Queue,
         video: &Rc<VideoAsset>,
         yuv: Option<&YuvConverter>,
+        target_fps: Option<u32>,
     ) -> (Texture, TextureView, Option<VideoDrawState>) {
         // The clip was decoded eagerly: its frames are in memory and are
         // played back by index.
@@ -560,6 +569,23 @@ impl DrawObject {
                 return (texture, view, None);
             }
         };
+
+        // The rate at which the clip is shown.  The player decodes the
+        // frames ahead of the playback, so that the decoding does not
+        // block the render loop.
+        let rate = target_fps
+            .filter(|fps| *fps > 0)
+            .map(f64::from)
+            .unwrap_or_default();
+        player.set_target_frame_rate(rate);
+
+        // The frames that are never shown do not have to be decoded at
+        // all: the decoder skips the frames that are not reference
+        // frames when the clip is played back slower than it was
+        // recorded.
+        if rate > 0.0 && rate < player.info().fps {
+            player.set_skip_unused_frames(true);
+        }
 
         let first = player.frame_at(0.0).ok().flatten();
         let (width, height) = match first.as_ref() {
@@ -967,7 +993,9 @@ pub fn update_animated_meshes(
         let Some(skinning) = &draw_object.skinning else {
             continue;
         };
-        let vertices = skinning.mesh.skinned_vertices(&skinning.animations, elapsed);
+        let vertices = skinning
+            .mesh
+            .skinned_vertices(&skinning.animations, elapsed);
         buffers.update_mesh(queue, skinning.vertex_offset, &vertices, skinning.model);
 
         sockets[index] = skinning

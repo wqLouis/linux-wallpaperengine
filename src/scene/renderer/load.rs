@@ -95,6 +95,7 @@ impl WgpuApp {
             },
             mipgen: &mipgen,
             no_effects: self.no_effects,
+            target_fps: self.target_fps,
         };
         let draw_queue = DrawQueue::new(
             &draw_ctx,

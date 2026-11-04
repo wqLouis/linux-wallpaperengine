@@ -166,6 +166,9 @@ pub fn start(
         assets_path,
         show_progress,
     ));
+    // The rate at which the wallpaper is rendered: the videos are played
+    // back at that rate.
+    app.target_fps = target_fps;
     app.load();
 
     // The fit mode is applied to the camera projection.

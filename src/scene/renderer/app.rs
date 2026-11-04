@@ -63,6 +63,12 @@ pub struct WgpuApp {
     pub has_clear_texture: bool,
     pub has_subgroup: bool,
     pub show_progress: bool,
+    /// The rate at which the wallpaper is rendered, in frames per second.
+    ///
+    /// `None` means "as fast as possible" and `Some(0)` the static image
+    /// mode.  The videos are played back at that rate: the frames that
+    /// are never shown are then not decoded at all.
+    pub target_fps: Option<u32>,
 
     /// Extra scale applied to the camera projection in NDC space.
     ///
@@ -196,6 +202,7 @@ impl WgpuApp {
             show_progress,
             view_scale: [1.0, 1.0],
             readback_buffer: None,
+            target_fps: None,
         }
     }
 
