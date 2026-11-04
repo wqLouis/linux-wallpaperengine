@@ -4,12 +4,7 @@
 //! wayland winit). Cursor tracking works because winit windows receive
 //! pointer events even when stacked behind other windows.
 
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::Arc,
-    time::Instant,
-};
+use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
 use log;
 use pollster::block_on;

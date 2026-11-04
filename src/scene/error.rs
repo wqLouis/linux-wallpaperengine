@@ -120,7 +120,10 @@ impl fmt::Display for EngineProblem {
                 write!(f, "the wallpaper could not be drawn: {error}")
             }
             EngineProblem::Adapter(what) => {
-                write!(f, "the adapter could not carry out what was asked of it: {what}")
+                write!(
+                    f,
+                    "the adapter could not carry out what was asked of it: {what}"
+                )
             }
         }
     }
@@ -201,7 +204,9 @@ impl fmt::Display for EngineError {
                 write!(f, "the output surface could not be created: {error}")
             }
             EngineError::Audio(error) => write!(f, "the audio device could not be opened: {error}"),
-            EngineError::Window(error) => write!(f, "the output window could not be created: {error}"),
+            EngineError::Window(error) => {
+                write!(f, "the output window could not be created: {error}")
+            }
             EngineError::Unsupported(error) => write!(f, "{error}"),
             EngineError::Io(error) => write!(f, "a file could not be read: {error}"),
             EngineError::Bus(error) => write!(f, "the session bus is not reachable: {error}"),
@@ -231,11 +236,15 @@ impl std::error::Error for EngineError {
 impl fmt::Display for WindowError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WindowError::Connect(error) => write!(f, "the display server is not reachable: {error}"),
+            WindowError::Connect(error) => {
+                write!(f, "the display server is not reachable: {error}")
+            }
             WindowError::MissingProtocol(protocol) => {
                 write!(f, "the display server does not support {protocol}")
             }
-            WindowError::Protocol(error) => write!(f, "the display server reported an error: {error}"),
+            WindowError::Protocol(error) => {
+                write!(f, "the display server reported an error: {error}")
+            }
             WindowError::EventLoop(error) => write!(f, "the event loop failed: {error}"),
             WindowError::Create(error) => write!(f, "the window could not be created: {error}"),
             WindowError::Dispatch(error) => {
@@ -283,7 +292,9 @@ impl std::error::Error for RenderError {}
 impl fmt::Display for UnsupportedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            UnsupportedError::Platform(what) => write!(f, "{what} is not supported on this platform"),
+            UnsupportedError::Platform(what) => {
+                write!(f, "{what} is not supported on this platform")
+            }
             UnsupportedError::Format(what) => write!(f, "the format {what} is not supported"),
         }
     }

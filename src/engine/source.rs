@@ -43,15 +43,14 @@ impl WallpaperSource {
     pub fn read_files(&self) -> Result<Map<String, Vec<u8>>, EngineError> {
         match self {
             WallpaperSource::Package(path) => {
-                let package = pkg_parser::pkg_parser::parser::Pkg::new(path)
-                    .map_err(EngineError::Package)?;
+                let package =
+                    pkg_parser::pkg_parser::parser::Pkg::new(path).map_err(EngineError::Package)?;
                 Ok(package.files.into_iter().collect())
             }
             WallpaperSource::Folder(path) => read_folder(path),
         }
     }
 }
-
 
 /// An io error that says which path it happened at.
 fn io_error(path: &Path, error: std::io::Error) -> std::io::Error {
@@ -71,8 +70,7 @@ fn read_folder(root: &Path) -> Result<Map<String, Vec<u8>>, EngineError> {
             .map_err(|error| EngineError::Io(io_error(&directory, error)))?;
 
         for entry in entries {
-            let entry =
-                entry.map_err(|error| EngineError::Io(io_error(&directory, error)))?;
+            let entry = entry.map_err(|error| EngineError::Io(io_error(&directory, error)))?;
             let path = entry.path();
             let file_type = entry
                 .file_type()
@@ -94,8 +92,8 @@ fn read_folder(root: &Path) -> Result<Map<String, Vec<u8>>, EngineError> {
                 .to_string_lossy()
                 .replace('\\', "/");
 
-            let bytes = std::fs::read(&path)
-                .map_err(|error| EngineError::Io(io_error(&path, error)))?;
+            let bytes =
+                std::fs::read(&path).map_err(|error| EngineError::Io(io_error(&path, error)))?;
             files.insert(relative, bytes);
         }
     }

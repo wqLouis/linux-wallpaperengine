@@ -212,7 +212,9 @@ fn measure(directory: &Path) -> Measurement {
         let base = name.trim_end_matches(".frag").to_string();
         // The shader cannot be read: the pair is skipped.
         let Ok(fragment) = std::fs::read_to_string(directory.join(&name)) else {
-            measurement.skipped.push((base, "the fragment shader cannot be read".to_string()));
+            measurement
+                .skipped
+                .push((base, "the fragment shader cannot be read".to_string()));
             continue;
         };
         let vertex_path = directory.join(format!("{base}.vert"));

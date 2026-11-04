@@ -489,7 +489,8 @@ fn decode_texture(val: &[u8]) -> Result<DecodedTexture, &'static str> {
         return Ok(DecodedTexture::Video(tex.payload));
     }
 
-    tex.parse_to_rgba().ok_or("the pixels could not be decoded")?;
+    tex.parse_to_rgba()
+        .ok_or("the pixels could not be decoded")?;
     tex.build_mip_chain();
 
     Ok(DecodedTexture::Image(tex))
@@ -577,7 +578,9 @@ fn parse_textures(textures: Vec<(String, Vec<u8>)>, pb: &ProgressBar) -> Decoded
             // build that unwinds.  The textures it did not decode are
             // reported below.
             if handle.join().is_err() {
-                log::error!("pkg: a texture worker died - the textures it did not decode are skipped");
+                log::error!(
+                    "pkg: a texture worker died - the textures it did not decode are skipped"
+                );
             }
         }
     });

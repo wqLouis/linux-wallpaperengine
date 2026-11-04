@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use crate::scene::adapters::FitMode;
 
 pub use crate::scene::error::{EngineError, EngineProblem};
-pub use metadata::{describe, resolve_thumbnail, scan_wallpapers, Thumbnail, WallpaperInfo};
+pub use metadata::{Thumbnail, WallpaperInfo, describe, resolve_thumbnail, scan_wallpapers};
 pub use runtime::{EngineCommand, EngineStatus, WallpaperHandle};
 pub use source::WallpaperSource;
 
