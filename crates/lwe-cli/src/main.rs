@@ -1,20 +1,17 @@
-mod collections;
-mod scene;
-
 use std::path::Path;
 
 use clap::Parser;
 use log::LevelFilter;
 
-use crate::scene::adapters::FitMode;
-use crate::scene::adapters::{gnome_app, winit_adapter, wlr_app};
+use linux_wallpaper_engine::scene::adapters::FitMode;
+use linux_wallpaper_engine::scene::adapters::{gnome_app, winit_adapter, wlr_app};
 #[cfg(target_os = "macos")]
-use crate::scene::adapters::mac_app;
+use linux_wallpaper_engine::scene::adapters::mac_app;
 
 // ── Root CLI ─────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
+#[command(name = "linux-wallpaper-engine", version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -100,10 +97,6 @@ struct ParserArgs {
     dry_run: bool,
 }
 
-// ── Constants ────────────────────────────────────────────────────────────────
-
-pub const MAX_TEXTURE: u32 = 512;
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn setup_logging(level_str: &str) {
@@ -158,7 +151,9 @@ fn run_parser(args: ParserArgs) {
         std::process::exit(1);
     }
 
-    let pkg = match pkg_parser::pkg_parser::parser::Pkg::new(Path::new(&args.path)) {
+    let pkg = match linux_wallpaper_engine::pkg_parser::pkg_parser::parser::Pkg::new(Path::new(
+        &args.path,
+    )) {
         Ok(pkg) => pkg,
         Err(e) => {
             eprintln!("error: failed to parse pkg: {}", e);

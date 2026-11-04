@@ -54,6 +54,8 @@ impl std::fmt::Display for SceneError {
     }
 }
 
+impl std::error::Error for SceneError {}
+
 pub struct Scene {
     pub root: Root,
     pub assets: AssetStore,

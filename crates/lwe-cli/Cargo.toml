@@ -1,0 +1,15 @@
+[package]
+name = "linux-wallpaper-engine-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Yet another linux wallpaper engine — command line interface"
+
+[[bin]]
+name = "linux-wallpaper-engine"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5.58", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"
+linux-wallpaper-engine = { path = "../.." }

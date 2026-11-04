@@ -1,0 +1,11 @@
+# Cargo aliases for the two build options.
+#
+# The engine is a library; the CLI and the GUI are two thin applications
+# around it.  These aliases build one of them without spelling out the
+# package name.
+
+[alias]
+build-cli = "build -p linux-wallpaper-engine-cli"
+build-gui = "build -p linux-wallpaper-engine-gui"
+run-cli = "run -p linux-wallpaper-engine-cli --"
+run-gui = "run -p linux-wallpaper-engine-gui --"

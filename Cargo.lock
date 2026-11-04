@@ -1710,8 +1710,6 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "bytemuck",
- "clap",
- "env_logger",
  "glam",
  "hashbrown 0.15.5",
  "indicatif",
@@ -1729,6 +1727,23 @@ dependencies = [
  "wgpu",
  "winit",
  "zbus",
+]
+
+[[package]]
+name = "linux-wallpaper-engine-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "env_logger",
+ "linux-wallpaper-engine",
+ "log",
+]
+
+[[package]]
+name = "linux-wallpaper-engine-gui"
+version = "0.1.0"
+dependencies = [
+ "linux-wallpaper-engine",
 ]
 
 [[package]]

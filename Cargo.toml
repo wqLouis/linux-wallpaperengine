@@ -4,6 +4,17 @@ version = "0.1.0"
 edition = "2024"
 description = "Yet another linux wallpaper engine"
 
+[lib]
+name = "linux_wallpaper_engine"
+path = "src/lib.rs"
+
+[workspace]
+members = ["crates/lwe-cli", "crates/lwe-gui"]
+default-members = [".", "crates/lwe-cli"]
+# The Wallpaper Engine package parser is a git submodule that is used as a
+# plain path dependency: it is not a member of this workspace.
+exclude = ["src/pkg_parser"]
+
 [dependencies]
 # `ahash` with a fixed seed: the hash tables index assets, effects and shader
 # symbols - they are not a security boundary, so the random (OS-sourced) seed
@@ -11,8 +22,6 @@ description = "Yet another linux wallpaper engine"
 # `getrandom` dependency, which does not build for `wasm32-unknown-unknown`.
 ahash = { version = "0.8.12", default-features = false, features = ["std", "no-rng"] }
 bytemuck = "1.25.0"
-clap = { version = "4.5.58", features = ["derive"] }
-env_logger = "0.11"
 log = "0.4"
 pkg_parser = { path = "src/pkg_parser" }
 glam = "0.31.0"

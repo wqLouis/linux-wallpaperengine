@@ -1,0 +1,12 @@
+[package]
+name = "linux-wallpaper-engine-gui"
+version = "0.1.0"
+edition = "2024"
+description = "Yet another linux wallpaper engine — native GUI (gpui-ce)"
+
+[[bin]]
+name = "linux-wallpaper-engine-gui"
+path = "src/main.rs"
+
+[dependencies]
+linux-wallpaper-engine = { path = "../.." }
