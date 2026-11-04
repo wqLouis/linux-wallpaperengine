@@ -92,6 +92,12 @@ pub fn build_effect_steps(
     let mut fbos = new_map();
 
     for effect in effects {
+        // An effect that is not visible is not applied at all: it is not
+        // compiled and it does not cost anything.
+        if !effect_is_visible(effect) {
+            continue;
+        }
+
         let raw = match ctx.scene.assets.json(&effect.file) {
             Some(r) => r,
             None => continue,
@@ -290,7 +296,12 @@ fn build_tex_resolutions(
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            let (w, h) = match i {
+            // The resolution is the one of the texture the sampler reads:
+            // the samplers are named `g_Texture0`, `g_Texture1`, ... and the
+            // number behind the name is the index of the texture of the
+            // material.
+            let texture = pipedata.layout.sampler_texture_slot(i);
+            let (w, h) = match texture {
                 1 => mask
                     .map(|t| (t.width() as f32, t.height() as f32))
                     .unwrap_or((sw, sh)),
@@ -302,6 +313,27 @@ fn build_tex_resolutions(
             (format!("{}Resolution", name), [w, h, w, h])
         })
         .collect()
+}
+
+/// Whether an effect is applied at all.
+///
+/// The `visible` flag of an effect is the flag of the scene file: an effect
+/// that is not visible is not applied - it is not compiled and it does not
+/// cost anything.  The flag is a boolean, a number or a user property that
+/// holds one of the two.
+fn effect_is_visible(effect: &Effect) -> bool {
+    match &effect.visible {
+        serde_json::Value::Bool(visible) => *visible,
+        serde_json::Value::Number(number) => number.as_f64().is_none_or(|value| value != 0.0),
+        serde_json::Value::Object(object) => match object.get("value") {
+            Some(serde_json::Value::Bool(visible)) => *visible,
+            Some(serde_json::Value::Number(number)) => {
+                number.as_f64().is_none_or(|value| value != 0.0)
+            }
+            _ => true,
+        },
+        _ => true,
+    }
 }
 
 impl EffectStep {
@@ -334,7 +366,11 @@ fn build_step_bindgroup(
     let n = step.pipedata.layout.sampler_count();
     let mut entries: Vec<BindGroupEntry<'_>> = Vec::with_capacity(n + 2);
     for slot in 0..n {
-        let view = resolve_texture(slot as u32, step, source_view, fbos);
+        // The texture a sampler reads is the one its name refers to: the
+        // samplers are named `g_Texture0`, `g_Texture1`, ... and the number
+        // behind the name is the index of the texture of the material.
+        let texture = step.pipedata.layout.sampler_texture_slot(slot);
+        let view = resolve_texture(texture as u32, step, source_view, fbos);
         entries.push(BindGroupEntry {
             binding: slot as u32 * 2,
             resource: BindingResource::TextureView(view),
@@ -396,5 +432,43 @@ fn resolve_texture<'a>(
             .as_ref()
             .unwrap_or(&step.bindgroup.blank_view),
         _ => &step.bindgroup.blank_view,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An effect of the scene file.
+    fn effect(visible: serde_json::Value) -> Effect {
+        Effect {
+            file: String::new(),
+            id: 0,
+            name: String::new(),
+            passes: Vec::new(),
+            visible,
+        }
+    }
+
+    /// An effect that is not visible is not applied at all.
+    #[test]
+    fn an_effect_that_is_not_visible_is_not_applied() {
+        assert!(!effect_is_visible(&effect(serde_json::Value::Bool(false))));
+        assert!(effect_is_visible(&effect(serde_json::Value::Bool(true))));
+
+        // The flag is a number as well.
+        assert!(!effect_is_visible(&effect(serde_json::json!(0))));
+        assert!(effect_is_visible(&effect(serde_json::json!(1))));
+
+        // The flag is a user property as well.
+        assert!(!effect_is_visible(&effect(
+            serde_json::json!({ "value": false })
+        )));
+        assert!(effect_is_visible(&effect(
+            serde_json::json!({ "value": true })
+        )));
+
+        // An effect without the flag is visible.
+        assert!(effect_is_visible(&effect(serde_json::Value::Null)));
     }
 }

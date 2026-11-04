@@ -4,6 +4,12 @@ use super::preprocessor;
 
 #[derive(Debug, Clone)]
 pub struct EffectLayout {
+    /// The samplers of the shader, in the order of their declaration.
+    ///
+    /// The order is the order of the declarations of the shader: the
+    /// bindings of the shader are numbered after it.  The texture a sampler
+    /// reads is the one its name refers to, see
+    /// [`EffectLayout::sampler_texture_slot`].
     pub sampler_names: Vec<String>,
     pub uniform_decls: Vec<(String, String)>,
     pub uniform_material_keys: Map<String, String>,
@@ -16,8 +22,17 @@ pub struct EffectLayout {
     /// so the size is what tells an array apart from a plain vector.
     pub varying_array_sizes: Map<String, u32>,
     /// Varyings that exist in the vertex shader source (includes conditional ones).
-    /// Fragment shader `in` declarations are only emitted for varyings in this set.
+    ///
+    /// A varying of the fragment shader that is not in this list cannot be
+    /// produced by the vertex shader: the vertex shader gets an output for
+    /// it, so that the fragment shader compiles.
     pub vertex_varyings: Vec<String>,
+    /// The varyings that the fragment shader declares.
+    ///
+    /// The fragment shader reads them, so the vertex shader has to produce
+    /// every one of them.  The ones the vertex shader does not produce are
+    /// synthesised, see the synthesis of the missing varyings.
+    pub fragment_varyings: Vec<String>,
     pub attribute_locations: Map<String, u32>,
     /// Whether this shader uses immediates (push constants) for uniforms.
     /// Set by the pipeline handler after computing the total uniform size.
@@ -34,6 +49,24 @@ pub struct EffectLayout {
 impl EffectLayout {
     pub fn sampler_count(&self) -> usize {
         self.sampler_names.len()
+    }
+
+    /// The texture of the material the sampler at `index` reads.
+    ///
+    /// The samplers of the Wallpaper Engine shaders are named `g_Texture0`,
+    /// `g_Texture1`, ...: the number behind the name is the index of the
+    /// texture of the material the sampler reads.  The binding of the
+    /// sampler is its position in the shader, the texture it reads is the
+    /// one of its name.
+    ///
+    /// A sampler whose name does not follow the scheme is bound to the
+    /// texture of its position: that is the behaviour the pipeline had
+    /// before the names were understood.
+    pub fn sampler_texture_slot(&self, index: usize) -> usize {
+        match self.sampler_names.get(index) {
+            Some(name) => texture_slot(name).unwrap_or(index),
+            None => index,
+        }
     }
 
     /// Compute the total size of the uniform block in bytes (std140 layout).
@@ -82,14 +115,16 @@ fn collect_layout_from_flattened(
     let mut collector = LayoutCollector::default();
 
     // Process vertex shader first, tracking all its varyings.
-    collector.collect(&vertex.lines);
+    collector.collect(&vertex.lines, false);
     // Snapshot all varyings found from the vertex shader.
     let mut vert_varyings: Vec<String> = collector.varying_set.keys().cloned().collect();
 
     // Then process fragment shader for the full layout.
-    collector.collect(&fragment.lines);
+    collector.collect(&fragment.lines, true);
 
-    collector.sampler_names.sort();
+    // The samplers keep the order of their declaration: the bindings of the
+    // shader are numbered after it.  The texture a sampler reads is the one
+    // its name refers to, see `sampler_texture_slot`.
     collector.sampler_names.dedup();
 
     // Sorted by name: the declaration order fixes the std140 offsets of
@@ -125,6 +160,10 @@ fn collect_layout_from_flattened(
     vert_varyings.sort();
     vert_varyings.dedup();
 
+    let mut fragment_varyings: Vec<String> = collector.fragment_varying_set.keys().cloned().collect();
+    fragment_varyings.sort();
+    fragment_varyings.dedup();
+
     EffectLayout {
         sampler_names: collector.sampler_names,
         uniform_decls,
@@ -134,6 +173,7 @@ fn collect_layout_from_flattened(
         varying_types: collector.varying_types,
         varying_array_sizes: collector.varying_array_sizes,
         vertex_varyings: vert_varyings,
+        fragment_varyings,
         attribute_locations,
         use_immediates: false,
         shader_path: String::new(),
@@ -151,6 +191,8 @@ struct LayoutCollector {
     varying_array_sizes: Map<String, u32>,
     attribute_set: Map<String, u32>,
     material_keys: Map<String, String>,
+    /// The varyings the fragment shader declares.
+    fragment_varying_set: Map<String, u32>,
 }
 
 impl LayoutCollector {
@@ -159,7 +201,11 @@ impl LayoutCollector {
     /// The flattened source holds the lines of the branch that is compiled:
     /// the headers are inlined and the lines of the branches that are not
     /// taken are gone.
-    fn collect(&mut self, lines: &[preprocessor::Line]) {
+    ///
+    /// `fragment` tells whether the source is the one of the fragment
+    /// shader: the varyings it declares are the ones the fragment shader
+    /// reads, so the vertex shader has to produce them.
+    fn collect(&mut self, lines: &[preprocessor::Line], fragment: bool) {
         for line in lines {
             let trimmed = line.text.trim();
 
@@ -177,6 +223,9 @@ impl LayoutCollector {
                 let rest = rest.trim();
                 if let Some(name) = extract_variable_name(rest) {
                     self.varying_set.entry(name.clone()).or_insert(0);
+                    if fragment {
+                        self.fragment_varying_set.entry(name.clone()).or_insert(0);
+                    }
                     if let Some(ty) = extract_type(rest) {
                         self.varying_types.entry(name.clone()).or_insert(ty);
                     }
@@ -262,6 +311,20 @@ pub(crate) fn uniform_declaration(ty: &str, name: &str) -> String {
         }
         None => format!("{} {};", ty, name),
     }
+}
+
+/// The index of the texture of the material a sampler reads.
+///
+/// The samplers of the Wallpaper Engine shaders are named `g_Texture0`,
+/// `g_Texture1`, ...: the number behind the name is the index of the
+/// texture of the material the sampler reads.  A name that does not follow
+/// the scheme has no index.
+fn texture_slot(name: &str) -> Option<usize> {
+    let rest = name.strip_prefix("g_Texture")?;
+    if rest.is_empty() {
+        return None;
+    }
+    rest.parse::<usize>().ok()
 }
 
 pub fn extract_variable_name(rest: &str) -> Option<String> {
@@ -406,5 +469,61 @@ mod tests {
         // same source twice has to yield the same declaration order.
         let again = collect_layout(source, source, &new_map());
         assert_eq!(again.uniform_decls, layout.uniform_decls);
+    }
+
+    /// The samplers keep the order of their declaration.
+    ///
+    /// The bindings of the shader are numbered after that order, so the
+    /// order is the one the shader compiler sees.
+    #[test]
+    fn the_samplers_keep_the_order_of_their_declaration() {
+        let source = "uniform sampler2D g_Texture2;\n\
+                      uniform sampler2D g_Texture0;\n\
+                      uniform sampler2D g_Texture1;\n";
+        let layout = collect_layout(source, source, &new_map());
+
+        assert_eq!(layout.sampler_names, ["g_Texture2", "g_Texture0", "g_Texture1"]);
+    }
+
+    /// The texture a sampler reads is the one its name refers to.
+    ///
+    /// The samplers of the engine are named `g_Texture0`, `g_Texture1`, ...:
+    /// the number behind the name is the index of the texture of the
+    /// material the sampler reads, whatever the order of the declarations
+    /// is.
+    #[test]
+    fn a_sampler_reads_the_texture_of_its_name() {
+        let source = "uniform sampler2D g_Texture2;\n\
+                      uniform sampler2D g_Texture0;\n\
+                      uniform sampler2D g_Texture1;\n";
+        let layout = collect_layout(source, source, &new_map());
+
+        assert_eq!(layout.sampler_texture_slot(0), 2);
+        assert_eq!(layout.sampler_texture_slot(1), 0);
+        assert_eq!(layout.sampler_texture_slot(2), 1);
+    }
+
+    /// A sampler whose name does not follow the scheme reads the texture of
+    /// its position: that is the behaviour the pipeline had before the
+    /// names were understood.
+    #[test]
+    fn a_sampler_without_a_name_reads_the_texture_of_its_position() {
+        let source = "uniform sampler2D my_sampler;\nuniform sampler2D g_Texture3;\n";
+        let layout = collect_layout(source, source, &new_map());
+
+        assert_eq!(layout.sampler_texture_slot(0), 0);
+        assert_eq!(layout.sampler_texture_slot(1), 3);
+    }
+
+    /// The varyings the fragment shader declares are collected apart from
+    /// the ones the vertex shader declares.
+    #[test]
+    fn the_varyings_of_the_fragment_shader_are_collected() {
+        let vertex = "varying vec2 v_TexCoord;\nvoid main() {}\n";
+        let fragment = "varying vec2 v_TexCoord;\nvarying vec4 v_Color;\nvoid main() {}\n";
+        let layout = collect_layout(vertex, fragment, &new_map());
+
+        assert_eq!(layout.vertex_varyings, ["v_TexCoord"]);
+        assert_eq!(layout.fragment_varyings, ["v_Color", "v_TexCoord"]);
     }
 }

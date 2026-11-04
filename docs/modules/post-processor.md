@@ -7,6 +7,7 @@ Shader effect compilation pipeline: parameter layout, GLSL preprocessing, effect
 ## `mod.rs` — Module Structure
 
 ```rust
+pub mod context;
 pub mod effect_param;
 pub mod effect_step;
 pub mod pipeline_handler;
@@ -99,6 +100,7 @@ Passed to `populate_effect_params` to provide resolution and cursor data.
 ```rust
 pub struct EffectPipelineData {
     pub pipeline: Rc<RenderPipeline>,
+    pub compute_pipeline: Option<Rc<ComputePipeline>>,
     pub layout: EffectLayout,
     pub bindgroup_layout: BindGroupLayout,
     pub uniform_layout: UniformLayout,
@@ -114,7 +116,7 @@ Main entry point for creating effect pipelines. Uses a cache key derived from th
 effect_path + "|M1" (if mask texture present) + "|T1" (if noise texture present) + "|COMBO_NAME=value" (for each combo)
 ```
 
-**Pipeline creation** (`create_effect_pipeline`):
+**Pipeline creation** (`compile_pipeline`):
 
 1. Parse effect JSON → get `passes[0].material` path → get material JSON → get `passes[0].shader` name
 2. Fetch the pre-parsed `ShaderProgram` from `scene.assets.shader(frag, vert)` (sources, headers, layout and defaults were resolved by `Scene::prepare()`)
@@ -123,10 +125,10 @@ effect_path + "|M1" (if mask texture present) + "|T1" (if noise texture present)
    - Merges material.json `passes[0].combos`
    - Applies scene pass combos (highest priority)
 4. Apply automatic texture combos via `apply_texture_combos()` — sets `MASK=1` if textures[1] present, `TIMEOFFSET=1` if textures[2] present
-5. Merge the shader's `source_defines` (combo defines take priority) and preprocess via `transform::preprocess_pair_with_layout(vert, frag, headers, defines, layout, has_subgroup, use_immediates)`
+5. Merge the shader's `source_defines` (combo defines take priority) and preprocess via `shader::preprocess_pair_with_layout(vert, frag, headers, defines, layout, has_subgroup, use_immediates)`
 6. Create shader modules with GLSL-to-SPIR-V compilation (naga backend with `ShaderSource::Glsl`)
 7. Create bind group layout via `create_effect_bindgroup_layout()`
-8. Create render pipeline with alpha blending (`SrcAlpha / OneMinusSrcAlpha`), back-face culling, `Rgba8UnormSrgb` format
+8. Create render pipeline with additive blending (`One / One`, the destination is cleared to `(0,0,0,0)`), back-face culling, `Rgba8UnormSrgb` format
 9. Build `UniformLayout` from the shader's uniform declarations
 
 ### `load_mask_texture(device, queue, scene, path) -> Option<(Texture, TextureView)>`
@@ -150,10 +152,6 @@ Loads a mask or noise texture from `scene.assets`, uploaded with the correct GPU
 
 **File:** `pipeline_helpers.rs`
 
-### `collect_default_defines(vert_source, frag_source) -> Map<String, String>`
-
-Scans both shader sources for `// [COMBO] {"combo":"NAME","default":N}` JSON annotations and extracts default values.
-
 ### `apply_texture_combos(defines, pass_textures)`
 
 Adds combo defines based on additional textures:
@@ -169,13 +167,67 @@ Creates a bind group layout from `EffectLayout`:
 
 ---
 
+## `effect_step` — The Steps of an Effect
+
+**File:** `effect_step.rs`
+
+The effect of an object is a list of passes: `build_effect_steps` turns them
+into `EffectStep`s, one per pass, and allocates the framebuffers they work
+on.
+
+- An effect whose `visible` flag is false is not applied at all: it is not
+  compiled and it does not cost anything.
+- The texture of a pass comes from the material of the pass, the mask and the
+  noise come from the textures of the pass.
+- The bind group of a step binds the textures of the material to the samplers
+  of the shader: the texture a sampler reads is the one its name refers to
+  (`g_Texture0`, `g_Texture1`, ...), see
+  [The Samplers of a Shader](#the-samplers-of-a-shader).
+
+---
+
 ## Shader Preprocessing Pipeline
 
 The preprocessing pipeline lives in `src/scene/loader/shader/` and is driven by
 the loader: `Scene::prepare()` parses each shader pair into a `ShaderProgram`,
 and the pipeline handler only runs the define-dependent pass.
 
-**Files:** `shader/mod.rs`, `shader/layout.rs`, `shader/replace.rs`
+**Files:** `shader/mod.rs`, `shader/layout.rs`, `shader/varying.rs`,
+`shader/asset.rs`, `shader/header.rs`, `shader/preprocessor.rs`,
+`shader/c_expr.rs`, `shader/compat.rs`, `shader/dialect.rs`, `shader/glsl/`
+
+### The stages of the pipeline
+
+The pipeline has four stages.  Each of them only fires when it knows what it
+does: a rule that cannot be applied is left alone.
+
+1. **The preprocessor** (`shader/preprocessor.rs`, `shader/c_expr.rs`)
+   resolves the conditionals of the shader, inlines the headers it includes
+   and collects the macros of the shader and of its headers.  The conditions
+   are evaluated by `c_expr`, which implements the operators and the
+   precedence of C (see [Shader Preprocessor Condition Evaluation](#shader-preprocessor-condition-evaluation)).
+   The preprocessor is lenient like the reference engine: a stray `#endif`,
+   an unknown directive and a conditional that is never closed are warnings,
+   the shader is preprocessed anyway.
+2. **The compat stage** (`shader/compat.rs`) rewrites the constructs of the
+   Wallpaper Engine dialect that have no GLSL equivalent: `CAST2`, `CAST3`,
+   `CAST4`, `saturate`, `frac`, `texSample2D`, `gl_FragColor` and the
+   boolean arithmetic.  The `mul` call is rewritten here as well, in the row
+   vector form the engine uses: `mul(a, b)` becomes `b * a`.
+3. **The type aware stage** (`shader/glsl/`) normalises the types of the
+   shader, so that it satisfies the strict typing rules of GLSL.  It is a
+   lexer, a type model, a symbol table, a Pratt parser, an inference engine
+   and a table of rules.  The rules only fire when the types are known: an
+   expression whose type cannot be worked out is left alone.
+4. **The dialect stage** (`shader/dialect.rs`) rewrites the rest of the
+   dialect of the engine: the `mul` calls (in their row vector form), the
+   scalar to vector promotion in the built-in calls, the precision
+   qualifiers, the sampler types the engine has and the macros the engine
+   provides.
+
+The stages are applied in that order: the type aware stage works on the text
+the compat stage produced, and the dialect stage works on the text the type
+aware stage produced.
 
 ### Public API (`shader/mod.rs`)
 
@@ -185,9 +237,10 @@ Preprocesses both vertex and fragment shaders for Vulkan/SPIR-V compatibility us
 
 **Features:**
 - Uses the precomputed layout from `ShaderProgram` (no re-scan of the sources)
-- Evaluates `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif` using provided defines (supports `defined()`, `==`, `!=`, `!`, `||`, `&&`)
+- Evaluates `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif` using provided defines, with the semantics of C (see below)
 - Strips or inlines header content based on active branches
-- Hoists conditional varyings: fragment varyings that only appear inside `#if` blocks in the vertex shader are hoisted to unconditional vertex outputs (wgpu requires all fragment inputs to have corresponding vertex outputs). Synthesizes declarations and zero-initializations in `main()` as needed.
+- Declares the varyings the vertex shader does not produce: the ones the fragment shader reads are declared and initialised with zero in the vertex shader, so that the program is valid (see [The Varyings of a Shader](#the-varyings-of-a-shader))
+- Renames the varyings the fragment shader writes to: Vulkan GLSL does not allow the fragment shader to write to an input
 - Performs GLSL builtin replacements (see below)
 - Strips `uniform`/`sampler2D`/`attribute`/`varying` declarations, replacing them with proper `layout(binding=...)` / `layout(location=...)` declarations
 
@@ -197,7 +250,7 @@ Preprocesses a single shader source with a given pre-computed layout.
 
 #### `preprocess_with_layout_tracked(...) -> (String, Vec<String>)`
 
-Returns both the transformed source and the list of varyings that were unconditionally emitted. Used for conditional varying hoisting.
+Returns both the transformed source and the list of varyings the vertex stage emitted.  The varyings it does not emit are declared by the vertex shader itself.
 
 ---
 
@@ -208,13 +261,14 @@ Describes a compiled shader's GPU interface:
 ```rust
 pub struct EffectLayout {
     pub sampler_names: Vec<String>,                    // e.g. ["g_Texture0", "g_Texture1"]
-    pub sampler_bindings: Vec<u32>,                   // Binding points (0, 2, 4, ...)
     pub uniform_decls: Vec<(String, String)>,          // (name, type) pairs
     pub uniform_material_keys: Map<String, String>, // material key → uniform name
     pub uniform_binding: u32,                          // Offset after samplers (= sampler_count * 2 + 2)
     pub varying_locations: Map<String, u32>,     // Varying → location mapping
     pub varying_types: Map<String, String>,       // e.g. "v_TexCoord" → "vec4"
+    pub varying_array_sizes: Map<String, u32>,    // The size of the varyings that are arrays
     pub vertex_varyings: Vec<String>,                  // Varyings found in vertex shader source
+    pub fragment_varyings: Vec<String>,                // Varyings found in fragment shader source
     pub attribute_locations: Map<String, u32>,    // Attribute → location mapping
 }
 ```
@@ -223,20 +277,125 @@ pub struct EffectLayout {
 
 Returns the number of sampler declarations.
 
+#### `EffectLayout::sampler_texture_slot(index) -> usize`
+
+The texture of the material the sampler at `index` reads.
+
+The samplers of the Wallpaper Engine shaders are named `g_Texture0`,
+`g_Texture1`, ...: the number behind the name is the index of the texture of
+the material the sampler reads.  The binding of a sampler is its position in
+the shader, the texture it reads is the one of its name - the two are not
+the same when the shader does not declare its samplers in order.
+
+A sampler whose name does not follow the scheme reads the texture of its
+position: that is the behaviour the pipeline had before the names were
+understood.
+
 #### `collect_layout(source1, source2, headers) -> EffectLayout`
 
-Introsects both vertex (source1) and fragment (source2) shaders, collecting:
-- `sampler2D` declarations → `sampler_names`
+Introspects both vertex (source1) and fragment (source2) shaders, collecting:
+- `sampler2D` declarations → `sampler_names` (in the order of their declaration)
 - `uniform type name` declarations → `uniform_decls`
-- `varying type name` → `varying_locations`, `varying_types`
+- `varying type name` → `varying_locations`, `varying_types`, `varying_array_sizes`
 - `attribute type name` → `attribute_locations`
 - `// {"material":"key"}` annotations → `uniform_material_keys`
 - Recursively processes `#include`-d headers
-- Sorts and deduplicates collected items
+- Sorts and deduplicates the collected items; the samplers keep the order of their declaration
 
 ---
 
-## `shader/replace.rs` — GLSL Builtin Replacements
+## `shader/varying.rs` — The Varyings of a Shader
+
+A varying of the fragment shader is an input: Vulkan GLSL does not allow the
+fragment shader to write to it.  The shaders of Wallpaper Engine do it
+anyway, so the pipeline has to know which varyings the fragment shader
+writes to.
+
+#### `written_varyings(source, candidates) -> Vec<String>`
+
+The names of the varyings the source writes to.
+
+The detection uses the parser of the type aware stage (`shader/glsl/`): the
+shader is parsed, the statements are walked and the assignments to a varying
+are found.  A text search would find the wrong things: the name of a varying
+can be the tail of the name of another one (`v_UV` and `my_v_UV`), and a
+write can be written without spaces around the `=`.
+
+#### `fix_fragment_writes(source, layout) -> String`
+
+The fragment shader with its writes to the varyings fixed: the declaration
+of a varying that is written to is renamed (`v_UV` becomes `_in_v_UV`) and a
+local variable of the same type takes its place at the top of `main()`.  The
+shader reads the input under the new name and writes to the local variable.
+
+---
+
+## The Varyings of a Shader
+
+The vertex shader has to produce every varying the fragment shader reads: a
+program whose fragment inputs have no vertex output is rejected by wgpu.
+The pipeline makes that true:
+
+- The fragment shader keeps the varyings it declares.  A varying the vertex
+  shader does not produce is **not** dropped: dropping it would leave the
+  fragment shader with a variable it does not know (`UnknownVariable`).
+- The vertex shader declares the varyings it does not produce and
+  initialises them with zero at the top of `main()`.  The declarations go
+  after the header of the shader (the `#version`, the `#extension` and the
+  `#define` lines stay at the top) and they use the location and the type of
+  the layout.
+- A varying that is an array keeps its size: the declaration is
+  `out TYPE NAME[SIZE];` and the initialisation is the array constructor of
+  the zero values.
+
+The preprocessor resolves the conditionals of the shader, so the vertex
+shader that reaches this stage has no `#if` block left: there is nothing to
+hoist out of a conditional any more.
+
+---
+
+## The Samplers of a Shader
+
+The samplers of a shader are bound to the textures of the material of the
+effect.  The samplers of the Wallpaper Engine shaders are named
+`g_Texture0`, `g_Texture1`, ...:
+
+| Sampler | Texture of the material |
+|---------|-------------------------|
+| `g_Texture0` | the source of the pass (the texture the effect works on) |
+| `g_Texture1` | the mask of the pass (the second texture of the material) |
+| `g_Texture2` | the noise of the pass (the third texture of the material) |
+
+The binding of a sampler is its position in the shader, the texture it reads
+is the one its name refers to.  The bind group, the resolution of the
+textures (`g_Texture0Resolution` and the like) and the intermediates of a
+multi-pass effect all use `EffectLayout::sampler_texture_slot`.
+
+---
+
+## The Built-in Vertex Stage of an Effect
+
+An effect of Wallpaper Engine that has no vertex shader of its own draws a
+full screen quad.  The loader gives it the built-in vertex stage of the
+reference engine (`src/scene/loader/shader/builtin.vert`), which is written
+in the dialect of the engine, so the preprocessing handles it like any other
+vertex shader.  A warning names the shader that has no vertex stage.
+
+Without it the shader compiler has no entry point for the vertex stage and
+rejects the whole program.
+
+---
+
+## The Visibility of an Effect
+
+The `visible` flag of an effect is the flag of the scene file.  An effect
+that is not visible is not applied at all: it is not compiled and it does not
+cost anything.  The flag is a boolean, a number or a user property that
+holds one of the two.
+
+---
+
+## `shader/compat.rs` — GLSL Builtin Replacements
 
 | GLSL/HLSL | Vulkan GLSL |
 |-----------|-------------|
@@ -296,7 +455,9 @@ pub const WM_SAMPLER_BINDING: u32 = 1;
 
 ## Shader Preprocessor Condition Evaluation
 
-The preprocessor handles these condition forms in `#if`/`#elif` directives:
+The conditions of the `#if` and `#elif` directives are evaluated the way C
+evaluates them (`shader/c_expr.rs`): the operators have the precedence of C
+and the parentheses change the result.
 
 | Form | Example |
 |------|---------|
@@ -304,19 +465,18 @@ The preprocessor handles these condition forms in `#if`/`#elif` directives:
 | `!defined(NAME)` | `#if !defined(MASK)` |
 | `NAME == VALUE` | `#if BLENDMODE == 26` |
 | `NAME != VALUE` | `#if MODE != 3` |
+| `NAME >= VALUE`, `NAME <= VALUE` | `#if TEX1FORMAT >= FORMAT_ETC1_RGB8` |
 | `!NAME` | `#if !MASK` |
 | `NAME` (bare) | `#if VERTICAL` — truthy if defined and not `"0"` |
-| `\|\|` | `#if A \|\| B` (left-to-right, no precedence) |
-| `&&` | `#if A && B` (left-to-right, no precedence) |
+| `\|\|` | `#if A \|\| B` — lower precedence than `&&` |
+| `&&` | `#if A && B` — higher precedence than `\|\|` |
+| `(...)` | `#if (A \|\| B) && C` — the parentheses change the result |
 
-## Varying Hoisting
+A macro that is not defined is zero, like in C.  The macros of the shader
+and of the headers are visible to the condition, and the macros of a branch
+that is not taken do not exist.
 
-When fragment shader varyings are referenced unconditionally but the vertex shader only declares them inside `#if` blocks, the preprocessor:
-
-1. **Tracks** which varyings were emitted in the vertex output during preprocessing (`preprocess_with_layout_tracked`)
-2. **Computes missing** varyings from the vertex shader's full varying list (`layout.vertex_varyings`)
-3. **Hoists** declarations: moves `layout(location=N) out TYPE NAME;` to the top of the vertex shader (outside all `#if` blocks)
-4. **Synthesizes** declarations for varyings that were declared only in headers that were entirely excluded by `#if` conditions
-5. **Adds zero-initialization** in `main()` for all hoisted varyings
-
-This is required because wgpu/naga validates that all fragment inputs have corresponding vertex outputs at the SPIR-V level, regardless of preprocessor conditions.
+The preprocessor is lenient like the reference engine: a stray `#endif`, an
+unknown directive (the `#require` of the engine, for example) and a
+conditional that is never closed are warnings, the shader is preprocessed
+anyway.

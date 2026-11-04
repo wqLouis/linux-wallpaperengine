@@ -22,6 +22,14 @@ use super::project::{Project, parse_project};
 use super::shader::{self, ShaderProgram};
 use crate::collections::{Map, sorted_keys};
 
+/// The built-in vertex stage of an effect.
+///
+/// An effect of Wallpaper Engine that has no vertex shader of its own
+/// draws a full screen quad: this is the vertex stage of the reference
+/// engine.  It is written in the dialect of the engine, so the
+/// preprocessing of the pipeline handles it like any other vertex shader.
+const BUILTIN_VERTEX_SHADER: &str = include_str!("shader/builtin.vert");
+
 // ---------------------------------------------------------------------------
 // Asset classification
 // ---------------------------------------------------------------------------
@@ -407,6 +415,10 @@ impl AssetStore {
     ///
     /// The program is parsed on first use (and eagerly by
     /// [`AssetStore::preparse_shaders`]).
+    ///
+    /// A shader that has no vertex stage of its own gets the built-in
+    /// fullscreen vertex shader: without one the shader compiler has no
+    /// entry point for the vertex stage and rejects the whole program.
     pub fn shader(&self, frag_path: &str, vert_path: &str) -> Option<Rc<ShaderProgram>> {
         let base = frag_path.trim_end_matches(".frag");
         if let Some(asset) = self.map.borrow().get(base)
@@ -416,9 +428,21 @@ impl AssetStore {
 
         let vertex = self.source_text(vert_path).unwrap_or_default();
         let fragment = self.source_text(frag_path).unwrap_or_default();
-        if vertex.is_empty() && fragment.is_empty() {
+        if vertex.trim().is_empty() && fragment.trim().is_empty() {
             return None;
         }
+
+        // A shader without a vertex stage draws a full screen quad: the
+        // built-in vertex stage is the one of the reference engine.
+        let vertex = if vertex.trim().is_empty() {
+            log::warn!(
+                "the shader `{}` has no vertex stage: the built-in fullscreen vertex shader is used instead",
+                base
+            );
+            BUILTIN_VERTEX_SHADER.to_string()
+        } else {
+            vertex
+        };
 
         let program = Rc::new(ShaderProgram::parse(
             vertex,
@@ -495,3 +519,62 @@ impl AssetStore {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collections::new_map;
+
+    /// The fragment shader of an effect that has no vertex stage.
+    const FRAGMENT_ONLY: &str = "\
+varying vec2 v_TexCoord;
+
+uniform sampler2D g_Texture0;
+
+void main() {
+    gl_FragColor = texSample2D(g_Texture0, v_TexCoord);
+}
+";
+
+    /// A shader that has no vertex stage gets the built-in one.
+    ///
+    /// Without a vertex stage the shader compiler has no entry point for
+    /// the vertex stage and rejects the whole program.
+    #[test]
+    fn a_shader_without_a_vertex_stage_gets_the_built_in_one() {
+        let mut map = new_map();
+        map.insert(
+            "shaders/test.frag".to_string(),
+            Asset::Text(Rc::new(FRAGMENT_ONLY.to_string())),
+        );
+        let store = AssetStore::new(map, None);
+
+        let program = store
+            .shader("shaders/test.frag", "shaders/test.vert")
+            .expect("the program of the shader");
+        assert!(
+            program.vertex.contains("void main()"),
+            "the built-in vertex stage has no entry point:\n{}",
+            program.vertex
+        );
+
+        // The built-in vertex stage is preprocessed like any other one.
+        let defines = program.default_defines.clone();
+        let (vertex, fragment, _) = shader::preprocess_pair_with_layout(
+            &program.vertex,
+            &program.fragment,
+            &program.headers,
+            &defines,
+            &program.layout,
+            false,
+            false,
+        );
+        assert!(
+            vertex.contains("void main()"),
+            "the preprocessed vertex stage has no entry point:\n{vertex}"
+        );
+        assert!(
+            fragment.contains("void main()"),
+            "the preprocessed fragment stage has no entry point:\n{fragment}"
+        );
+    }
+}

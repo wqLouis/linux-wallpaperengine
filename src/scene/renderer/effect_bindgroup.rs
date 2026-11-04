@@ -65,7 +65,13 @@ impl EffectBindGroup {
         // all entries to be present even for non-array bindings. Use blank_view
         // as placeholder for missing mask/noise textures.
         for i in 0..sampler_count {
-            let view = match i {
+            // The texture a sampler reads is the one its name refers to: the
+            // samplers of the engine are named `g_Texture0`, `g_Texture1`,
+            // ... and the number behind the name is the index of the texture
+            // of the material.  A sampler whose name does not follow the
+            // scheme reads the texture of its position.
+            let texture = pipedata.layout.sampler_texture_slot(i);
+            let view = match texture {
                 0 => source_view,
                 1 => mask_view.unwrap_or(&blank_view),
                 2 => noise_view.unwrap_or(&blank_view),

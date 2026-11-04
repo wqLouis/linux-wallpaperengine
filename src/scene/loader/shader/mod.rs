@@ -5,7 +5,7 @@
 //! the conditionals of a C preprocessor.  The shaders are preprocessed here
 //! and handed to the shader compiler of wgpu as plain GLSL.
 //!
-//! The preprocessing has three stages:
+//! The preprocessing has four stages:
 //!
 //! 1. [`preprocessor`] resolves the conditionals of the shader, inlines the
 //!    headers it includes and collects the macros of the shader and of its
@@ -15,6 +15,9 @@
 //!    that have no GLSL equivalent (`mul`, `saturate`, `gl_FragColor`, ...).
 //! 3. [`glsl`] normalises the types of the shader, so that it satisfies the
 //!    strict typing rules of GLSL.
+//! 4. [`dialect`] rewrites the rest of the dialect of the engine: the `mul`
+//    calls in their row vector form, the precision qualifiers, the sampler
+//!    types and the macros of the engine.
 //!
 //! The layout of the shader - its uniforms, its samplers and its varyings -
 //! is collected with the same preprocessor and the same macros, so that it
@@ -30,6 +33,7 @@ mod glsl;
 pub mod header;
 mod layout;
 mod preprocessor;
+mod varying;
 
 use crate::collections::{Map, Set, new_map, new_set};
 use serde_json::Value;
@@ -255,14 +259,10 @@ fn emit_stage(
             };
             let name = layout::extract_variable_name(rest);
 
-            // Fragment: skip varyings not present in vertex shader source
-            if stage == ShaderStage::Fragment
-                && let Some(ref n) = name
-                && !layout.vertex_varyings.iter().any(|v| v == n)
-            {
-                continue;
-            }
-
+            // The varying is declared, whatever the vertex shader does with
+            // it: a varying the vertex shader does not produce is declared
+            // by the vertex shader itself, see the synthesis of the missing
+            // varyings.
             let location = name
                 .as_ref()
                 .and_then(|n| layout.varying_locations.get(n))
@@ -273,7 +273,8 @@ fn emit_stage(
                 location, keyword, rest
             ));
 
-            // Track emitted varyings for hoisting logic in preprocess_pair
+            // Track the varyings the vertex shader emits: the ones it does
+            // not emit have to be synthesised.
             if stage == ShaderStage::Vertex
                 && let Some(n) = name
             {
@@ -433,165 +434,127 @@ pub fn preprocess_pair_with_layout(
     // Fix fragment shader varying writes: Vulkan GLSL `in` variables are read-only.
     // If a varying is assigned to in the fragment shader, rename the input and
     // add a local variable copy at the top of main().
-    frag_out = fix_fragment_varying_writes(&frag_out, &layout);
+    frag_out = varying::fix_fragment_writes(&frag_out, &layout);
 
-    // Ensure vertex always outputs all varyings unconditionally.
-    // Some varyings are only declared inside #if blocks in the vertex source,
-    // but the fragment may reference them unconditionally. wgpu requires all
-    // fragment inputs to have corresponding vertex outputs.
+    // The vertex shader has to produce every varying the fragment shader
+    // reads: wgpu rejects a program whose fragment inputs have no vertex
+    // output.  A varying the vertex shader declares in a header is not
+    // emitted either - the declarations of a header are the interface of
+    // the shader, they are emitted from the layout.
     let missing: Vec<&String> = layout
         .vertex_varyings
         .iter()
+        .chain(layout.fragment_varyings.iter())
         .filter(|v| !vert_emitted.iter().any(|e| e == *v))
         .collect();
 
     if !missing.is_empty() {
-        vert_out = hoist_conditional_varyings(&vert_out, &layout, &missing);
+        vert_out = synthesise_missing_varyings(&vert_out, &layout, &missing);
     }
 
     (vert_out, frag_out, layout)
 }
 
-/// Hoist varying declarations out of #if blocks so they are always available
-/// as vertex outputs, while keeping the assignment code inside #if blocks.
+/// Declare the varyings the vertex shader does not produce.
 ///
-/// For varyings that cannot be found in the preprocessed output at all
-/// (e.g. declared in a header that was entirely excluded by `#if`),
-/// synthesizes a top-level `out` declaration with the correct type and location.
-fn hoist_conditional_varyings(output: &str, layout: &EffectLayout, missing: &[&String]) -> String {
-    let mut result = String::with_capacity(output.len() + 512);
-    let mut if_depth: u32 = 0;
-    let mut hoisted_decls: Vec<String> = Vec::new();
-    let mut hoisted_names: Set<String> = new_set();
-    // Track ALL varying names that appear anywhere in the output,
-    // including top-level ones from included headers that weren't
-    // in `emitted_varyings`.
-    let mut seen_names: Set<String> = new_set();
-
-    for line in output.lines() {
-        let trimmed = line.trim();
-
-        // Track #if depth
-        if trimmed.starts_with("#if") {
-            if_depth += 1;
-        } else if trimmed.starts_with("#endif") {
-            if_depth = if_depth.saturating_sub(1);
-        }
-
-        // Track all varying declarations (top-level and conditional).
-        if trimmed.starts_with("layout(")
-            && trimmed.contains(") out ")
-            && let Some(n) = extract_pp_varying_name(trimmed)
-        {
-            seen_names.insert(n);
-        }
-
-        // Check if this is a conditional varying declaration (vertex stage: "out")
-        if if_depth > 0 && trimmed.starts_with("layout(") && trimmed.contains(") out ") {
-            let name = extract_pp_varying_name(trimmed);
-            if let Some(ref n) = name
-                && missing.iter().any(|v| v == &n)
-                && !hoisted_names.contains(n)
-            {
-                // Collect this declaration to hoist outside #if blocks
-                hoisted_names.insert(n.clone());
-                hoisted_decls.push(line.to_string());
-                continue; // Skip the inside-#if copy
-            }
-        }
-
-        result.push_str(line);
-        result.push('\n');
-    }
-
-    // Synthesize declarations for any missing varyings that weren't found
-    // in the preprocessed output (e.g. from excluded headers).
-    for var_name in missing {
-        if !hoisted_names.contains(var_name.as_str()) && !seen_names.contains(var_name.as_str()) {
-            let loc = layout
-                .varying_locations
-                .get(var_name.as_str())
-                .copied()
-                .unwrap_or(0);
-            let ty = layout
-                .varying_types
-                .get(var_name.as_str())
-                .map(|s: &String| s.as_str())
-                .unwrap_or("vec4");
-            let synth = format!("layout(location={}) out {} {};", loc, ty, var_name);
-            hoisted_names.insert(var_name.to_string());
-            hoisted_decls.push(synth);
-        }
-    }
-
-    // Prepend hoisted declarations at the appropriate position
-    // (after #version and #define headers, before main code)
-    if !hoisted_decls.is_empty() {
-        let insertion = find_decl_insertion_point(&result);
-        let decl_block: String = hoisted_decls.iter().map(|d| format!("{}\n", d)).collect();
-        result.insert_str(insertion, &decl_block);
-    }
-
-    // Add zero-initialization in main() for hoisted varyings
-    for var_name in &hoisted_names {
-        let ty = layout
-            .varying_types
-            .get(var_name.as_str())
-            .map(|s: &String| s.as_str())
-            .unwrap_or("vec4");
-        insert_at_main(&mut result, &format!("{} = {}(0.0);", var_name, ty));
-    }
-
-    result
-}
-
-/// Fix fragment shader code that writes to varying inputs.
-/// Vulkan GLSL does not allow writing to `in` variables.
-fn fix_fragment_varying_writes(output: &str, layout: &EffectLayout) -> String {
-    let mut written_varyings: Vec<String> = Vec::new();
-    for var_name in layout.varying_locations.keys() {
-        if output.contains(&format!("{} =", var_name))
-            || output.contains(&format!("{}.x =", var_name))
-            || output.contains(&format!("{}.y =", var_name))
-            || output.contains(&format!("{}.z =", var_name))
-            || output.contains(&format!("{}.w =", var_name))
-            || output.contains(&format!("{}.xy =", var_name))
-            || output.contains(&format!("{}.xyz =", var_name))
-            || output.contains(&format!("{}.xyzw =", var_name))
-        {
-            written_varyings.push(var_name.clone());
-        }
-    }
-    if written_varyings.is_empty() {
+/// The varyings that are missing are declared at the top of the vertex
+/// shader and initialised with zero, so that the shader compiles: the
+/// fragment shader reads them, and a program whose fragment inputs have no
+/// vertex output is rejected by wgpu.
+fn synthesise_missing_varyings(
+    output: &str,
+    layout: &EffectLayout,
+    missing: &[&String],
+) -> String {
+    if missing.is_empty() {
         return output.to_string();
     }
 
-    let mut result = output.to_string();
-    for var_name in &written_varyings {
-        let ty = layout
+    // The varyings the vertex shader declares itself.
+    let mut declared: Set<String> = new_set();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("layout(")
+            && trimmed.contains(") out ")
+            && let Some(name) = extract_pp_varying_name(trimmed)
+        {
+            declared.insert(name);
+        }
+    }
+
+    // The declarations of the varyings that are missing, and the way they
+    // are initialised.
+    let mut declarations: Vec<String> = Vec::new();
+    let mut initialisations: Vec<String> = Vec::new();
+    for name in missing {
+        if declared.contains(name.as_str()) {
+            continue;
+        }
+        declared.insert(name.to_string());
+
+        let location = layout
+            .varying_locations
+            .get(name.as_str())
+            .copied()
+            .unwrap_or(0);
+        let type_name = layout
             .varying_types
-            .get(var_name.as_str())
+            .get(name.as_str())
             .map(|s: &String| s.as_str())
             .unwrap_or("vec4");
-        let in_name = format!("_in_{}", var_name);
-        // Rename the declaration: `in TYPE VARNAME;` → `in TYPE _IN_VARNAME;`
-        result = result.replace(
-            &format!(" in {} {};", ty, var_name),
-            &format!(" in {} {};", ty, in_name),
-        );
-        // Insert local copy at top of main()
-        insert_at_main(&mut result, &format!("{} {} = {};", ty, var_name, in_name));
+        let size = layout
+            .varying_array_sizes
+            .get(name.as_str())
+            .copied()
+            .unwrap_or(1);
+
+        if size > 1 {
+            declarations.push(format!(
+                "layout(location={location}) out {type_name} {name}[{size}];"
+            ));
+            initialisations.push(format!(
+                "{name} = {type_name}[{size}]({values});",
+                values = zero_values(type_name, size)
+            ));
+        } else {
+            declarations.push(format!(
+                "layout(location={location}) out {type_name} {name};"
+            ));
+            initialisations.push(format!("{name} = {type_name}(0.0);"));
+        }
     }
+
+    if declarations.is_empty() {
+        return output.to_string();
+    }
+
+    // The declarations go after the header of the shader: the `#version`,
+    // the `#extension` and the `#define` lines have to stay at the top.
+    let insertion = find_decl_insertion_point(output);
+    let mut result = String::with_capacity(output.len() + 512);
+    result.push_str(&output[..insertion]);
+    for declaration in &declarations {
+        result.push_str(declaration);
+        result.push('\n');
+    }
+    result.push_str(&output[insertion..]);
+
+    // The varyings are initialised with zero: the shader writes to them
+    // when it wants to.
+    for initialisation in &initialisations {
+        varying::insert_at_main(&mut result, initialisation);
+    }
+
     result
 }
 
-/// Insert a statement after the opening brace of main().
-fn insert_at_main(output: &mut String, stmt: &str) {
-    if let Some(main_pos) = output.find("void main()")
-        && let Some(brace_pos) = output[main_pos..].find('{')
-    {
-        output.insert_str(main_pos + brace_pos + 1, &format!("\n    {}", stmt));
-    }
+/// The values of an array of `size` elements of a type, all of them zero.
+fn zero_values(type_name: &str, size: u32) -> String {
+    let value = format!("{type_name}(0.0)");
+    (0..size)
+        .map(|_| value.clone())
+        .collect::<Vec<String>>()
+        .join(", ")
 }
 
 /// Extract the variable name from a preprocessed varying line like
@@ -615,14 +578,15 @@ fn extract_pp_varying_name(line: &str) -> Option<String> {
     }
 }
 
-/// Find the insertion point after #version and #define headers (for hoisted declarations).
+/// Find the insertion point of the declarations of a shader.
+///
+/// The declarations go after the header of the shader: the `#version`, the
+/// `#extension` and the `#define` lines have to stay at the top, the
+/// directives of GLSL are only allowed before the first declaration.
 fn find_decl_insertion_point(output: &str) -> usize {
     output
         .lines()
-        .take_while(|l| {
-            let t = l.trim();
-            t.starts_with("#version") || t.starts_with("#define")
-        })
+        .take_while(|l| l.trim().starts_with('#'))
         .map(|l| l.len() + 1)
         .sum()
 }
@@ -1064,6 +1028,150 @@ void main() {
             naga::ShaderStage::Fragment,
             &[("BLENDMODE", "26")],
         );
+    }
+
+    /// A fragment shader that reads a varying the vertex shader does not
+    /// produce.
+    ///
+    /// The varying cannot be dropped: the fragment shader would not compile
+    /// (`UnknownVariable`).  The vertex shader gets an output for it, so
+    /// that the program is valid.
+    #[test]
+    fn a_varying_the_vertex_shader_does_not_produce_is_synthesised() {
+        let vertex = "\
+attribute vec3 a_Position;
+
+void main() {
+    gl_Position = vec4(a_Position, 1.0);
+}
+";
+        let fragment = "\
+varying vec2 v_TexCoord;
+
+void main() {
+    gl_FragColor = vec4(v_TexCoord, 0.0, 1.0);
+}
+";
+        let headers = new_map();
+        let layout = collect_layout(vertex, fragment, &headers);
+        let (vertex, fragment, _) = preprocess_pair_with_layout(
+            vertex,
+            fragment,
+            &headers,
+            &new_map(),
+            &layout,
+            false,
+            false,
+        );
+
+        // The fragment shader keeps the varying it reads.
+        assert!(
+            fragment.contains("in vec2 v_TexCoord;"),
+            "the varying of the fragment shader is dropped:\n{fragment}"
+        );
+        // The vertex shader produces it.
+        assert!(
+            vertex.contains("out vec2 v_TexCoord;"),
+            "the vertex shader does not produce the varying:\n{vertex}"
+        );
+
+        // The program is valid.
+        compile(&vertex, naga::ShaderStage::Vertex, &[]);
+        compile(&fragment, naga::ShaderStage::Fragment, &[]);
+    }
+
+    /// A varying that is an array keeps its size when it is synthesised.
+    #[test]
+    fn an_array_varying_that_is_missing_is_synthesised() {
+        let vertex = "\
+attribute vec3 a_Position;
+
+void main() {
+    gl_Position = vec4(a_Position, 1.0);
+}
+";
+        let fragment = "\
+varying vec2 v_TexCoord[4];
+
+void main() {
+    gl_FragColor = vec4(v_TexCoord[0], 0.0, 1.0);
+}
+";
+        let headers = new_map();
+        let layout = collect_layout(vertex, fragment, &headers);
+        let (vertex, fragment, _) = preprocess_pair_with_layout(
+            vertex,
+            fragment,
+            &headers,
+            &new_map(),
+            &layout,
+            false,
+            false,
+        );
+
+        assert!(
+            vertex.contains("out vec2 v_TexCoord[4];"),
+            "the array varying is not declared:\n{vertex}"
+        );
+
+        // The program is valid.
+        compile(&vertex, naga::ShaderStage::Vertex, &[]);
+        compile(&fragment, naga::ShaderStage::Fragment, &[]);
+    }
+
+    /// A fragment shader that writes to a varying is fixed.
+    ///
+    /// Vulkan GLSL does not allow the fragment shader to write to an input:
+    /// the input is renamed and a local variable takes its place.
+    #[test]
+    fn a_fragment_shader_that_writes_to_a_varying_is_fixed() {
+        let vertex = "\
+varying vec2 v_UV;
+
+void main() {
+    v_UV = vec2(0.0);
+}
+";
+        let fragment = "\
+varying vec2 v_UV;
+varying vec2 my_v_UV;
+
+void main() {
+    my_v_UV = v_UV;
+    gl_FragColor = vec4(my_v_UV, 0.0, 1.0);
+}
+";
+        let headers = new_map();
+        let layout = collect_layout(vertex, fragment, &headers);
+        let (_, fragment, _) = preprocess_pair_with_layout(
+            vertex,
+            fragment,
+            &headers,
+            &new_map(),
+            &layout,
+            false,
+            false,
+        );
+
+        // The varying that is written to is renamed and copied into a local
+        // variable.
+        assert!(
+            fragment.contains("in vec2 _in_my_v_UV;"),
+            "the varying that is written to is not renamed:\n{fragment}"
+        );
+        assert!(
+            fragment.contains("vec2 my_v_UV = _in_my_v_UV;"),
+            "the local copy of the varying is missing:\n{fragment}"
+        );
+        // The varying that is only read keeps its name: the name of the one
+        // is the tail of the name of the other, a text search would mix
+        // them up.
+        assert!(
+            fragment.contains("in vec2 v_UV;"),
+            "the varying that is only read is renamed:\n{fragment}"
+        );
+
+        compile(&fragment, naga::ShaderStage::Fragment, &[]);
     }
 
     /// Compile a GLSL source with naga and validate the result.
