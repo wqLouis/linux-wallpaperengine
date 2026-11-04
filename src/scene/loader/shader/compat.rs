@@ -10,7 +10,10 @@
 //! The rewrites, in the order they are applied:
 //!
 //! * `CAST2`, `CAST3`, `CAST4` and `CAST3X3` become the GLSL constructors
-//!   `vec2`, `vec3`, `vec4` and `mat3`.
+//!   `vec2`, `vec3`, `vec4` and `mat3`.  The rewrite itself lives in the
+//!   dialect stage ([`super::dialect`]), which also rewrites the casts of
+//!   the body of a macro: a macro is expanded by the shader compiler, so
+//!   a cast inside of one has to be rewritten as well.
 //! * `saturate(x)` becomes `clamp(x, 0.0, 1.0)`.
 //! * `frac(x)` becomes `fract(x)`.
 //! * `texSample2D(s, uv)` becomes `texture(s, uv)` and `texSample2DLod`
@@ -46,10 +49,7 @@ pub fn apply_line(
     varying_types: &Map<String, String>,
 ) -> String {
     let mut t = line.to_string();
-    t = t.replace("CAST2(", "vec2(");
-    t = t.replace("CAST3(", "vec3(");
-    t = t.replace("CAST4(", "vec4(");
-    t = t.replace("CAST3X3(", "mat3(");
+    t = super::dialect::rewrite_casts(&t);
     t = replace_saturate(&t);
     t = replace_frac(&t);
     t = t.replace("texSample2D(", "texture(");

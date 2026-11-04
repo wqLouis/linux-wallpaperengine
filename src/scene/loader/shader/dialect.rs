@@ -20,15 +20,22 @@
 //!    *not* swapped the way the DirectX `mul` would need them.  A nested
 //!    call is rewritten from the inside out and a swizzle that follows the
 //!    call is kept.
-//! 3. The precision qualifiers `lowp`, `mediump` and `highp` are removed.
+//! 3. The casts of the dialect become the constructors of GLSL:
+//!    `CAST3(x)` becomes `vec3(x)` (the `rewrite_casts` function).
+//! 4. The precision qualifiers `lowp`, `mediump` and `highp` are removed.
 //!    They are legal GLSL, but naga's front end does not accept them in the
 //!    uniform blocks the pipeline emits.
-//! 4. The sampler types the engine has no binding for are approximated:
+//! 5. The sampler types the engine has no binding for are approximated:
 //!    `sampler2DComparison` and `sampler3D` become `sampler2D`.
-//! 5. The built-in calls that want a vector are given one: a scalar
+//! 6. The built-in calls that want a vector are given one: a scalar
 //!    argument is promoted to a vector of the size of the other arguments
 //!    (`pow(v, 2.0)` becomes `pow(v, vec3(2.0))`).  The signatures of the
 //!    built-ins are in the `SIGNATURES` table.
+//!
+//! Every rule reaches the body of the `#define` macros as well: a macro is
+//! expanded by the shader compiler, so a construct of the dialect inside of
+//! a macro body breaks the shader as well.  The parameters of a macro have
+//! no precedence, so the operands of a macro body are bracketed.
 //!
 //! Legal GLSL is left alone: every rule only fires on the constructs listed
 //! above.
@@ -58,6 +65,17 @@ const ENGINE_MACROS: &[(&str, &str)] = &[
     ("LIGHTS_TUBE", "1"),
 ];
 
+/// The casts of the dialect and the GLSL constructors they stand for.
+///
+/// The engine writes `CAST3(x)` where GLSL writes `vec3(x)`.  A cast is a
+/// constructor: it is a call with one argument.
+const CASTS: &[(&str, &str)] = &[
+    ("CAST2", "vec2"),
+    ("CAST3", "vec3"),
+    ("CAST4", "vec4"),
+    ("CAST3X3", "mat3"),
+];
+
 /// A parameter of a built-in function.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Param {
@@ -76,6 +94,11 @@ enum Param {
 /// of them is left alone and a call that matches none of them is the one
 /// the dialect has to fix: a scalar argument of a vector parameter is
 /// promoted to a vector of the size of the other arguments.
+///
+/// The promotion happens in *every* position: the engine broadcasts a
+/// scalar to the type of the other arguments, so `mix(v, v, 0.5)` becomes
+/// `mix(v, v, vec3(0.5))` and not only the first argument of a call is
+/// ever promoted.
 ///
 /// The single argument built-ins (`sin`, `cos`, `length`, ...) are not in
 /// the table: they take a scalar or a vector, never both, so there is
@@ -104,19 +127,10 @@ const SIGNATURES: &[(&str, &[&[Param]])] = &[
             &[Param::Vector, Param::Vector],
         ],
     ),
-    (
-        "dot",
-        &[
-            &[Param::Scalar, Param::Scalar],
-            &[Param::Vector, Param::Vector],
-        ],
-    ),
+    ("dot", &[&[Param::Vector, Param::Vector]]),
     (
         "faceforward",
-        &[
-            &[Param::Scalar, Param::Scalar, Param::Scalar],
-            &[Param::Vector, Param::Vector, Param::Vector],
-        ],
+        &[&[Param::Vector, Param::Vector, Param::Vector]],
     ),
     (
         "fma",
@@ -130,7 +144,6 @@ const SIGNATURES: &[(&str, &[&[Param]])] = &[
         &[
             &[Param::Scalar, Param::Scalar],
             &[Param::Vector, Param::Scalar],
-            &[Param::Scalar, Param::Vector],
             &[Param::Vector, Param::Vector],
         ],
     ),
@@ -139,7 +152,6 @@ const SIGNATURES: &[(&str, &[&[Param]])] = &[
         &[
             &[Param::Scalar, Param::Scalar],
             &[Param::Vector, Param::Scalar],
-            &[Param::Scalar, Param::Vector],
             &[Param::Vector, Param::Vector],
         ],
     ),
@@ -147,7 +159,6 @@ const SIGNATURES: &[(&str, &[&[Param]])] = &[
         "mix",
         &[
             &[Param::Scalar, Param::Scalar, Param::Scalar],
-            &[Param::Vector, Param::Vector, Param::Scalar],
             &[Param::Vector, Param::Vector, Param::Vector],
         ],
     ),
@@ -156,30 +167,22 @@ const SIGNATURES: &[(&str, &[&[Param]])] = &[
         &[
             &[Param::Scalar, Param::Scalar],
             &[Param::Vector, Param::Scalar],
-            &[Param::Scalar, Param::Vector],
             &[Param::Vector, Param::Vector],
         ],
     ),
-    ("pow", &[&[Param::Vector, Param::Vector]]),
     (
-        "reflect",
+        "pow",
         &[
             &[Param::Scalar, Param::Scalar],
             &[Param::Vector, Param::Vector],
         ],
     ),
-    (
-        "refract",
-        &[
-            &[Param::Scalar, Param::Scalar, Param::Scalar],
-            &[Param::Vector, Param::Vector, Param::Scalar],
-        ],
-    ),
+    ("reflect", &[&[Param::Vector, Param::Vector]]),
+    ("refract", &[&[Param::Vector, Param::Vector, Param::Scalar]]),
     (
         "smoothstep",
         &[
             &[Param::Scalar, Param::Scalar, Param::Scalar],
-            &[Param::Vector, Param::Scalar, Param::Scalar],
             &[Param::Scalar, Param::Scalar, Param::Vector],
             &[Param::Vector, Param::Vector, Param::Vector],
         ],
@@ -188,7 +191,6 @@ const SIGNATURES: &[(&str, &[&[Param]])] = &[
         "step",
         &[
             &[Param::Scalar, Param::Scalar],
-            &[Param::Vector, Param::Scalar],
             &[Param::Scalar, Param::Vector],
             &[Param::Vector, Param::Vector],
         ],
@@ -227,8 +229,49 @@ enum Ty {
 /// The types of the variables a shader declares.
 #[derive(Default)]
 struct Symbols {
-    /// The type of every variable the shader declares.
+    /// The type of every variable the shader declares outside of a function
+    /// body: the uniforms, the globals and the parameters of the
+    /// functions.
     types: BTreeMap<String, Ty>,
+    /// The type of every variable a function body declares.
+    ///
+    /// A local variable shadows the declaration of the same name outside of
+    /// the body it is declared in: the parameter of a function of a header
+    /// and the local of another function are not the same variable, and the
+    /// engine uses the same names over and over again.
+    locals: BTreeMap<String, Ty>,
+}
+
+impl Symbols {
+    /// Declare a name outside of a function body.
+    ///
+    /// A name that is declared with more than one type is not known: the
+    /// dialect must not guess which of the types is the right one.
+    fn declare(&mut self, name: &str, ty: Ty) {
+        let declared = self.types.entry(name.to_string()).or_insert(ty);
+        if *declared != ty {
+            *declared = Ty::Unknown;
+        }
+    }
+
+    /// Declare a name inside of a function body.
+    fn declare_local(&mut self, name: &str, ty: Ty) {
+        let declared = self.locals.entry(name.to_string()).or_insert(ty);
+        if *declared != ty {
+            *declared = Ty::Unknown;
+        }
+    }
+
+    /// The type of a name, if the shader declares it.
+    ///
+    /// A local variable shadows the declaration of the same name outside of
+    /// the function body it is declared in.
+    fn lookup(&self, name: &str) -> Option<Ty> {
+        self.locals
+            .get(name)
+            .or_else(|| self.types.get(name))
+            .copied()
+    }
 }
 
 /// Normalise a shader source into the GLSL dialect naga accepts.
@@ -246,6 +289,7 @@ pub fn normalize(source: &str) -> String {
 pub fn normalize_named(source: &str, name: &str) -> String {
     let source = define_engine_macros(source);
     let source = rewrite_mul(&source);
+    let source = rewrite_casts(&source);
     let source = strip_precision_qualifiers(&source);
     let source = rewrite_sampler_types(&source, name);
     promote_scalar_arguments(&source)
@@ -266,8 +310,45 @@ pub fn normalize_named(source: &str, name: &str) -> String {
 /// The source may be a whole shader or a single line: a call whose closing
 /// parenthesis is not in the source is left alone.
 pub(crate) fn rewrite_mul(text: &str) -> String {
-    let mask = CodeMask::with_directives(text);
+    let mask = CodeMask::with_macro_bodies(text);
     rewrite_mul_region(text, &mask, 0, text.len()).text
+}
+
+/// Rewrite the casts of the dialect into the constructors of GLSL.
+///
+/// `CAST2(x)` becomes `vec2(x)`, `CAST3(x)` becomes `vec3(x)`, `CAST4(x)`
+/// becomes `vec4(x)` and `CAST3X3(x)` becomes `mat3(x)`.
+///
+/// The body of a macro is rewritten as well: a `#define` that holds a cast
+/// expands to a call naga does not know.  The cast is a constructor, so it
+/// keeps its argument - and with it the precedence of the argument.
+pub(crate) fn rewrite_casts(text: &str) -> String {
+    let mask = CodeMask::with_macro_bodies(text);
+    let tokens = tokenize(text, &mask);
+
+    let mut edits: Vec<Edit> = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Word {
+            continue;
+        }
+        let Some((_, replacement)) = CASTS.iter().find(|(name, _)| *name == token.text) else {
+            continue;
+        };
+        // A cast is a constructor: it is a call with an argument.
+        let is_call = tokens
+            .get(index + 1)
+            .is_some_and(|next| next.kind == TokenKind::Punct && next.text == "(");
+        if !is_call {
+            continue;
+        }
+        edits.push(Edit {
+            start: token.start,
+            end: token.end,
+            text: (*replacement).to_string(),
+        });
+    }
+
+    apply_edits(text, edits)
 }
 
 /// A rewritten region of a source.
@@ -420,7 +501,7 @@ fn find_mul_call(source: &str, mask: &CodeMask, start: usize, end: usize) -> Opt
 
 /// Define the engine macros a shader uses.
 fn define_engine_macros(source: &str) -> String {
-    let mask = CodeMask::new(source);
+    let mask = CodeMask::with_macro_bodies(source);
     let tokens = tokenize(source, &mask);
     let defined = defined_macros(source);
 
@@ -501,7 +582,7 @@ fn macro_insertion_point(source: &str) -> usize {
 /// statement keeps its qualifier: it sets the default precision and has to
 /// stay as it is.
 fn strip_precision_qualifiers(source: &str) -> String {
-    let mask = CodeMask::new(source);
+    let mask = CodeMask::with_macro_bodies(source);
     let tokens = tokenize(source, &mask);
 
     let mut text = String::with_capacity(source.len());
@@ -537,7 +618,7 @@ fn strip_precision_qualifiers(source: &str) -> String {
 
 /// Rewrite the sampler types the engine has no binding for.
 fn rewrite_sampler_types(source: &str, name: &str) -> String {
-    let mask = CodeMask::new(source);
+    let mask = CodeMask::with_macro_bodies(source);
     let tokens = tokenize(source, &mask);
 
     let mut edits: Vec<Edit> = Vec::new();
@@ -571,8 +652,10 @@ fn rewrite_sampler_types(source: &str, name: &str) -> String {
 
 /// Promote the scalar arguments of the built-in calls to vectors.
 fn promote_scalar_arguments(source: &str) -> String {
-    let mask = CodeMask::new(source);
-    let symbols = collect_symbols(source, &mask);
+    let mask = CodeMask::with_macro_bodies(source);
+    // The symbols of the macro bodies are not collected: a macro body is a
+    // text that is expanded later, and its parameters are not variables.
+    let symbols = collect_symbols(source, &CodeMask::new(source));
     let tokens = tokenize(source, &mask);
 
     let mut edits: Vec<Edit> = Vec::new();
@@ -711,11 +794,24 @@ fn fit_shape(shape: &[Param], types: &[Ty]) -> Option<Vec<Option<u8>>> {
 }
 
 /// The types of the variables a shader declares.
+///
+/// The declarations of a function body are the locals: they shadow the
+/// declarations of the same name outside of the body.
 fn collect_symbols(source: &str, mask: &CodeMask) -> Symbols {
     let tokens = tokenize(source, mask);
     let mut symbols = Symbols::default();
+    // The depth of the braces: a declaration inside of a body is a local.
+    let mut depth = 0i32;
 
     for (index, token) in tokens.iter().enumerate() {
+        if token.kind == TokenKind::Punct {
+            match token.text {
+                "{" => depth += 1,
+                "}" => depth -= 1,
+                _ => {}
+            }
+            continue;
+        }
         if token.kind != TokenKind::Word {
             continue;
         }
@@ -747,7 +843,11 @@ fn collect_symbols(source: &str, mask: &CodeMask) -> Symbols {
             ty = Ty::Array;
         }
 
-        symbols.types.entry(name.text.to_string()).or_insert(ty);
+        if depth > 0 {
+            symbols.declare_local(name.text, ty);
+        } else {
+            symbols.declare(name.text, ty);
+        }
     }
 
     symbols
@@ -888,7 +988,7 @@ fn estimate_type(text: &str, symbols: &Symbols) -> Ty {
     }
 
     // A name.
-    symbols.types.get(text).copied().unwrap_or(Ty::Unknown)
+    symbols.lookup(text).unwrap_or(Ty::Unknown)
 }
 
 /// Whether a word is a swizzle.
@@ -1331,19 +1431,21 @@ impl CodeMask {
     /// The comments, the string literals and the preprocessor directives are
     /// not code.
     fn new(source: &str) -> Self {
-        Self::build(source, false)
+        Self::build(source, Directives::Excluded)
     }
 
-    /// The mask of a source whose preprocessor directives count as code.
+    /// The mask of a source whose macro bodies count as code.
     ///
-    /// The body of a macro is code: the `mul` call of a `#define` has to be
-    /// rewritten as well, or the macro expands to a call naga does not know.
-    fn with_directives(source: &str) -> Self {
-        Self::build(source, true)
+    /// The body of a macro is code: a `mul` call or a cast of a `#define`
+    /// has to be rewritten as well, or the macro expands to a call naga
+    /// does not know.  The directive itself is not code: the name of the
+    /// macro and its parameters are not code either.
+    fn with_macro_bodies(source: &str) -> Self {
+        Self::build(source, Directives::Bodies)
     }
 
     /// Build the mask of a source.
-    fn build(source: &str, keep_directives: bool) -> Self {
+    fn build(source: &str, directives: Directives) -> Self {
         let bytes = source.as_bytes();
         let mut code = vec![true; bytes.len()];
         let mut index = 0;
@@ -1418,13 +1520,24 @@ impl CodeMask {
             }
 
             if at_line_start && byte == b'#' {
-                // A preprocessor directive: the whole line is not code.
-                while index < bytes.len() && bytes[index] != b'\n' {
-                    if !keep_directives {
-                        code[index] = false;
-                    }
-                    index += 1;
+                // A preprocessor directive: the whole line is not code, the
+                // body of a macro is.
+                let line_end = source[index..]
+                    .find('\n')
+                    .map(|offset| index + offset)
+                    .unwrap_or(bytes.len());
+                for byte in &mut code[index..line_end] {
+                    *byte = false;
                 }
+                if directives == Directives::Bodies
+                    && let Some((body_start, body_end)) = macro_body(source, index)
+                {
+                    let body_end = body_end.min(line_end);
+                    for byte in &mut code[body_start..body_end] {
+                        *byte = true;
+                    }
+                }
+                index = line_end;
                 continue;
             }
 
@@ -1449,45 +1562,165 @@ impl CodeMask {
     }
 }
 
+/// What the preprocessor directives of a source are.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Directives {
+    /// The directives are not code: the rules must not touch them.
+    Excluded,
+    /// The body of a `#define` is code, the rest of the directive is not.
+    Bodies,
+}
+
+/// The body of the macro of a `#define` directive.
+///
+/// The directive starts at `start`: the position of its `#`.  The body is
+/// the text that follows the name of the macro and its parameters, up to
+/// the end of the line.  A directive that is not a `#define` has no body.
+fn macro_body(source: &str, start: usize) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut index = start + 1;
+
+    // The name of the directive.
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    let name_start = index;
+    while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') {
+        index += 1;
+    }
+    if &source[name_start..index] != "define" {
+        return None;
+    }
+
+    // The name of the macro.
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    let macro_start = index;
+    while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') {
+        index += 1;
+    }
+    if index == macro_start {
+        return None;
+    }
+
+    // The parameters of the macro: a parenthesis that follows the name of
+    // the macro directly makes it a function like macro.
+    if bytes.get(index) == Some(&b'(') {
+        let mut depth = 0i32;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        index += 1;
+                        break;
+                    }
+                }
+                b'\n' => break,
+                _ => {}
+            }
+            index += 1;
+        }
+    }
+
+    // The body of the macro: the rest of the line.
+    while index < bytes.len() && bytes[index] != b'\n' && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    let body_start = index;
+    let mut body_end = body_start;
+    while body_end < bytes.len() && bytes[body_end] != b'\n' {
+        body_end += 1;
+    }
+    // A comment at the end of the line is not part of the body.
+    if let Some(offset) = source[body_start..body_end].find("//") {
+        body_end = body_start + offset;
+    }
+
+    Some((body_start, body_end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A fixture of the tests: the name of the shader, its source, the
+    /// stage it is compiled for and the macros it is compiled with.
+    type Fixture = (
+        &'static str,
+        &'static str,
+        naga::ShaderStage,
+        &'static [(&'static str, &'static str)],
+    );
+
     /// The shaders of the engine the fixtures are taken from, with the
-    /// stage they are compiled for.
-    const FIXTURES: &[(&str, &str, naga::ShaderStage)] = &[
+    /// stage they are compiled for and the macros they are compiled with.
+    const FIXTURES: &[Fixture] = &[
         (
             "nested_mul.vert",
             include_str!("tests/nested_mul.vert"),
             naga::ShaderStage::Vertex,
+            &[],
         ),
         (
             "pow_scalar.frag",
             include_str!("tests/pow_scalar.frag"),
             naga::ShaderStage::Fragment,
+            &[],
         ),
         (
             "precision.frag",
             include_str!("tests/precision.frag"),
             naga::ShaderStage::Fragment,
+            &[],
         ),
         (
             "shadow_sampler.frag",
             include_str!("tests/shadow_sampler.frag"),
             naga::ShaderStage::Fragment,
+            &[],
         ),
         (
             "engine_macros.vert",
             include_str!("tests/engine_macros.vert"),
             naga::ShaderStage::Vertex,
+            &[],
+        ),
+        // The fragment stage of the pulse effect of the engine.
+        (
+            "pulse_effect.frag",
+            include_str!("tests/pulse_effect.frag"),
+            naga::ShaderStage::Fragment,
+            &[("BLENDMODE", "9")],
         ),
     ];
 
+    /// The shaders of the engine that compile without the dialect stage.
+    ///
+    /// The dialect stage must not break them: the fire effect of the engine
+    /// mixes two scalars with a scalar, and the dialect stage must not
+    /// turn the mix into a mix of vectors.
+    const COMPILES_WITHOUT_THE_DIALECT: &[Fixture] = &[(
+        "fire_effect.frag",
+        include_str!("tests/fire_effect.frag"),
+        naga::ShaderStage::Fragment,
+        &[("BLENDMODE", "0")],
+    )];
+
     /// The error naga reports for a shader, if it reports one.
-    fn compile_error(source: &str, stage: naga::ShaderStage) -> Option<String> {
+    fn compile_error(
+        source: &str,
+        stage: naga::ShaderStage,
+        defines: &[(&str, &str)],
+    ) -> Option<String> {
         let options = naga::front::glsl::Options {
             stage,
-            defines: Default::default(),
+            defines: defines
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
         };
         match naga::front::glsl::Frontend::default().parse(&options, source) {
             Ok(module) => {
@@ -1664,6 +1897,65 @@ mod tests {
         assert_eq!(normalize(source), source);
     }
 
+    /// The scalar of a `mix` is promoted as well: the engine wants the
+    /// three arguments of a `mix` to have the same type.
+    #[test]
+    fn the_scalar_of_a_mix_is_promoted() {
+        let source = "vec3 albedo = v_Color;\nfloat a = mix(albedo, albedo, 0.5);\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("mix(albedo, albedo, vec3(0.5))"));
+    }
+
+    /// A `mix` of two vectors and a vector is not touched.
+    #[test]
+    fn a_mix_of_two_vectors_and_a_vector_is_not_changed() {
+        let source = "vec3 albedo = v_Color;\nvec3 a = mix(albedo, albedo, albedo);\n";
+        assert_eq!(normalize(source), source);
+    }
+
+    /// A `min` of a vector and a scalar is not touched: naga accepts it.
+    #[test]
+    fn a_min_of_a_vector_and_a_scalar_is_not_changed() {
+        let source = "vec3 albedo = v_Color;\nfloat a = min(albedo, 0.0);\n";
+        assert_eq!(normalize(source), source);
+    }
+
+    /// A `clamp` of a vector and two scalars is not touched: naga accepts
+    /// it.
+    #[test]
+    fn a_clamp_of_a_vector_and_two_scalars_is_not_changed() {
+        let source = "vec3 albedo = v_Color;\nvec3 a = clamp(albedo, 0.0, 1.0);\n";
+        assert_eq!(normalize(source), source);
+    }
+
+    /// A `step` of two scalars is not touched.
+    #[test]
+    fn a_step_of_two_scalars_is_not_changed() {
+        let source = "float a = step(0.5, 1.0);\n";
+        assert_eq!(normalize(source), source);
+    }
+
+    /// A local variable shadows the declaration of the same name outside of
+    /// the function body it is declared in: the parameter of a function of
+    /// a header and the local of another function are not the same
+    /// variable.
+    #[test]
+    fn a_local_shadows_the_declaration_of_the_same_name() {
+        let source = "vec3 BlendHue(vec3 base, vec3 blend)\n\
+             {\n\
+             \treturn vec3(blend);\n\
+             }\n\
+             void main()\n\
+             {\n\
+             \tfloat blend = 0.5;\n\
+             \tfloat cloud0 = 1.0;\n\
+             \tfloat cloud1 = 2.0;\n\
+             \tfloat noise = mix(cloud0, cloud1, blend);\n\
+             }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("float noise = mix(cloud0, cloud1, blend);"));
+    }
+
     /// A constructor is a vector as well.
     #[test]
     fn a_constructor_argument_is_promoted() {
@@ -1689,6 +1981,46 @@ mod tests {
         let source = "#define M_MVP mul(g_ModelMatrix, g_ViewProjectionMatrix)\n";
         let normalized = normalize(source);
         assert!(normalized.contains("#define M_MVP (g_ModelMatrix) * (g_ViewProjectionMatrix)"));
+    }
+
+    /// The cast of a macro body is rewritten as well: the macro would
+    /// expand to a call naga does not know.
+    #[test]
+    fn the_cast_of_a_macro_body_is_rewritten() {
+        let source = "#define BlendAdd(base, blend) min(base + blend, CAST3(1.0))\n";
+        let normalized = normalize(source);
+        assert!(!normalized.contains("CAST3"));
+        assert!(normalized.contains("#define BlendAdd(base, blend) min(base + blend, vec3(1.0))"));
+    }
+
+    /// A cast around an expression keeps the expression and its
+    /// parentheses: the cast is a constructor.
+    #[test]
+    fn the_cast_of_a_macro_body_keeps_its_argument() {
+        let source =
+            "#define BlendTint(base, blend) (CAST3(max(base.x, max(base.y, base.z))) * blend)\n";
+        let normalized = normalize(source);
+        assert!(!normalized.contains("CAST3"));
+        assert!(normalized.contains(
+            "#define BlendTint(base, blend) (vec3(max(base.x, max(base.y, base.z))) * blend)"
+        ));
+    }
+
+    /// The name of a macro is not a cast: a macro may be called anything.
+    #[test]
+    fn the_name_of_a_macro_is_not_a_cast() {
+        let source = "#define CAST3 something\n";
+        assert_eq!(normalize(source), source);
+    }
+
+    /// The parameters of a macro have no precedence: the operands of a
+    /// `mul` in a macro body are bracketed.
+    #[test]
+    fn the_parameters_of_a_macro_keep_working() {
+        let source = "#define DOUBLE(x) mul(x, 2.0)\nfloat y = DOUBLE(a + b);\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("#define DOUBLE(x) (x) * (2.0)"));
+        assert!(normalized.contains("float y = DOUBLE(a + b);"));
     }
 
     /// The definition of an engine macro does not clash with the value the
@@ -1725,9 +2057,9 @@ mod tests {
     /// The shaders of the engine compile once they are normalised.
     #[test]
     fn the_real_shaders_compile() {
-        for (name, source, stage) in FIXTURES {
+        for (name, source, stage, defines) in FIXTURES.iter().chain(COMPILES_WITHOUT_THE_DIALECT) {
             let normalized = normalize(source);
-            if let Some(error) = compile_error(&normalized, *stage) {
+            if let Some(error) = compile_error(&normalized, *stage, defines) {
                 panic!("the shader '{name}' does not compile:\n{error}\n---\n{normalized}");
             }
         }
@@ -1737,15 +2069,35 @@ mod tests {
     /// the dialect is what makes them work.
     #[test]
     fn the_real_shaders_do_not_compile_before_the_normalisation() {
-        for (name, source, stage) in FIXTURES {
+        for (name, source, stage, defines) in FIXTURES {
             if *name == "shadow_sampler.frag" {
                 // The pipeline binds the shadow map as an ordinary texture,
                 // so this one compiles as it is.
                 continue;
             }
             assert!(
-                compile_error(source, *stage).is_some(),
+                compile_error(source, *stage, defines).is_some(),
                 "the shader '{name}' compiles without the dialect"
+            );
+        }
+    }
+
+    /// The dialect stage does not break a shader that compiles without it.
+    ///
+    /// The promotion of a scalar to a vector is only allowed when it does
+    /// not change the type of the expression: the fire effect of the engine
+    /// mixes two scalars with a scalar.
+    #[test]
+    fn the_dialect_stage_does_not_break_a_shader_that_compiles_without_it() {
+        for (name, source, stage, defines) in COMPILES_WITHOUT_THE_DIALECT {
+            assert!(
+                compile_error(source, *stage, defines).is_none(),
+                "the shader '{name}' does not compile without the dialect"
+            );
+            let normalized = normalize(source);
+            assert!(
+                compile_error(&normalized, *stage, defines).is_none(),
+                "the shader '{name}' does not compile with the dialect"
             );
         }
     }

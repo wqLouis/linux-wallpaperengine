@@ -15,3 +15,6 @@ AGENT.md
 # temp
 temp
 .temp
+
+# agent work in progress (backups of the subagent worktrees)
+.tmp
