@@ -13,24 +13,35 @@
 //!
 //! The rules, in the order they are applied:
 //!
-//! 1. The engine macros the pipeline does not provide are defined
+//! 1. The built-in functions the engine provides and the assets do not
+//!    ship are added (`ENGINE_BUILTINS`), so that the shaders that call
+//!    them compile.
+//! 2. The engine macros the pipeline does not provide are defined
 //!    (`ENGINE_MACROS`), so that the shaders that use them compile.
-//! 2. `mul(a, b)` becomes `a * b` (the `rewrite_mul` function).  Wallpaper
+//! 3. `mul(a, b)` becomes `a * b` (the `rewrite_mul` function).  Wallpaper
 //!    Engine uses the row vector form of the product, so the operands are
 //!    *not* swapped the way the DirectX `mul` would need them.  A nested
 //!    call is rewritten from the inside out and a swizzle that follows the
 //!    call is kept.
-//! 3. The casts of the dialect become the constructors of GLSL:
+//! 4. The casts of the dialect become the constructors of GLSL:
 //!    `CAST3(x)` becomes `vec3(x)` (the `rewrite_casts` function).
-//! 4. The precision qualifiers `lowp`, `mediump` and `highp` are removed.
+//! 5. The precision qualifiers `lowp`, `mediump` and `highp` are removed.
 //!    They are legal GLSL, but naga's front end does not accept them in the
 //!    uniform blocks the pipeline emits.
-//! 5. The sampler types the engine has no binding for are approximated:
-//!    `sampler2DComparison` and `sampler3D` become `sampler2D`.
-//! 6. The built-in calls that want a vector are given one: a scalar
+//! 6. The sampler types the engine has no binding for are approximated:
+//!    `sampler2DComparison`, `sampler3D` and `sampler2DBackBuffer` become
+//!    `sampler2D`.
+//! 7. The built-in calls that want a vector are given one: a scalar
 //!    argument is promoted to a vector of the size of the other arguments
 //!    (`pow(v, 2.0)` becomes `pow(v, vec3(2.0))`).  The signatures of the
 //!    built-ins are in the `SIGNATURES` table.
+//! 8. The variables that are initialised with a scalar are given one: the
+//!    initialiser of a vector is wrapped in a constructor of the type of
+//!    the variable (`vec2 v = 1;` becomes `vec2 v = vec2(1);`).
+//! 9. The built-in globals the engine spells differently are rewritten
+//!    (`gl_InstanceID` becomes `gl_InstanceIndex`).  A declaration of such
+//!    a name is dropped: it is a built-in of GLSL and not an attribute of
+//!    the shader.
 //!
 //! Every rule reaches the body of the `#define` macros as well: a macro is
 //! expanded by the shader compiler, so a construct of the dialect inside of
@@ -63,18 +74,68 @@ const ENGINE_MACROS: &[(&str, &str)] = &[
     ("LIGHTS_POINT", "1"),
     ("LIGHTS_SPOT", "1"),
     ("LIGHTS_TUBE", "1"),
+    // The format of a texture is a property of the material of the
+    // effect.  The pipeline does not know it, so it is the format of the
+    // default texture of the engine: `FORMAT_RGBA8888`, which is the zero
+    // of the format constants of the engine.
+    ("TEX0FORMAT", "0"),
+    ("TEX1FORMAT", "0"),
+    ("TEX2FORMAT", "0"),
+    ("TEX3FORMAT", "0"),
+    ("TEX4FORMAT", "0"),
+    ("TEX5FORMAT", "0"),
+    ("TEX6FORMAT", "0"),
+    ("TEX7FORMAT", "0"),
+    ("TEX8FORMAT", "0"),
+    ("TEX9FORMAT", "0"),
 ];
 
 /// The casts of the dialect and the GLSL constructors they stand for.
 ///
 /// The engine writes `CAST3(x)` where GLSL writes `vec3(x)`.  A cast is a
 /// constructor: it is a call with one argument.
+///
+/// The engine defines the casts as macros of its own compiler
+/// (`#define CAST3(x) ((float3)(x))`), so the shaders use them without
+/// the assets shipping a definition.
 const CASTS: &[(&str, &str)] = &[
     ("CAST2", "vec2"),
     ("CAST3", "vec3"),
     ("CAST4", "vec4"),
     ("CAST3X3", "mat3"),
+    ("CAST4U", "uvec4"),
+    ("CASTF", "float"),
+    ("CASTI", "int"),
+    ("CASTU", "uint"),
 ];
+
+/// The functions the engine provides and the assets do not ship.
+///
+/// The engine has a library of built-in functions: its shaders call them
+/// without declaring them, because the compiler of the engine adds them to
+/// every shader.  They live in the engine itself and not in any header of
+/// the assets, so the pipeline has to provide them - or the shaders that
+/// call them do not compile.
+///
+/// The approximation is visible: the pipeline does not bind the lights of
+/// the scene yet, so the light of the shader is the light of the ambient.
+const ENGINE_BUILTINS: &[(&str, &str)] = &[(
+    "PerformLighting_V1",
+    "vec3 PerformLighting_V1(vec3 worldPos, vec3 color, vec3 normal, vec3 viewVector, vec3 specularTint, vec3 ambient, float roughness, float metallic)\n\
+     {\n\
+     \treturn vec3(0.0);\n\
+     }\n",
+)];
+
+/// The built-in globals the engine spells differently.
+///
+/// The engine writes the index of the instance as `gl_InstanceID`, GLSL
+/// has `gl_InstanceIndex`.  The shaders of the engine may also declare
+/// the name as an attribute - in HLSL it is a built-in of the compiler -
+/// so the declaration is dropped as well: the instance index is a built-in
+/// of GLSL and not an attribute of the shader, and an attribute without a
+/// location of its own collides with the first attribute of the shader.
+const BUILTIN_GLOBALS: &[(&str, &str)] = &[("gl_InstanceID", "gl_InstanceIndex")];
 
 /// A parameter of a built-in function.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -207,6 +268,7 @@ const SIGNATURES: &[(&str, &[&[Param]])] = &[
 const SAMPLER_TYPES: &[(&str, &str)] = &[
     ("sampler2DComparison", "sampler2D"),
     ("sampler3D", "sampler2D"),
+    ("sampler2DBackBuffer", "sampler2D"),
 ];
 
 /// The type of an expression, as far as the dialect can work it out.
@@ -287,12 +349,267 @@ pub fn normalize(source: &str) -> String {
 /// `name` is the name of the shader: it is used in the log messages the
 /// rules that approximate something write.
 pub fn normalize_named(source: &str, name: &str) -> String {
-    let source = define_engine_macros(source);
+    let source = insert_engine_builtins(source, name);
+    let source = define_engine_macros(&source);
     let source = rewrite_mul(&source);
     let source = rewrite_casts(&source);
     let source = strip_precision_qualifiers(&source);
     let source = rewrite_sampler_types(&source, name);
-    promote_scalar_arguments(&source)
+    let source = promote_scalar_arguments(&source);
+    let source = promote_scalar_initialisers(&source);
+    rewrite_builtin_globals(&source)
+}
+
+/// Add the built-in functions the engine provides and the assets do not.
+///
+/// A function of the table is added when the shader calls it and does not
+/// define it: a shader that has its own definition of the function keeps
+/// it.  The functions are added after the `#version` and the `#extension`
+/// directives, because the version of the shader has to be the first thing
+/// in the file, and before the code of the shader, because a function has
+/// to be declared before it is called.
+///
+/// The rule is idempotent: the function of the table is a definition, so a
+/// source that has it already is left alone.
+fn insert_engine_builtins(source: &str, name: &str) -> String {
+    let mask = CodeMask::with_macro_bodies(source);
+    let tokens = tokenize(source, &mask);
+
+    let mut block = String::new();
+    for (function, implementation) in ENGINE_BUILTINS {
+        let called = tokens
+            .iter()
+            .any(|token| token.kind == TokenKind::Word && token.text == *function);
+        if !called || defines_function(&tokens, function) {
+            continue;
+        }
+        log::warn!(
+            "shader '{}': the built-in function '{}' of the engine is not in any header of the assets, the pipeline provides an approximation of it",
+            name,
+            function
+        );
+        block.push_str(implementation);
+    }
+
+    if block.is_empty() {
+        return source.to_string();
+    }
+
+    let insertion = macro_insertion_point(source);
+    let mut result = String::with_capacity(source.len() + block.len());
+    result.push_str(&source[..insertion]);
+    result.push_str(&block);
+    result.push_str(&source[insertion..]);
+    result
+}
+
+/// Whether the source defines the function `name`.
+///
+/// A definition is a type followed by the name and a parenthesis:
+/// `vec3 PerformLighting_V1(...)`.  A call is not a definition: the token
+/// before the name of a call is an operator or a `;`.
+fn defines_function(tokens: &[Token<'_>], name: &str) -> bool {
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Word || token.text != name {
+            continue;
+        }
+        let Some(previous) = index.checked_sub(1).and_then(|index| tokens.get(index)) else {
+            continue;
+        };
+        if previous.kind != TokenKind::Word || keyword_type(previous.text).is_none() {
+            continue;
+        }
+        let Some(next) = tokens.get(index + 1) else {
+            continue;
+        };
+        if next.kind == TokenKind::Punct && next.text == "(" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Rewrite the built-in globals the engine spells differently.
+///
+/// A name that the shader declares as an attribute is dropped: the
+/// built-in of GLSL is not an attribute of the shader.  Every other use of
+/// the name is rewritten to the name GLSL uses.
+fn rewrite_builtin_globals(source: &str) -> String {
+    let mask = CodeMask::with_macro_bodies(source);
+    let tokens = tokenize(source, &mask);
+
+    let mut edits: Vec<Edit> = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Word {
+            continue;
+        }
+        let Some((_, replacement)) = BUILTIN_GLOBALS.iter().find(|(name, _)| *name == token.text)
+        else {
+            continue;
+        };
+
+        // A declaration of the name is not a use of it: the built-in of
+        // GLSL is not an attribute, so the declaration is dropped.
+        if let Some((start, end)) = declaration_of(&tokens, index) {
+            edits.push(Edit {
+                start,
+                end,
+                text: String::new(),
+            });
+            continue;
+        }
+
+        edits.push(Edit {
+            start: token.start,
+            end: token.end,
+            text: (*replacement).to_string(),
+        });
+    }
+
+    apply_edits(source, edits)
+}
+
+/// The range of the declaration whose name is the token `index`.
+///
+/// The range covers the whole statement, so that the qualifiers of the
+/// declaration (`in`, `attribute`, a layout) are dropped with it.
+fn declaration_of(tokens: &[Token<'_>], index: usize) -> Option<(usize, usize)> {
+    // The type of the declaration is the token before the name.
+    let type_token = index.checked_sub(1).and_then(|index| tokens.get(index))?;
+    if type_token.kind != TokenKind::Word || keyword_type(type_token.text).is_none() {
+        return None;
+    }
+    // The name is the last token of the declaration: the declaration ends
+    // with a semicolon.
+    let next = tokens.get(index + 1)?;
+    if next.kind != TokenKind::Punct {
+        return None;
+    }
+    if !matches!(next.text, ";" | "," | "[") {
+        return None;
+    }
+    let end = statement_end(tokens, index + 1)?;
+    // The qualifiers of the declaration are part of it.
+    let start = statement_start(tokens, type_token.start);
+    Some((start, end))
+}
+
+/// The end of the statement the token `index` is in.
+///
+/// The statement ends at the semicolon that closes it.
+fn statement_end(tokens: &[Token<'_>], index: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for token in tokens.iter().skip(index) {
+        if token.kind != TokenKind::Punct {
+            continue;
+        }
+        match token.text {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => depth -= 1,
+            ";" if depth == 0 => return Some(token.end),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The start of the statement the position `index` is in.
+///
+/// The statement starts after the last `;`, `{` or `}` before the
+/// position, so that the qualifiers of a declaration are part of it.
+fn statement_start(tokens: &[Token<'_>], index: usize) -> usize {
+    let mut start = 0;
+    for token in tokens {
+        if token.start >= index {
+            break;
+        }
+        if token.kind == TokenKind::Punct && matches!(token.text, ";" | "{" | "}") {
+            start = token.end;
+        }
+    }
+    start
+}
+
+/// Promote the initialiser of a vector that is a scalar.
+///
+/// `vec2 texelSize = 1;` initialises a vector with a scalar.  GLSL has no
+/// implicit conversion from a scalar to a vector, so the initialiser is
+/// wrapped in a constructor of the type of the variable: `vec2 texelSize =
+/// vec2(1);`.
+///
+/// A variable that is initialised with a vector is left alone: the
+/// constructor would only add noise.
+fn promote_scalar_initialisers(source: &str) -> String {
+    let mask = CodeMask::with_macro_bodies(source);
+    // The symbols of the macro bodies are not collected: a macro body is a
+    // text that is expanded later, and its parameters are not variables.
+    let symbols = collect_symbols(source, &CodeMask::new(source));
+    let tokens = tokenize(source, &mask);
+
+    let mut edits: Vec<Edit> = Vec::new();
+    for index in 0..tokens.len() {
+        let token = &tokens[index];
+        if token.kind != TokenKind::Word {
+            continue;
+        }
+        let Some(Ty::Vector(_)) = keyword_type(token.text) else {
+            continue;
+        };
+        // The name of the variable follows its type.
+        let Some(name) = tokens.get(index + 1) else {
+            continue;
+        };
+        if name.kind != TokenKind::Word {
+            continue;
+        }
+        // The variable is initialised.
+        let Some(assign) = tokens.get(index + 2) else {
+            continue;
+        };
+        if assign.kind != TokenKind::Punct || assign.text != "=" {
+            continue;
+        }
+        // The initialiser is the expression that follows the assignment.
+        let Some((start, end)) = initialiser_range(&tokens, index + 3) else {
+            continue;
+        };
+        let text = source[start..end].trim();
+        if estimate_type(text, &symbols) != Ty::Scalar {
+            continue;
+        }
+        edits.push(Edit {
+            start,
+            end,
+            text: format!("{}({})", token.text, text),
+        });
+    }
+
+    apply_edits(source, edits)
+}
+
+/// The range of the expression that starts at the token `index`.
+///
+/// The expression ends at the `;` or the `,` that closes it.
+fn initialiser_range(tokens: &[Token<'_>], index: usize) -> Option<(usize, usize)> {
+    let first = tokens.get(index)?;
+    let mut depth = 0i32;
+    let mut last = first;
+
+    for token in tokens.iter().skip(index) {
+        if token.kind == TokenKind::Punct {
+            match token.text {
+                "(" | "[" | "{" => depth += 1,
+                ")" | "]" | "}" => depth -= 1,
+                ";" | "," if depth == 0 => {
+                    return Some((first.start, last.end));
+                }
+                _ => {}
+            }
+        }
+        last = token;
+    }
+
+    Some((first.start, last.end))
 }
 
 /// Rewrite the `mul(a, b)` calls of a source into the GLSL `a * b`.
@@ -1683,6 +2000,18 @@ mod tests {
             &[],
         ),
         (
+            "instance_index.vert",
+            include_str!("tests/instance_index.vert"),
+            naga::ShaderStage::Vertex,
+            &[],
+        ),
+        (
+            "scalar_initialiser.frag",
+            include_str!("tests/scalar_initialiser.frag"),
+            naga::ShaderStage::Fragment,
+            &[],
+        ),
+        (
             "engine_macros.vert",
             include_str!("tests/engine_macros.vert"),
             naga::ShaderStage::Vertex,
@@ -1845,8 +2174,10 @@ mod tests {
         let normalized = normalize(source);
         assert!(normalized.contains("uniform sampler2D g_Texture6;"));
         assert!(normalized.contains("uniform sampler2D g_Texture1;"));
+        assert!(normalized.contains("uniform sampler2D g_Texture2;"));
         assert!(!normalized.contains("sampler2DComparison"));
         assert!(!normalized.contains("sampler3D"));
+        assert!(!normalized.contains("sampler2DBackBuffer"));
     }
 
     /// The engine macros a shader uses are defined.
@@ -2052,6 +2383,120 @@ mod tests {
             naga::valid::Capabilities::all(),
         );
         validator.validate(&module).expect("the shader validates");
+    }
+
+    /// The index of the instance of the engine is the one of GLSL.
+    #[test]
+    fn the_instance_index_of_the_engine_is_the_one_of_glsl() {
+        let source = "void main() { gl_Position = vec4(float(gl_InstanceID)); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("gl_InstanceIndex"));
+        assert!(!normalized.contains("gl_InstanceID"));
+    }
+
+    /// A shader that already uses the index of the instance of GLSL is not
+    /// changed.
+    #[test]
+    fn the_instance_index_of_glsl_is_not_changed() {
+        let source = "void main() { gl_Position = vec4(float(gl_InstanceIndex)); }\n";
+        assert_eq!(normalize(source), source);
+    }
+
+    /// The declaration of the index of the instance of the engine is
+    /// dropped: the index is a built-in of GLSL and not an attribute of the
+    /// shader, and an attribute without a location collides with the first
+    /// attribute of the shader.
+    #[test]
+    fn the_declaration_of_the_instance_index_is_dropped() {
+        let source = "in uint gl_InstanceID;\nlayout(location=0) in vec3 a_Position;\n";
+        let normalized = normalize(source);
+        assert!(!normalized.contains("gl_InstanceID"));
+        assert!(normalized.contains("layout(location=0) in vec3 a_Position;"));
+    }
+
+    /// The declaration of the index of the instance is dropped with its
+    /// qualifiers: the layout of the attribute goes with it.
+    #[test]
+    fn the_qualifiers_of_the_declaration_of_the_instance_index_are_dropped() {
+        let source = "layout(location=3) in uint gl_InstanceID;\nvoid main() {}\n";
+        let normalized = normalize(source);
+        assert!(!normalized.contains("gl_InstanceID"));
+        assert!(!normalized.contains("layout(location=3)"));
+        assert!(normalized.contains("void main() {}"));
+    }
+
+    /// A vector that is initialised with a scalar is given one.
+    #[test]
+    fn a_vector_that_is_initialised_with_a_scalar_is_promoted() {
+        let source = "void main() { vec2 texelSize = 1; }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("vec2 texelSize = vec2(1);"));
+    }
+
+    /// A vector that is initialised with a vector is not changed.
+    #[test]
+    fn a_vector_that_is_initialised_with_a_vector_is_not_changed() {
+        let source = "void main() { vec2 v = vec2(1.0); }\n";
+        assert_eq!(normalize(source), source);
+    }
+
+    /// A scalar that is initialised with a scalar is not changed: GLSL
+    /// converts it itself.
+    #[test]
+    fn a_scalar_that_is_initialised_with_a_scalar_is_not_changed() {
+        let source = "void main() { float f = 1.0; }\n";
+        assert_eq!(normalize(source), source);
+    }
+
+    /// The casts of the engine are rewritten as well: the engine defines
+    /// them as macros of its own compiler.
+    #[test]
+    fn the_casts_of_the_engine_are_rewritten() {
+        let source = "void main() { float f = CASTF(1); uint u = CASTU(2); int i = CASTI(3); vec4 v = CAST4U(4); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("float f = float(1);"));
+        assert!(normalized.contains("uint u = uint(2);"));
+        assert!(normalized.contains("int i = int(3);"));
+        assert!(normalized.contains("vec4 v = uvec4(4);"));
+    }
+
+    /// The built-in function of the engine is provided by the pipeline: it
+    /// is in none of the headers of the assets.
+    #[test]
+    fn the_built_in_function_of_the_engine_is_provided() {
+        let source = "void main() { vec3 l = PerformLighting_V1(v_Pos, albedo, n, v, spec, f0, 0.7, 0.0); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("vec3 PerformLighting_V1("));
+    }
+
+    /// A shader that has its own definition of the built-in function of the
+    /// engine keeps it.
+    #[test]
+    fn a_shader_that_defines_the_built_in_function_keeps_it() {
+        let source = "vec3 PerformLighting_V1(vec3 a, vec3 b) { return a; }\n\
+             void main() { vec3 l = PerformLighting_V1(v_Pos, albedo); }\n";
+        let normalized = normalize(source);
+        assert_eq!(normalized.matches("PerformLighting_V1").count(), 2);
+    }
+
+    /// The built-in function of the engine is added after the version of
+    /// the shader: the version has to be the first thing in the file.
+    #[test]
+    fn the_built_in_function_is_added_after_the_version_of_the_shader() {
+        let source = "#version 450\n\
+             void main() { vec3 l = PerformLighting_V1(v_Pos, albedo, n, v, spec, f0, 0.7, 0.0); }\n";
+        let normalized = normalize(source);
+        assert!(normalized.starts_with("#version 450\n"));
+        assert!(normalized.contains("\nvec3 PerformLighting_V1("));
+    }
+
+    /// The format of a texture is the format of the default texture of the
+    /// engine: the pipeline does not know the format of the material.
+    #[test]
+    fn the_format_of_a_texture_is_defined() {
+        let source = "void main() { int f = TEX8FORMAT; }\n";
+        let normalized = normalize(source);
+        assert!(normalized.contains("#define TEX8FORMAT 0"));
     }
 
     /// The shaders of the engine compile once they are normalised.

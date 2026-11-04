@@ -31,15 +31,22 @@ use super::{ShaderProgram, get_headers, preprocess_pair_with_layout};
 ///
 /// * `UnknownType(sampler2DComparison)` and `UnknownType(sampler3D)`: the
 ///   sampler types of the engine,
-/// * `UnknownFunction(pow)`: the scalar argument of a vector parameter,
+/// * `UnknownType(sampler2DBackBuffer)`: the sampler of the back buffer
+///   of a volumetric effect,
 /// * `UnknownVariable(BONECOUNT)` and `UnknownVariable(BLENDROWCOUNT)`: the
 ///   macros the engine provides,
+/// * `UnknownVariable(gl_InstanceID)`: the index of the instance of the
+///   engine,
+/// * `UnknownFunction(pow)`: the scalar argument of a vector parameter,
 /// * `UnknownFunction(ApplyPosition)`: the headers of the models,
 /// * `UnknownFunction(mul)`: the row vector form of the product,
+/// * `UnknownFunction(PerformLighting_V1)`: the built-in functions of the
+///   engine,
 /// * `InvalidToken(PrecisionQualifier(Medium))`: the precision qualifiers.
 const FIXED_CLASSES: &[(&str, &str)] = &[
     ("ccsimple", "UnknownType(sampler3D)"),
     ("chroma4", "UnknownType(sampler2DComparison)"),
+    ("chroma4", "UnknownFunction(PerformLighting_V1)"),
     ("clippingmaskimage4", "UnknownVariable(BONECOUNT)"),
     ("combine_hdr_editor", "UnknownFunction(pow)"),
     ("downsample_quarter_linear", "UnknownFunction(pow)"),
@@ -47,9 +54,13 @@ const FIXED_CLASSES: &[(&str, &str)] = &[
     ("flat", "InvalidToken(PrecisionQualifier(Medium))"),
     ("flatpoint", "InvalidToken(PrecisionQualifier(Medium))"),
     ("foliage4", "UnknownType(sampler2DComparison)"),
+    ("foliage4", "UnknownFunction(PerformLighting_V1)"),
     ("fur4", "UnknownType(sampler2DComparison)"),
+    ("fur4", "UnknownVariable(gl_InstanceID)"),
+    ("fur4", "UnknownFunction(PerformLighting_V1)"),
     ("generic3", "UnknownVariable(BONECOUNT)"),
     ("generic4", "UnknownVariable(BONECOUNT)"),
+    ("generic4", "UnknownFunction(PerformLighting_V1)"),
     ("genericimage2", "UnknownVariable(BONECOUNT)"),
     ("genericimage3", "UnknownVariable(BONECOUNT)"),
     ("genericimage4", "UnknownVariable(BONECOUNT)"),
@@ -59,66 +70,42 @@ const FIXED_CLASSES: &[(&str, &str)] = &[
     ("passthroughlinear", "UnknownFunction(pow)"),
     ("puppettexturechannels", "UnknownVariable(BLENDROWCOUNT)"),
     ("shadowcaster", "UnknownVariable(BONECOUNT)"),
+    ("shadowcaster", "UnknownVariable(gl_InstanceID)"),
     ("shadowcasterfoliage4", "UnknownFunction(ApplyPosition)"),
+    ("shadowcasterfoliage4", "UnknownVariable(gl_InstanceID)"),
     ("shadowcasterfur4", "UnknownFunction(ApplyPosition)"),
+    ("shadowcasterfur4", "UnknownVariable(gl_InstanceID)"),
     ("volumetricsback", "UnknownFunction(mul)"),
     ("volumetricsfront", "UnknownType(sampler2DComparison)"),
+    ("volumetricsfront", "UnknownType(sampler2DBackBuffer)"),
 ];
 
 /// The pairs of the shaders of Wallpaper Engine that do not compile, with
 /// the reason why.
 ///
-/// These are the limits of the pipeline and not of the shaders:
+/// The list is empty: every pair of the assets of Wallpaper Engine
+/// compiles.  A pair that does not compile any more is a regression, and
+/// the test says so.
 ///
-/// * `PerformLighting_V1` is the lighting function of the engine.  It is
-///   used by the shaders that light a model, but it is in none of the
-///   headers the assets ship: the engine has it in its own library.  The
-///   shaders that use it only compile when the material turns the lighting
-///   off (`LIGHTING=0`).
-/// * `gl_InstanceID` is the instance index of the engine.  It is a built-in
-///   of the engine and not an attribute, and the pipeline emits it as an
-///   attribute: it collides with the first attribute of the shader.
-/// * `sampler2DBackBuffer` is the sampler of the back buffer of a
-///   volumetric effect.  The dialect approximates the sampler types of the
-///   engine it knows (`sampler2DComparison`, `sampler3D`) and not this one.
-/// * `vec2 texelSize = 1;` initialises a vector with a scalar.  The
-///   promotion of a scalar to a vector covers the arguments of the built-in
-///   functions and not the initialisers of the variables.
-const KNOWN_FAILURES: &[(&str, &str)] = &[
-    (
-        "chroma4",
-        "the lighting function of the engine is in none of its headers",
-    ),
-    ("editorpaintbrush", "a vector is initialised with a scalar"),
-    (
-        "foliage4",
-        "the lighting function of the engine is in none of its headers",
-    ),
-    (
-        "fur4",
-        "the instance index of the engine is not a built-in of GLSL",
-    ),
-    (
-        "generic4",
-        "the lighting function of the engine is in none of its headers",
-    ),
-    (
-        "shadowcaster",
-        "the instance index of the engine collides with the first attribute",
-    ),
-    (
-        "shadowcasterfoliage4",
-        "the instance index of the engine collides with the first attribute",
-    ),
-    (
-        "shadowcasterfur4",
-        "the instance index of the engine collides with the first attribute",
-    ),
-    (
-        "volumetricsfront",
-        "the sampler of the back buffer of a volumetric effect is unknown",
-    ),
-];
+/// The pairs that did not compile before the dialect stage grew, and the
+/// rule that fixed them:
+///
+/// * `chroma4`, `foliage4`, `generic4` and `fur4` used
+///   `PerformLighting_V1`, the lighting function of the engine.  It is in
+///   none of the headers of the assets - it is in the engine itself - so
+///   the pipeline provides an approximation of it (`ENGINE_BUILTINS`).
+/// * `editorpaintbrush` initialised a vector with a scalar.  The
+///   promotion of a scalar to a vector covers the initialisers of the
+///   variables now.
+/// * `fur4`, `shadowcaster`, `shadowcasterfoliage4` and `shadowcasterfur4`
+///   used `gl_InstanceID`, the index of the instance of the engine.  It is
+///   `gl_InstanceIndex` in GLSL, and the declaration of the engine is
+///   dropped: it is a built-in of GLSL and not an attribute.
+/// * `volumetricsfront` used the sampler of the back buffer of a
+///   volumetric effect (`sampler2DBackBuffer`), the helpers of the engine
+///   `texSample2DBackBuffer` and `texLoad2D` and the `clip` of GLSL, which
+///   naga does not know.
+const KNOWN_FAILURES: &[(&str, &str)] = &[];
 
 /// The failure of one stage of a shader.
 #[derive(Debug)]

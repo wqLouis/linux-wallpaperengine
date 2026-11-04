@@ -18,6 +18,15 @@
 //! * `frac(x)` becomes `fract(x)`.
 //! * `texSample2D(s, uv)` becomes `texture(s, uv)` and `texSample2DLod`
 //!   becomes `textureLod`.
+//! * `texSample2DBackBuffer(s, uv, res)` becomes `texture(s, uv)`: the
+//!   engine samples the back buffer of the effect like an ordinary
+//!   texture.
+//! * `texLoad2D(s, uv, res)` becomes `texelFetch(s, ivec2(uv * res), 0)`:
+//!   the engine loads the texel of a texture without filtering, and the
+//!   coordinate of the texel is the coordinate of the texture times its
+//!   resolution.
+//! * `clip(x)` becomes `if ((x) < 0.0) discard;`: naga does not know the
+//!   `clip` of GLSL.
 //! * `gl_FragColor` becomes `_fragColor`, the output of the fragment stage.
 //! * `mul(a, b)` becomes `a * b`: Wallpaper Engine uses the row vector form
 //!   of the product, so the operands keep their order.  The rewrite itself
@@ -54,6 +63,9 @@ pub fn apply_line(
     t = replace_frac(&t);
     t = t.replace("texSample2D(", "texture(");
     t = t.replace("texSample2DLod(", "textureLod(");
+    t = replace_back_buffer_samples(&t);
+    t = replace_texture_loads(&t);
+    t = replace_clip(&t);
     t = t.replace("gl_FragColor", "_fragColor");
     t = replace_mul(&t);
     t = replace_texture_calls(&t, sampler_set);
@@ -158,6 +170,150 @@ pub fn fix_implicit_truncation(line: &str, varying_types: &Map<String, String>) 
         _ => return line.to_string(),
     };
     format!("{} = {}{};", lhs, rhs, swizzle)
+}
+
+/// Rewrite the `clip(x)` of GLSL, which naga does not know.
+///
+/// `clip(x)` ends the fragment when `x` is negative.  The equivalent in
+/// naga is a `discard` in a condition, so the call becomes `if ((x) <
+/// 0.0) discard;`.
+pub fn replace_clip(line: &str) -> String {
+    let mut result = line.to_string();
+    let mut search_start = 0;
+
+    while let Some(pos) = result[search_start..].find("clip(") {
+        let abs_start = search_start + pos;
+        // The name must not be the end of a longer name.
+        if abs_start > 0 && is_name_byte(result.as_bytes()[abs_start - 1]) {
+            search_start = abs_start + 4;
+            continue;
+        }
+        let open = abs_start + 4;
+        let Some(close) = find_matching_paren(&result, open + 1) else {
+            break;
+        };
+        let expression = result[open + 1..close].trim().to_string();
+
+        // The statement of the call ends with a semicolon.
+        let mut end = close + 1;
+        let rest = &result[end..];
+        let trimmed = rest.trim_start();
+        if trimmed.starts_with(';') {
+            end += rest.len() - trimmed.len() + 1;
+        }
+
+        let replacement = format!("if (({expression}) < 0.0) discard;");
+        result.replace_range(abs_start..end, &replacement);
+        search_start = abs_start + replacement.len();
+    }
+
+    result
+}
+
+/// Rewrite the calls of the engine that sample the back buffer.
+///
+/// The engine writes `texSample2DBackBuffer(s, uv, res)`: it samples the
+/// buffer of the previous pass of the effect.  The resolution is only
+/// needed by the engine, which samples the buffer with a mip map, so the
+/// call becomes an ordinary sample: `texture(s, uv)`.
+pub fn replace_back_buffer_samples(line: &str) -> String {
+    rewrite_texture_helper(line, "texSample2DBackBuffer", |arguments| {
+        if arguments.len() < 2 {
+            return None;
+        }
+        Some(format!(
+            "texture({}, {})",
+            arguments[0].trim(),
+            arguments[1].trim()
+        ))
+    })
+}
+
+/// Rewrite the calls of the engine that load a texel of a texture.
+///
+/// The engine writes `texLoad2D(s, uv, res)`: it loads the texel of a
+/// texture without filtering it.  The coordinate of the texel is the
+/// coordinate of the texture times the resolution of the texture, so the
+/// call becomes `texelFetch(s, ivec2(uv * res), 0)`.
+pub fn replace_texture_loads(line: &str) -> String {
+    rewrite_texture_helper(line, "texLoad2D", |arguments| {
+        if arguments.len() < 3 {
+            return None;
+        }
+        Some(format!(
+            "texelFetch({}, ivec2({} * {}), 0)",
+            arguments[0].trim(),
+            arguments[1].trim(),
+            arguments[2].trim()
+        ))
+    })
+}
+
+/// Rewrite the calls of a texture helper of the engine in a line.
+///
+/// The helper is a macro of the engine (`#define texLoad2D(s, u, r) ...`),
+/// so the call is a name followed by a parenthesis.  `rewrite` gets the
+/// arguments of the call and returns the text that replaces the whole
+/// call; when it returns nothing the call is left alone.
+fn rewrite_texture_helper(
+    line: &str,
+    name: &str,
+    rewrite: impl Fn(&[&str]) -> Option<String>,
+) -> String {
+    let mut result = line.to_string();
+    let mut search_start = 0;
+
+    while let Some(pos) = result[search_start..].find(name) {
+        let abs_start = search_start + pos;
+        // The name must not be the end of a longer name.
+        if abs_start > 0 && is_name_byte(result.as_bytes()[abs_start - 1]) {
+            search_start = abs_start + name.len();
+            continue;
+        }
+        let open = abs_start + name.len();
+        if !result[open..].starts_with('(') {
+            search_start = open;
+            continue;
+        }
+        let Some(close) = find_matching_paren(&result, open + 1) else {
+            break;
+        };
+        let arguments = split_arguments(&result[open + 1..close]);
+        let Some(replacement) = rewrite(&arguments) else {
+            search_start = open + 1;
+            continue;
+        };
+        result.replace_range(abs_start..close + 1, &replacement);
+        search_start = abs_start + replacement.len();
+    }
+
+    result
+}
+
+/// Whether the byte is a part of an identifier.
+fn is_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The arguments of a call, split at the commas that are not enclosed in
+/// brackets.
+fn split_arguments(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (index, byte) in text.as_bytes().iter().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(&text[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
 }
 
 /// Rewrite the DirectX style `mul(a, b)` into the GLSL `a * b`.
@@ -529,5 +685,42 @@ mod tests {
             output,
             "float a = clamp(g_Sensitivity, 0.0, 1.0) + step(0.0001, negPerspective);"
         );
+    }
+
+    /// The sample of the back buffer of an effect becomes an ordinary
+    /// sample: the resolution is only needed by the engine.
+    #[test]
+    fn the_back_buffer_sample_is_rewritten() {
+        let input = "float d = texSample2DBackBuffer(g_Texture1, uv, g_Texture1Resolution.xy).r;";
+        let output = replace_back_buffer_samples(input);
+        assert_eq!(output, "float d = texture(g_Texture1, uv).r;");
+    }
+
+    /// The load of a texel becomes a fetch: the coordinate of the texel is
+    /// the coordinate of the texture times the resolution of the texture.
+    #[test]
+    fn the_texture_load_is_rewritten() {
+        let input = "float d = texLoad2D(g_Texture3, uv, g_Texture3Resolution.xy).r;";
+        let output = replace_texture_loads(input);
+        assert_eq!(
+            output,
+            "float d = texelFetch(g_Texture3, ivec2(uv * g_Texture3Resolution.xy), 0).r;"
+        );
+    }
+
+    /// The `clip` of GLSL is not known by naga: it becomes a `discard` in a
+    /// condition.
+    #[test]
+    fn the_clip_is_rewritten() {
+        let input = "\tclip(depth - 0.5);";
+        let output = replace_clip(input);
+        assert_eq!(output, "\tif ((depth - 0.5) < 0.0) discard;");
+    }
+
+    /// A name that only starts with `clip` is not a call of the engine.
+    #[test]
+    fn a_name_that_is_not_a_clip_is_left_alone() {
+        let input = "float a = clipboard + clip;";
+        assert_eq!(replace_clip(input), input);
     }
 }
