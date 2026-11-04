@@ -23,6 +23,7 @@
 //! not be used — are shown as well.
 
 mod config;
+mod design;
 mod picker;
 mod thumbs;
 mod tray;
