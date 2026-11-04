@@ -63,10 +63,11 @@ Each wallpaper is described by a `WallpaperInfo`:
 
 | Field | Description |
 |-------|-------------|
-| the source | the `WallpaperSource` of the wallpaper (a folder inside the workshop) |
-| the title | the title of `project.json` |
-| the kind | the `WallpaperKind` of the manifest: a scene, a video, a web page, an application … |
-| the preview | the preview image of the manifest, when it has one |
+| `id` | the name of the folder (or of the file) of the wallpaper |
+| `title` | the title of `project.json` |
+| `kind` | the `WallpaperKind` of the manifest: a scene, a video, a web page, an application … |
+| `source` | the `WallpaperSource` of the wallpaper (a folder inside the workshop) |
+| `thumbnail` | the preview image of the manifest, when there is one |
 
 The preview is what the picker of the GUI shows, so the GUI does not have to
 load a wallpaper to draw its thumbnail.
@@ -100,8 +101,9 @@ touches, so the interface of the GUI stays responsive while a wallpaper plays.
 
 The handle is the control of the wallpaper:
 
-* it takes the **commands** (`EngineCommand`) — stop the wallpaper, pause it,
-  resume it, change the fit mode, … — and hands them to the worker thread,
+* it takes the **commands** (`EngineCommand`) — switch the wallpaper, change the
+  rate it is rendered at, pause it, resume it, stop it — and hands them to the worker
+  thread,
 * it reports the **status** (`EngineStatus`) of the wallpaper back to the host.
 
 The handle can be kept by several components: the commands are queued, so the
@@ -136,6 +138,7 @@ device is.
 | `Window` | the output window could not be created |
 | `Unsupported` | the feature is not available on this platform |
 | `Io` | a file could not be read |
+| `Bus` | the D-Bus connection of the GNOME adapter failed |
 | `Failed` | the failure has no error of its own: the string is the message |
 
 Every variant carries the error that caused it, and the chain of causes
