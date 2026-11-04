@@ -1,3 +1,11 @@
+# The command line interface of the wallpaper engine.
+#
+# The engine renders with wgpu, so a Vulkan (or GL) driver is needed at
+# runtime; it is not a package dependency here, because the driver comes
+# with the system (mesa, the proprietary nvidia driver, …).
+#
+# The graphical interface is a separate package:
+# linux-wallpaper-engine-gui-git.
 pkgname=linux-wallpaper-engine-git
 pkgver=0.0.0
 pkgrel=1
@@ -7,6 +15,9 @@ url="https://github.com/wqLouis/linux-wallpaperengine"
 license=("GPL-3.0")
 depends=()
 makedepends=("git" "rustup")
+# The graphical interface is optional: the command line interface does not
+# need it.
+optdepends=("linux-wallpaper-engine-gui-git: the graphical interface (the tray app)")
 provides=("linux-wallpaper-engine")
 conflicts=("linux-wallpaper-engine")
 source=("${pkgname}::git+https://github.com/wqLouis/linux-wallpaperengine.git")
@@ -26,7 +37,7 @@ prepare() {
 
 build() {
   cd "$srcdir/$pkgname"
-  cargo build --release
+  cargo build --release -p linux-wallpaper-engine-cli
 }
 
 package() {

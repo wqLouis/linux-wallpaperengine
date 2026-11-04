@@ -1,6 +1,14 @@
 # Scene Loader (`src/scene/loader/`)
 
-Parses Wallpaper Engine `.pkg` files and converts raw scene data into structured objects ready for rendering.
+Parses Wallpaper Engine wallpapers and converts raw scene data into structured objects ready for rendering.
+
+A wallpaper is either an **archive** (a `.pkg` file) or a **folder** (the
+Steam workshop layout: a `project.json` and the files of the wallpaper next to
+it).  Both shapes end up as the same map of files — the path of a file inside
+the wallpaper and its bytes — so the loader does not care where they come
+from.  The abstraction that does the reading lives in the façade
+([engine.md](engine.md#sources--wallpapersource)); the loader only sees the
+files.
 
 ---
 
@@ -192,7 +200,9 @@ pub struct Scene {
 
 ### `Scene::new(path: String, show_progress: bool, no_mdl: bool) -> Self`
 
-Parses a `.pkg` file:
+Parses a `.pkg` file (the folder sources are read by the façade, which hands
+the very same files to the loader — see [the two shapes of a
+wallpaper](#the-two-shapes-of-a-wallpaper--the-folder-sources)):
 
 1. Uses `pkg_parser::parser::Pkg::new(path)` to open the package
 2. For each file, classifies it with `AssetType::from_path()`:
@@ -215,6 +225,48 @@ because it can legitimately fall back to the Wallpaper Engine `assets/`
 directory or reference runtime textures.
 
 **Threading:** `.tex` files are decoded by a worker pool sized to the available CPU cores (capped at the number of textures). Work is handed out through an atomic index, so threads stay busy even when individual textures decode at different speeds; no thread is spawned per file.
+
+### The two shapes of a wallpaper — the folder sources
+
+A wallpaper is not always a `.pkg` archive: the Steam workshop ships the
+wallpapers as **folders** (`…/workshop/content/431960/<id>/`), each with a
+`project.json` and the files of the wallpaper next to it.
+
+The façade describes such a wallpaper with a `WallpaperSource`
+([engine.md](engine.md#sources--wallpapersource)):
+
+```rust
+pub enum WallpaperSource {
+    Package(PathBuf),  // a .pkg archive
+    Folder(PathBuf),   // a folder with project.json and the files next to it
+}
+```
+
+`WallpaperSource::read_files()` returns the files of the wallpaper as a map
+from the path of a file *inside* it to its bytes:
+
+- for an **archive** it is the map the package parser produces,
+- for a **folder** it is built by walking the folder: the paths are relative
+  to the folder and use `/` as the separator, so the two shapes look exactly
+  the same to the loader.
+
+A file that cannot be read is an `EngineError::Io` that names the path it
+happened at.  The loader itself stays shape-agnostic: it classifies every file
+by its path inside the wallpaper, whether it came from an archive or from a
+folder.
+
+### The metadata — what wallpapers exist
+
+The façade also knows *which* wallpapers exist.  `scan_wallpapers()` walks a
+workshop folder and describes every wallpaper it finds — one folder per
+wallpaper, each with a `project.json` at its root.
+
+The manifest is parsed with the parser of the loader
+([`project.rs`](#project--the-manifest-of-a-wallpaper)): it tells the loader
+what kind of wallpaper it is holding (a scene, a video, a web page, an
+application), which file is its main file and which one is its preview image.
+The preview is what a picker shows, so the host does not have to load a
+wallpaper to draw its thumbnail.
 
 ### Video wallpapers — the synthetic scene
 
@@ -363,6 +415,57 @@ assets/
 
 ---
 
+## `project` — The manifest of a wallpaper
+
+**File:** `project.rs`
+
+Every Wallpaper Engine wallpaper carries a `project.json` at its root.  It
+describes *what kind* of wallpaper it is and a couple of descriptive fields:
+
+```json
+{ "title": "My Video", "type": "Video", "file": "video.mp4", "preview": "preview.jpg" }
+```
+
+The loader needs it to decide how a wallpaper should be brought up: a scene
+wallpaper is loaded through its `scene.json`, a video wallpaper is a single
+looping clip (see [the synthetic scene](#video-wallpapers--the-synthetic-scene)).
+
+### `WallpaperKind`
+
+```rust
+pub enum WallpaperKind {
+    Scene,        // scene.json + its materials, effects and models
+    Video,        // a single looping clip
+    Web,          // a web page (HTML/JS)
+    Application,  // an application
+    Unknown(String),  // a kind this parser does not know about
+}
+```
+
+### `Project`
+
+```rust
+pub struct Project {
+    pub title: String,          // the human readable title
+    pub kind: WallpaperKind,    // what kind of wallpaper this is
+    pub file: Option<String>,   // the main file ("scene.json", "video.mp4")
+    pub preview: Option<String>,// the preview image
+}
+```
+
+### `parse_project(json: &str) -> Option<Project>`
+
+Parses the JSON text of a `project.json`.  The parser is deliberately lenient:
+unknown fields are ignored, a missing `type` means a scene and an unknown
+`type` is preserved as `WallpaperKind::Unknown` instead of failing the whole
+parse.  A text that is not a JSON *object* is not a project at all, so it is
+rejected (`None`).
+
+The manifest is also what the façade reads when it scans a workshop folder
+([the metadata](#the-metadata--what-wallpapers-exist)).
+
+---
+
 ## `object_loader` — Object Conversion
 
 **File:** `object_loader.rs`
@@ -501,10 +604,24 @@ Referenced by texture objects in `object.image`. The `material` field points to 
 
 ## `shader` — GLSL Preprocessing & Parsing
 
-**Files:** `shader/mod.rs`, `shader/asset.rs`, `shader/header.rs`, `shader/layout.rs`, `shader/replace.rs`
+**Files:** `shader/mod.rs`, `shader/asset.rs`, `shader/header.rs`, `shader/layout.rs`, `shader/preprocessor.rs`, `shader/c_expr.rs`, `shader/compat.rs`, `shader/dialect.rs`, `shader/glsl/`, `shader/varying.rs`
 
 All Wallpaper Engine shader parsing and GLSL→Vulkan preprocessing lives here so
 shaders are understood as soon as the scene is loaded.
+
+The preprocessing has four stages:
+
+1. **`preprocessor`** (with `c_expr`) — resolves the conditionals of a C
+   preprocessor, inlines the headers the shader includes and collects the
+   macros of the shader and of its headers.
+2. **`compat`** — rewrites the constructs of the Wallpaper Engine dialect that
+   have no GLSL equivalent (`saturate`, `frac`, `texSample2D`, `gl_FragColor`,
+   `clip`, …).
+3. **`glsl`** — normalises the types of the shader, so that it satisfies the
+   strict typing rules of GLSL.
+4. **`dialect`** — rewrites the rest of the dialect of the engine: the `mul`
+   calls in their row vector form, the precision qualifiers, the sampler types
+   and the macros of the engine.
 
 ### `ShaderProgram` (`shader/asset.rs`)
 
@@ -522,7 +639,7 @@ A `.frag`/`.vert` pair parsed once by `Scene::prepare()`:
 
 - `preprocess_pair_with_layout(...)` — the define-dependent GLSL→Vulkan pass, using the precomputed layout
 - `collect_layout(...)` / `collect_source_defines(...)` / `collect_default_defines(...)`
-- `preprocess_with_layout`, `preprocess_with_layout_tracked`
+- `preprocess_with_layout_tracked(...)`
 
 ### `shader/layout.rs` — `EffectLayout`
 
@@ -535,6 +652,15 @@ Shader interface introspection plus the std140 uniform size helpers
 `get_headers(load)` pulls `shaders/common*.h` through a byte loader and
 `WM_SAMPLER_BINDING` defines the shared sampler binding.
 
-### `shader/replace.rs`
+### `shader/varying.rs` — The varyings of the compiled branch
 
-GLSL builtin `mul`/`saturate`/`texSample2D`/… replacements.
+A varying that only appears inside a conditional block of the vertex shader is
+hoisted to an unconditional vertex output, so that the fragment shader always
+finds it.  A varying that is missing on one side is synthesised.
+
+### `shader/compat.rs` and `shader/dialect.rs`
+
+The GLSL builtin `mul`/`saturate`/`texSample2D`/… replacements.  The
+compatibility stage is a plain textual substitution, the dialect stage works on
+the source text alone as well — neither of them needs the layout of the
+effect, so both can be tested on their own.

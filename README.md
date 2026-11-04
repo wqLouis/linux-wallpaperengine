@@ -26,6 +26,7 @@ https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
 
 - **wlr-layer-shell (Wayland)** — the wallpaper is rendered as a `Layer::Background` surface behind every window, with fractional scaling support.
 - **GNOME** — GNOME Shell has no layer shell, so the frames are rendered off-screen and streamed to a companion [GNOME Shell extension](gnome-extension/README.md) that shows them as the desktop background.
+- **Graphical interface** — a native tray application (built with [gpui-ce](https://crates.io/crates/gpui-ce)) that lists the wallpapers of a workshop folder and renders the one that is picked.
 - **Effect shaders** — the GLSL post-processing shaders of Wallpaper Engine (bloom, water ripples, …) are translated to WGSL and compiled at runtime.
 - **Puppet rendering** — `.mdl` models are parsed and rendered as animated, CPU-skinned meshes.
 - **Audio** — the audio tracks of a scene are played in a loop.
@@ -45,6 +46,9 @@ https://github.com/user-attachments/assets/16891f80-30ca-482c-9f25-17b0b8fdeca5
 
 **Linux**
 
+The command line interface needs a C toolchain, `pkg-config` and the ALSA
+headers (the engine plays the audio of a scene with `rodio`):
+
 ```bash
 # Debian / Ubuntu
 sudo apt install build-essential pkg-config libasound2-dev
@@ -54,6 +58,21 @@ sudo dnf install gcc pkgconf-pkg-config alsa-lib-devel
 
 # Arch
 sudo pacman -S base-devel pkgconf alsa-lib
+```
+
+The graphical interface needs two more packages: the gpui-ce backend of Linux
+links against **fontconfig** (the fonts of the interface) and **xkbcommon**
+(the keyboard layout):
+
+```bash
+# Debian / Ubuntu
+sudo apt install libfontconfig-dev libxkbcommon-dev
+
+# Fedora
+sudo dnf install fontconfig-devel libxkbcommon-devel
+
+# Arch
+sudo pacman -S fontconfig libxkbcommon
 ```
 
 A Vulkan driver is needed as well (Mesa for AMD/Intel, the proprietary driver for
@@ -71,21 +90,48 @@ xcode-select --install
 ### Build
 
 ```bash
-git clone https://github.com/wqLouis/linux-wallpaper-engine.git
+git clone https://github.com/wqLouis/linux-wallpaperengine.git
 cd linux-wallpaper-engine
+git submodule update --init --recursive   # the package parser is a submodule
 cargo build --release
 ```
+
+The repository is a cargo workspace with three packages:
+
+| Package | Directory | What it builds |
+|---------|-----------|----------------|
+| `linux-wallpaper-engine` | `.` | the library (`linux_wallpaper_engine`) |
+| `linux-wallpaper-engine-cli` | `crates/lwe-cli` | the CLI (`linux-wallpaper-engine`) |
+| `linux-wallpaper-engine-gui` | `crates/lwe-gui` | the GUI (`linux-wallpaper-engine-gui`) |
+
+```bash
+cargo build                # the library + the CLI (the default members)
+cargo build-cli            # the CLI only
+cargo build-gui            # the GUI only
+cargo build --workspace    # everything
+cargo test                 # the tests of the library and of the CLI
+```
+
+`cargo build-cli` and `cargo build-gui` are aliases of
+`cargo build -p linux-wallpaper-engine-cli` and
+`cargo build -p linux-wallpaper-engine-gui`; the aliases live in
+`.cargo/config.toml`.
 
 ### Install
 
 ```bash
-cargo install --path . --profile release
+# the command line interface
+cargo install --path crates/lwe-cli --profile release
+
+# the graphical interface
+cargo install --path crates/lwe-gui --profile release
 ```
 
-or copy the binary into your `PATH` by hand:
+or copy the binaries into your `PATH` by hand:
 
 ```bash
 sudo install -Dm755 target/release/linux-wallpaper-engine /usr/local/bin/
+sudo install -Dm755 target/release/linux-wallpaper-engine-gui /usr/local/bin/
 ```
 
 The GNOME backend additionally needs the shell extension:
@@ -93,6 +139,25 @@ The GNOME backend additionally needs the shell extension:
 ```bash
 ./gnome-extension/install.sh
 ```
+
+---
+
+## The graphical interface
+
+```bash
+linux-wallpaper-engine-gui
+```
+
+The GUI is a system tray application: it puts a **StatusNotifierItem** on the
+D-Bus (the tray icon of the desktop) and stays in the background.  Clicking
+the icon opens a picker with the wallpapers of the workshop folder that was
+chosen; the wallpaper that is picked is rendered as the desktop background by
+the engine — in the same process, on a worker thread, so the interface stays
+responsive.
+
+On the first start the GUI asks for the workshop folder (the folder of the
+Steam workshop that holds the wallpapers, by default
+`~/.steam/steam/steamapps/workshop/content/431960`).
 
 ---
 
@@ -137,6 +202,43 @@ linux-wallpaper-engine parser -p wallpaper.pkg -x output/
 # unpack and convert the textures to PNG / parse the puppets
 linux-wallpaper-engine parser -p wallpaper.pkg -x output/ --parse-tex --parse-mdl
 ```
+
+---
+
+## Use it as a crate
+
+The engine is a library: the CLI and the GUI are thin wrappers around it, and
+so can be anything else.
+
+```toml
+[dependencies]
+linux-wallpaper-engine = { git = "https://github.com/wqLouis/linux-wallpaperengine.git" }
+```
+
+```rust
+use std::path::Path;
+
+use linux_wallpaper_engine::engine::{EngineConfig, WallpaperHandle, scan_wallpapers};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Find the wallpapers: a workshop folder holds one folder per wallpaper.
+    let workshop = Path::new("/home/me/.steam/steam/steamapps/workshop/content/431960");
+    let wallpapers = scan_wallpapers(workshop)?;
+
+    // 2. Start one of them: the renderer runs on its own worker thread.
+    //    The handle is the control of the wallpaper: it takes the commands
+    //    (pause, resume, stop, ...) and it reports the status of the
+    //    renderer.
+    let _handle = WallpaperHandle::spawn(EngineConfig::default(), wallpapers[0].source.clone())?;
+
+    // 3. Every failure is an `EngineError` that carries its cause, so the
+    //    whole trace of the failure can be reported.
+    Ok(())
+}
+```
+
+The façade of the library is described in
+[docs/modules/engine.md](docs/modules/engine.md).
 
 ---
 

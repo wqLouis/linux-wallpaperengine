@@ -1,0 +1,52 @@
+# The graphical interface of the wallpaper engine: a system tray app that
+# lists the wallpapers of a workshop folder and renders the one that is
+# picked.
+#
+# It is a separate package: the command line interface does not need it.
+# The GUI is pure Rust, so it needs no more runtime libraries than the
+# command line interface; the engine renders with wgpu, so a Vulkan (or GL)
+# driver is needed at runtime, but it comes with the system (mesa, the
+# proprietary nvidia driver, …).
+pkgname=linux-wallpaper-engine-gui-git
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Yet another linux wallpaper engine — graphical interface (system tray app)"
+arch=("x86_64")
+url="https://github.com/wqLouis/linux-wallpaperengine"
+license=("GPL-3.0")
+depends=()
+# The Linux backend of gpui-ce links against fontconfig (the fonts of the
+# interface) and xkbcommon (the keyboard layout).
+makedepends=("git" "rustup" "pkgconf" "fontconfig" "libxkbcommon")
+# The GUI renders the wallpaper in process: it does not need the command
+# line interface.
+optdepends=("linux-wallpaper-engine-git: the command line interface")
+# The graphical interface is optional: install it explicitly when it is
+# wanted.
+optional = yes
+provides=("linux-wallpaper-engine-gui")
+conflicts=("linux-wallpaper-engine-gui")
+source=("${pkgname}::git+https://github.com/wqLouis/linux-wallpaperengine.git")
+sha256sums=("SKIP")
+options=(!strip)
+
+pkgver() {
+  cd "$srcdir/$pkgname"
+  printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$srcdir/$pkgname"
+  rustup default stable
+  git submodule update --init --recursive
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+  cargo build --release -p linux-wallpaper-engine-gui
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+  install -Dm0755 "target/release/linux-wallpaper-engine-gui" "${pkgdir}/usr/bin/linux-wallpaper-engine-gui"
+}
