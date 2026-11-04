@@ -158,7 +158,10 @@ impl EngineError {
     /// The GUI shows this in a dialog, the CLI in its message.
     pub fn trace(&self) -> String {
         let mut lines = vec![self.to_string()];
-        let mut source = self.source();
+
+        // The message of the immediate cause is already part of the summary
+        // above, so the chain continues with the cause of the cause.
+        let mut source = self.source().and_then(|cause| cause.source());
         while let Some(error) = source {
             lines.push(error.to_string());
             source = error.source();
@@ -278,5 +281,43 @@ impl From<SceneError> for EngineError {
 impl From<std::io::Error> for EngineError {
     fn from(error: std::io::Error) -> Self {
         EngineError::Io(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_trace_does_not_repeat_the_cause() {
+        // The message of the cause is already part of the summary, so the
+        // trace must not show it twice.
+        let error = EngineError::Scene(SceneError::MissingScene);
+        assert_eq!(error.trace(), "the package holds no scene.json");
+    }
+
+    #[test]
+    fn the_trace_shows_the_cause_of_the_cause() {
+        // A scene.json that does not parse points at the error of the
+        // parser, and the trace shows both.
+        let cause = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let error = EngineError::Scene(SceneError::Scene(cause));
+
+        let trace = error.trace();
+        let lines: Vec<&str> = trace.lines().collect();
+        assert_eq!(lines.len(), 2, "{trace}");
+        assert!(lines[0].contains("could not be parsed"), "{trace}");
+        assert!(lines[1].contains("line 1"), "{trace}");
+    }
+
+    #[test]
+    fn the_chain_can_be_walked() {
+        let error = EngineError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no such file",
+        ));
+
+        assert!(error.source().is_some());
+        assert_eq!(error.trace(), "a file could not be read: no such file");
     }
 }

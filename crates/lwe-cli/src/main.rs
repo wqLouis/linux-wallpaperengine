@@ -132,9 +132,16 @@ fn setup_logging(level_str: &str) {
 
 fn validate_pkg_path(path: &str) -> Result<(), String> {
     let p = Path::new(path);
+
+    // A folder with the files of a wallpaper: the layout the Steam workshop
+    // holds (a project.json next to the materials, the models, ...).
+    if p.is_dir() {
+        return Ok(());
+    }
+
     if !p.exists() || p.extension().unwrap_or_default() != "pkg" {
         return Err(format!(
-            "Path '{}' does not exist or is not a .pkg file",
+            "Path '{}' does not exist, is not a .pkg file and is not a wallpaper folder",
             path
         ));
     }
@@ -252,7 +259,7 @@ fn main() {
 
     if let Err(e) = validate_pkg_path(&cli.path) {
         eprintln!("error: {}", e);
-        return;
+        std::process::exit(1);
     }
 
     // The extraction progress bar overwrites stdout as it redraws, so
@@ -294,8 +301,10 @@ fn main() {
                         eprintln!("warning: {problem}");
                     }
                 }
-                EngineStatus::Failed(error) => {
-                    eprintln!("error: {}", error.trace());
+                EngineStatus::Failed(_) => {
+                    // The failure is reported by the caller below, which
+                    // has the error itself: printing it here would show it
+                    // twice.
                 }
                 _ => {}
             }
