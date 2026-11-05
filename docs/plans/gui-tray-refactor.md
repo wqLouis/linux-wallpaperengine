@@ -36,6 +36,8 @@ the root package keeps all of those working.
 cargo build                # the library + the CLI (the default members)
 cargo build-cli            # the CLI only
 cargo build-gui            # the GUI only (needs gpui-ce + its system deps)
+cargo run-cli              # the CLI, with its arguments
+cargo run-gui              # the GUI, the tray application
 cargo build --workspace    # everything
 cargo test                 # the tests of the library and of the CLI
 ```
@@ -46,7 +48,7 @@ the workspace:
 | Package | Directory | Binary |
 |---------|-----------|--------|
 | `linux-wallpaper-engine` | `.` | — (the library `linux_wallpaper_engine`) |
-| `linux-wallpaper-engine-cli` | `crates/lwe-cli` | `linux-wallpaper-engine` |
+| `linux-wallpaper-engine-cli` | `crates/lwe-cli` | `lwe-cli` |
 | `linux-wallpaper-engine-gui` | `crates/lwe-gui` | `lwe-gui` |
 
 ## Decisions
@@ -126,6 +128,22 @@ wallpapers of the workshop folder the user chose; the wallpaper that is
 picked is rendered as the desktop background.  On the first start the GUI
 asks for the workshop folder.
 
+### The interface
+
+The window has **two pages** and no sidebar: the wallpapers (a grid of
+cards, each one a preview, a name and a kind) and the settings (the folder
+of the wallpapers, how the wallpaper is fitted, the frame rate, the effects
+of the scene, the puppet models and the assets folder of Wallpaper Engine).
+The settings live in `~/.config/linux-wallpaper-engine/gui.json` and are
+applied at once: the frame rate is a command of the engine, the other
+settings need the renderer to be started again.
+
+The look is quiet: greys (no hue at all), hairline borders, soft shadows
+grooves, generous rounding.  The tokens live in
+`crates/lwe-gui/src/design.rs`; the rounding of nested surfaces follows one
+rule: the outer rounding is the inner rounding plus the gap that separates
+them, so the corners of two nested rectangles are arcs of the same circle.
+
 ## Status
 
 - [x] branch `feat/gui`
@@ -134,5 +152,7 @@ asks for the workshop folder.
 - [x] the error type of the engine: `EngineError` (with the chain of the causes) and `EngineProblem`
 - [x] folder-backed wallpaper sources (`WallpaperSource::Package` / `WallpaperSource::Folder`)
 - [x] docs + packaging (`README.md`, `docs/modules/*`, `packaging/arch/*`)
-- [ ] the façade of the runtime: `scan_wallpapers()`, `WallpaperInfo`, `WallpaperHandle::spawn()`, `EngineCommand`, `EngineStatus`
-- [ ] GUI crate (gpui-ce + ksni tray + picker window)
+- [x] the façade of the runtime: `scan_wallpapers()`, `WallpaperInfo`, `WallpaperHandle::spawn()`, `EngineCommand`, `EngineStatus`
+- [x] GUI crate (gpui-ce + ksni tray + picker window)
+- [x] the interface: the wallpapers and the settings, the design tokens, the icons, the
+  settings that are remembered and applied
