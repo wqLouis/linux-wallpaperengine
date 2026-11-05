@@ -36,9 +36,6 @@ const GEAR: &[u8] = include_bytes!("../assets/icons/gear.svg");
 /// The folder of the wallpapers.
 const FOLDER: &[u8] = include_bytes!("../assets/icons/folder.svg");
 
-/// The check of a switch that is on.
-const CHECK: &[u8] = include_bytes!("../assets/icons/check.svg");
-
 /// The chevron that goes back to the wallpapers.
 const CHEVRON_LEFT: &[u8] = include_bytes!("../assets/icons/chevron-left.svg");
 
@@ -307,7 +304,7 @@ fn wallpapers_page(
     let columns = (((inner + gap) / (MIN_CARD + gap)).floor() as usize).max(1);
     let card_width = (inner - gap * (columns as f32 - 1.)) / columns as f32;
     let preview_height = (card_width - CARD_GAP * 2.) * 9. / 16.;
-    let card_height = preview_height + px(62.);
+    let card_height = preview_height + px(70.);
 
     let items = state.rows.clone();
     let current = state.current.clone();
@@ -348,8 +345,8 @@ fn wallpapers_page(
 
 /// A card of the grid: the preview of a wallpaper, its name and its kind.
 ///
-/// The card that is picked is raised a little more and has a ring of two
-/// pixels in the colour of the text.
+/// The card that is picked is raised a little more, is a step lighter
+/// than the other cards and has a ring of two pixels around it.
 fn wallpaper_card(
     theme: &Theme,
     row: &Row,
@@ -362,18 +359,15 @@ fn wallpaper_card(
     let id = row.id.clone();
     let border_strong = theme.palette.border_strong;
 
-    let card = theme.raised(
+    let card = theme.card(
         div().w(width).flex().flex_col().p(CARD_GAP),
         card_radius(),
-        if selected { Depth::Picked } else { Depth::Card },
+        selected,
     );
 
     let card = card
         .id(("wallpaper", index))
         .cursor_pointer()
-        .when(selected, |card| {
-            card.ring_2().ring_color(theme.palette.text)
-        })
         .hover(move |style| style.border_color(border_strong))
         .on_click({
             let view = view.clone();
@@ -414,7 +408,7 @@ fn preview(theme: &Theme, row: &Row, height: Pixels) -> AnyElement {
             .w_full()
             .h(height)
             .rounded(CONTENT_RADIUS)
-            .bg(theme.palette.groove_light)
+            .bg(theme.palette.groove)
             .into_any_element(),
     }
 }
@@ -676,13 +670,22 @@ fn slider(theme: &Theme, value: u32, cx: &mut Context<Picker>) -> AnyElement {
                 return;
             };
 
+            // The value follows the pointer, but the settings file is
+            // written when the drag ends.
             let value = value_at(event.position.x, bounds);
             set_fps(cx, value);
         }))
         .on_mouse_up_all(move |_event, _phase, _hitbox, _window, cx| {
-            view_up.update(cx, |picker, _cx| {
+            view_up.update(cx, |picker, cx| {
+                if !picker.dragging {
+                    return;
+                }
+
                 picker.dragging = false;
                 picker.track = None;
+
+                // The drag is over: the settings are written once.
+                save_fps(cx);
             });
         })
         .child(theme.groove(div().w(width).h(px(8.)).rounded_full(), px(4.)))
@@ -692,7 +695,7 @@ fn slider(theme: &Theme, value: u32, cx: &mut Context<Picker>) -> AnyElement {
                 .left(offset)
                 .size(knob)
                 .rounded_full()
-                .bg(theme.palette.surface)
+                .bg(theme.palette.knob)
                 .border_1()
                 .border_color(theme.palette.border_strong)
                 .shadow(Depth::Raised.shadows(&theme.palette)),
@@ -721,6 +724,10 @@ fn fps_label(value: u32) -> String {
 }
 
 /// The row of a switch.
+///
+/// The switch is a track and a knob: the track is a groove when the
+/// switch is off and a middle grey when it is on, the knob is light and
+/// it sits at the right when the switch is on.
 fn toggle_row(
     theme: &Theme,
     label: &str,
@@ -735,13 +742,13 @@ fn toggle_row(
         .rounded_full()
         .flex()
         .items_center()
-        .justify_start()
+        .p(px(2.))
         .when(on, |track| {
             track
                 .justify_end()
-                .bg(theme.palette.text)
+                .bg(theme.palette.track)
                 .border_1()
-                .border_color(theme.palette.text)
+                .border_color(theme.palette.border_strong)
         })
         .when(!on, |track| {
             theme
@@ -749,24 +756,12 @@ fn toggle_row(
                 .border_1()
                 .border_color(theme.palette.border_strong)
         })
-        .p(px(2.))
         .child(
             div()
                 .size(px(16.))
                 .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(theme.palette.surface)
-                .shadow(Depth::Raised.shadows(&theme.palette))
-                .when(on, |knob| {
-                    knob.child(
-                        svg()
-                            .data(CHECK)
-                            .size(px(10.))
-                            .text_color(theme.palette.text),
-                    )
-                }),
+                .bg(theme.palette.knob)
+                .shadow(Depth::Raised.shadows(&theme.palette)),
         );
 
     let control = div()
@@ -941,8 +936,16 @@ fn set_fit_mode(cx: &mut Context<Picker>, mode: FitMode) {
 }
 
 /// The frame rate changed.
+///
+/// The value is applied to the wallpaper at once, but the settings file
+/// is written when the drag ends.
 fn set_fps(cx: &mut Context<Picker>, value: u32) {
     cx.update_global(|state: &mut AppState, cx| state.set_fps(value, cx));
+}
+
+/// The frame rate is settled: the settings are written to the file.
+fn save_fps(cx: &mut Context<Picker>) {
+    cx.update_global(|state: &mut AppState, _cx| state.save_fps());
 }
 
 /// A switch was flipped.

@@ -203,6 +203,10 @@ impl AppState {
 
     /// The frame rate changed: the engine takes it as a command, so it is
     /// applied at once.
+    ///
+    /// The settings file is not written here: the slider writes it when
+    /// the drag ends, so that a drag does not write the file hundreds of
+    /// times.
     pub fn set_fps(&mut self, value: u32, cx: &mut App) {
         let fps = if value >= MAX_FPS { None } else { Some(value) };
 
@@ -211,7 +215,6 @@ impl AppState {
         }
 
         self.config.target_fps = fps;
-        self.save_config();
 
         if let Some(handle) = &self.wallpaper
             && let Err(error) = handle.set_fps(fps)
@@ -220,6 +223,11 @@ impl AppState {
         }
 
         cx.notify(self.view.entity_id());
+    }
+
+    /// The frame rate is settled: the settings are written to the file.
+    pub fn save_fps(&mut self) {
+        self.save_config();
     }
 
     /// The effects of the scene are rendered, or not.
