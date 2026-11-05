@@ -34,11 +34,10 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use gpui::{AnyWindowHandle, App, AppContext, AsyncApp, BorrowAppContext, Global};
 use linux_wallpaper_engine::engine::{
-    EngineConfig, EngineStatus, WallpaperHandle, scan_wallpapers,
+    EngineConfig, EngineStatus, WallpaperHandle, WallpaperSource, scan_wallpapers,
 };
-use linux_wallpaper_engine::scene::adapters::FitMode;
 
-use config::GuiConfig;
+use config::{FitMode, GuiConfig, MAX_FPS};
 use picker::{Picker, PickerState, WallpaperState};
 
 /// The state the whole application shares.
@@ -66,9 +65,19 @@ impl AppState {
     /// The configuration the engine is started with.
     fn engine_config(&self) -> EngineConfig {
         EngineConfig {
-            fit_mode: FitMode::Cover,
+            fit_mode: self.config.fit_mode.into(),
             target_fps: self.config.target_fps,
-            ..EngineConfig::default()
+            no_effects: !self.config.effects,
+            no_mdl: !self.config.puppets,
+            assets_path: self.config.assets_path.clone(),
+            show_progress: false,
+        }
+    }
+
+    /// Writes the settings of the user.
+    fn save_config(&self) {
+        if let Err(error) = self.config.save() {
+            log::warn!("the settings could not be written: {error}");
         }
     }
 
@@ -98,19 +107,25 @@ impl AppState {
         // The first wallpaper takes a while to come up: it is started on
         // a thread of its own, so the window stays responsive.
         self.picker.select(&row);
+        self.start_wallpaper(row.source.clone(), cx);
+    }
+
+    /// Starts the wallpaper with the configuration of the user.
+    ///
+    /// The engine starts the renderer on a worker thread of its own and
+    /// waits for the wallpaper to come up, so the window stays
+    /// responsive.
+    fn start_wallpaper(&mut self, source: WallpaperSource, cx: &mut App) {
         self.picker.set_running(WallpaperState::Starting);
         self.sync_tray();
         cx.notify(self.view.entity_id());
 
         let config = self.engine_config();
-        let source = row.source.clone();
         let (sender, receiver) = async_channel::bounded(1);
 
         let thread = std::thread::Builder::new()
             .name("wallpaper-start".into())
             .spawn(move || {
-                // The engine starts the renderer on a worker thread of its
-                // own and waits for the wallpaper to come up.
                 let _ = sender.try_send(WallpaperHandle::spawn(config, source));
             });
 
@@ -144,6 +159,91 @@ impl AppState {
             }
         })
         .detach();
+    }
+
+    /// The wallpaper that is running is started again with the
+    /// configuration of the user.
+    ///
+    /// The settings that the renderer reads when the wallpaper comes up
+    /// need a renderer that is started again: the same wallpaper is shown
+    /// again, not another one.
+    fn restart_wallpaper(&mut self, cx: &mut App) {
+        let Some(source) = self.current_source() else {
+            return;
+        };
+
+        // The handle stops the renderer and waits for it: the wallpaper
+        // does not outlive the application.
+        self.wallpaper = None;
+
+        self.start_wallpaper(source, cx);
+    }
+
+    /// Where the wallpaper that is running lives.
+    fn current_source(&self) -> Option<WallpaperSource> {
+        let current = self.picker.current.as_ref()?;
+        self.picker
+            .rows
+            .iter()
+            .find(|row| &row.id == current)
+            .map(|row| row.source.clone())
+    }
+
+    /// The way the wallpaper is fitted to the screen changed.
+    pub fn set_fit_mode(&mut self, mode: FitMode, cx: &mut App) {
+        if self.config.fit_mode == mode {
+            return;
+        }
+
+        self.config.fit_mode = mode;
+        self.save_config();
+
+        self.restart_wallpaper(cx);
+    }
+
+    /// The frame rate changed: the engine takes it as a command, so it is
+    /// applied at once.
+    pub fn set_fps(&mut self, value: u32, cx: &mut App) {
+        let fps = if value >= MAX_FPS { None } else { Some(value) };
+
+        if self.config.target_fps == fps {
+            return;
+        }
+
+        self.config.target_fps = fps;
+        self.save_config();
+
+        if let Some(handle) = &self.wallpaper
+            && let Err(error) = handle.set_fps(fps)
+        {
+            log::warn!("the frame rate could not be changed: {}", error.trace());
+        }
+
+        cx.notify(self.view.entity_id());
+    }
+
+    /// The effects of the scene are rendered, or not.
+    pub fn set_effects(&mut self, on: bool, cx: &mut App) {
+        if self.config.effects == on {
+            return;
+        }
+
+        self.config.effects = on;
+        self.save_config();
+
+        self.restart_wallpaper(cx);
+    }
+
+    /// The puppet models of the scene are rendered, or not.
+    pub fn set_puppets(&mut self, on: bool, cx: &mut App) {
+        if self.config.puppets == on {
+            return;
+        }
+
+        self.config.puppets = on;
+        self.save_config();
+
+        self.restart_wallpaper(cx);
     }
 
     /// Pauses the wallpaper, or renders it again.
@@ -249,7 +349,7 @@ fn main() {
 fn start(cx: &mut App, actions: Receiver<tray::TrayAction>, commands: Sender<tray::TrayCommand>) {
     // The picker is a view of the state: the state keeps it alive, so the
     // window can be closed and opened again.
-    let view = cx.new(|_cx| Picker);
+    let view = cx.new(|_cx| Picker::default());
 
     let config = GuiConfig::load();
     let folder = config.workshop_dir.clone();
@@ -397,15 +497,26 @@ async fn handle_status(cx: &mut AsyncApp, status: EngineStatus) {
 pub fn choose_folder(cx: &mut App, folder: PathBuf) {
     cx.update_global(|state: &mut AppState, cx| {
         state.config.workshop_dir = Some(folder.clone());
-
-        if let Err(error) = state.config.save() {
-            log::warn!("the settings could not be written: {error}");
-        }
+        state.save_config();
 
         cx.notify(state.view.entity_id());
     });
 
     scan(cx, folder);
+}
+
+/// Remembers the folder of the assets of Wallpaper Engine.
+///
+/// The renderer has to be started again: it reads the folder when the
+/// wallpaper comes up.
+pub fn choose_assets(cx: &mut App, folder: PathBuf) {
+    cx.update_global(|state: &mut AppState, cx| {
+        state.config.assets_path = Some(folder);
+        state.save_config();
+
+        cx.notify(state.view.entity_id());
+        state.restart_wallpaper(cx);
+    });
 }
 
 /// Scans a folder and shows the wallpapers it holds.
@@ -472,7 +583,7 @@ pub fn open_picker(cx: &mut App) -> Option<AnyWindowHandle> {
         });
     }
 
-    let bounds = gpui::Bounds::centered(None, gpui::size(gpui::px(760.), gpui::px(560.)), cx);
+    let bounds = gpui::Bounds::centered(None, gpui::size(gpui::px(900.), gpui::px(620.)), cx);
     let view = cx.read_global::<AppState, _>(|state, _| state.view.clone());
 
     let window = cx.open_window(
@@ -480,7 +591,7 @@ pub fn open_picker(cx: &mut App) -> Option<AnyWindowHandle> {
             .window_bounds(gpui::WindowBounds::Windowed(bounds))
             .app_id(Some("lwe-gui".to_string()))
             .titlebar(Some(gpui::TitlebarOptions {
-                title: Some("Wallpapers".into()),
+                title: Some("Wallpaper Engine".into()),
                 ..Default::default()
             })),
         move |_window, _cx| view.clone(),

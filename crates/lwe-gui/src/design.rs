@@ -1,115 +1,189 @@
 //! The design language of the interface.
 //!
-//! Three rules hold everywhere:
+//! The interface is quiet: greys, hairlines and soft shadows, nothing that
+//! does not carry information.  Three rules hold everywhere:
 //!
 //! * **One scale.**  Every padding, margin, gap and size comes from the
-//!   five numbers of the levels.  Nothing is measured by eye.
-//! * **Depth, not borders.**  A surface has the colour of the background:
-//!   what makes it visible are the two shadows of its elevation - the
-//!   light one that falls from the upper left and the dark one that falls
-//!   from the lower right.  A surface that is pressed into the background
-//!   has the two shadows the other way round.
-//! * **Concentric corners.**  The radius of an element is the radius of the
-//!   element around it plus the gap that separates the two, so the corners
-//!   follow each other instead of crossing.
+//!   steps of the scale or of the type scale.  Nothing is measured by
+//!   eye.
+//! * **Depth, not decoration.**  A surface has a colour of its own, a
+//!   hairline border of one pixel and two soft shadows: a tight one and a
+//!   soft one, both under the element.  A surface that is pressed into
+//!   the background is a *groove*: a step towards the background with a
+//!   gradient that is dark at the top and light at the bottom.
+//! * **Concentric corners.**  The radius of an element is the radius of
+//!   the element around it plus the gap that separates the two: the
+//!   corners of nested rectangles are arcs of the same circle.  The
+//!   radii live here, so they cannot drift apart.
 
 use gpui::prelude::*;
 use gpui::{
-    div, hsla, point, px, Background, BoxShadow, Div, Hsla, Pixels, Window, WindowAppearance,
+    Background, BoxShadow, Div, FontWeight, Hsla, Pixels, Window, WindowAppearance, div, hsla,
+    linear_color_stop, linear_gradient, point, px,
 };
 
-/// The levels of the interface.
+/// The steps of the scale of the interface.
 ///
-/// A level says what an element is.  The number of the level is the only
-/// number the interface uses: it is the padding of the element, the margin
-/// around it and the gap that separates it from the element around it.
+/// Every distance of the interface is one of them: the padding of an
+/// element, the margin around it and the gap that separates it from the
+/// element around it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Level {
-    /// A control: a button, a chip, the icon of a card.
-    Inline,
-    /// A card: a wallpaper of the list.
-    Card,
-    /// A panel: the header, the status bar.
-    Panel,
-    /// The window: the surface of the application.
-    Window,
-    /// The largest element of the interface.
-    Hero,
+pub enum Space {
+    /// Four pixels.
+    Xs,
+    /// Eight pixels.
+    Sm,
+    /// Twelve pixels.
+    Md,
+    /// Sixteen pixels.
+    Lg,
+    /// Twenty-four pixels.
+    Xl,
 }
 
-impl Level {
-    /// The size of the level.
+impl Space {
+    /// The size of the step.
     pub fn size(self) -> Pixels {
         match self {
-            Level::Inline => px(16.),
-            Level::Card => px(24.),
-            Level::Panel => px(32.),
-            Level::Window => px(48.),
-            Level::Hero => px(64.),
+            Space::Xs => px(4.),
+            Space::Sm => px(8.),
+            Space::Md => px(12.),
+            Space::Lg => px(16.),
+            Space::Xl => px(24.),
         }
     }
 }
 
-/// The radius of the corners of an element that sits `gap` pixels inside a
-/// parent whose corners have the radius `outer`.
-///
-/// The corners of the two elements are concentric: the inner element is
-/// rounded by the gap that separates it from the outer one, so the two
-/// follow each other instead of crossing.
-///
-/// A radius bigger than half of the element would turn it into a circle;
-/// the window clamps the radius of a corner to the size of the element, so
-/// a small element becomes a pill and not a disc.
-pub fn nested_radius(outer: Pixels, gap: Pixels) -> Pixels {
-    outer + gap
+/// The steps of the type scale.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Type {
+    /// The title of a page.
+    Title,
+    /// The name of a wallpaper or of a setting.
+    Heading,
+    /// The text that says less.
+    Small,
 }
 
-/// The colours of the interface.
+impl Type {
+    /// The size of the text.
+    pub fn size(self) -> Pixels {
+        match self {
+            Type::Title => px(15.),
+            Type::Heading => px(13.),
+            Type::Small => px(12.),
+        }
+    }
+
+    /// The weight of the text.
+    pub fn weight(self) -> FontWeight {
+        match self {
+            Type::Title => FontWeight::SEMIBOLD,
+            Type::Heading => FontWeight::MEDIUM,
+            Type::Small => FontWeight::NORMAL,
+        }
+    }
+}
+
+/// The radius of the corners of the content: the previews and the controls.
 ///
-/// A neumorphic surface has the colour of its background: what makes it
-/// visible are the shadows, not the colour.
+/// Everything that is not a card has this radius.
+pub const CONTENT_RADIUS: Pixels = px(6.);
+
+/// The gap between the content of a card and the edge of the card.
+///
+/// The corners of the card are the corners of the content plus this gap:
+/// the two are arcs of the same circle.
+pub const CARD_GAP: Pixels = px(8.);
+
+/// The radius of the corners of a card.
+///
+/// It is derived from the radius of the content and from the gap that
+/// separates them, so the corners of a card and the corners of what is
+/// inside it follow each other.
+pub fn card_radius() -> Pixels {
+    CONTENT_RADIUS + CARD_GAP
+}
+
+/// The radius of the corners of an element that lies `gap` pixels inside
+/// a parent whose corners have the radius `outer`.
+///
+/// The inner element is rounded by the gap that separates it from the
+/// outer one, so the two follow each other instead of crossing.
+pub fn inner_radius(outer: Pixels, gap: Pixels) -> Pixels {
+    if outer > gap { outer - gap } else { px(0.) }
+}
+
+/// The greys of the interface.
+///
+/// There is no hue anywhere: the interface is grey, and the pictures of
+/// the wallpapers are the only colour in it.
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
-    /// The colour of the background and of the surfaces.
+    /// The colour of the window.
     pub background: Hsla,
+    /// The colour of a surface that lies on the background.
+    pub surface: Hsla,
+    /// The colour of the top of a groove: a step towards the background.
+    pub groove_dark: Hsla,
+    /// The colour of the bottom of a groove.
+    pub groove_light: Hsla,
+    /// The hairline between two surfaces.
+    pub border: Hsla,
+    /// A hairline that has to be seen.
+    pub border_strong: Hsla,
+    /// The colour of a surface that is under the pointer.
+    pub hover: Hsla,
     /// The colour of the text.
     pub text: Hsla,
     /// The colour of the text that says less.
     pub muted: Hsla,
-    /// The colour of the accent: the wallpaper that runs.
-    pub accent: Hsla,
-    /// The shadow of the light that falls from the upper left.
-    pub light: Hsla,
-    /// The shadow of the darkness that falls from the lower right.
-    pub dark: Hsla,
+    /// The shadow that stays close to the surface.
+    pub shadow_tight: Hsla,
+    /// The shadow that falls away from the surface.
+    pub shadow_soft: Hsla,
+    /// The light that falls on the top edge of a raised surface.
+    pub highlight: Hsla,
 }
 
 impl Palette {
-    /// The colours of the light appearance.
+    /// The greys of the light appearance.
     pub fn light() -> Self {
         Self {
-            background: hsla(214., 32., 91., 1.),
-            text: hsla(218., 28., 22., 1.),
-            muted: hsla(216., 16., 52., 1.),
-            accent: hsla(226., 84., 62., 1.),
-            light: hsla(0., 0., 100., 0.85),
-            dark: hsla(213., 32., 66., 0.55),
+            background: hsla(0., 0., 0.97, 1.),
+            surface: hsla(0., 0., 1., 1.),
+            groove_dark: hsla(0., 0., 0.89, 1.),
+            groove_light: hsla(0., 0., 0.94, 1.),
+            border: hsla(0., 0., 0.89, 1.),
+            border_strong: hsla(0., 0., 0.83, 1.),
+            hover: hsla(0., 0., 0.95, 1.),
+            text: hsla(0., 0., 0.09, 1.),
+            muted: hsla(0., 0., 0.45, 1.),
+            shadow_tight: hsla(0., 0., 0., 0.08),
+            shadow_soft: hsla(0., 0., 0., 0.06),
+            highlight: hsla(0., 0., 1., 0.7),
         }
     }
 
-    /// The colours of the dark appearance.
+    /// The greys of the dark appearance.
     pub fn dark() -> Self {
         Self {
-            background: hsla(216., 16., 19., 1.),
-            text: hsla(214., 26., 90., 1.),
-            muted: hsla(215., 12., 62., 1.),
-            accent: hsla(226., 90., 74., 1.),
-            light: hsla(0., 0., 100., 0.06),
-            dark: hsla(0., 0., 0., 0.45),
+            background: hsla(0., 0., 0.06, 1.),
+            surface: hsla(0., 0., 0.10, 1.),
+            groove_dark: hsla(0., 0., 0.03, 1.),
+            groove_light: hsla(0., 0., 0.07, 1.),
+            border: hsla(0., 0., 0.18, 1.),
+            border_strong: hsla(0., 0., 0.26, 1.),
+            hover: hsla(0., 0., 0.14, 1.),
+            text: hsla(0., 0., 0.96, 1.),
+            muted: hsla(0., 0., 0.62, 1.),
+            shadow_tight: hsla(0., 0., 0., 0.5),
+            shadow_soft: hsla(0., 0., 0., 0.45),
+            highlight: hsla(0., 0., 1., 0.05),
         }
     }
 
-    /// The colours of the appearance of the window.
+    /// The greys of the appearance of the window.
     pub fn for_appearance(appearance: WindowAppearance) -> Self {
         match appearance {
             WindowAppearance::Light | WindowAppearance::VibrantLight => Self::light(),
@@ -120,80 +194,51 @@ impl Palette {
 
 /// How deep a surface sits above the background.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Elevation {
-    /// The background itself: no shadow.
-    Flat,
-    /// A control: a button, a chip.
+pub enum Depth {
+    /// A control: a button, a segment.
     Raised,
-    /// A card: a wallpaper of the list.
+    /// A card: a wallpaper of the grid, a group of settings.
     Card,
-    /// A floating element: the wallpaper that runs, the hero.
-    Floating,
-    /// A surface that is pressed into the background.
-    Inset,
+    /// A card that is picked: it is raised a little more.
+    Picked,
 }
 
-impl Elevation {
-    /// The shadows of the elevation.
+impl Depth {
+    /// The shadows of the depth.
     ///
-    /// The light shadow falls from the upper left and the dark one from the
-    /// lower right; an inset surface has them the other way round, so it
-    /// looks pressed into the background.
+    /// A tight shadow and a soft one, both under the element: the first
+    /// gives the surface its distance from the background, the second
+    /// spreads the shadow around it.
     pub fn shadows(self, palette: &Palette) -> Vec<BoxShadow> {
-        let (offset, blur) = match self {
-            Elevation::Flat => return Vec::new(),
-            Elevation::Raised => (2., 8.),
-            Elevation::Card => (4., 12.),
-            Elevation::Floating => (8., 24.),
-            Elevation::Inset => (2., 8.),
+        let (tight, soft) = match self {
+            Depth::Raised => (1., 4.),
+            Depth::Card => (1., 8.),
+            Depth::Picked => (2., 14.),
         };
 
-        let offset = px(offset);
-        let blur = px(blur);
-        let light: Background = palette.light.into();
-        let dark: Background = palette.dark.into();
-
-        match self {
-            Elevation::Inset => vec![
-                BoxShadow {
-                    color: light,
-                    offset: point(offset, offset),
-                    blur_radius: blur,
-                    spread_radius: px(0.),
-                    inset: true,
-                },
-                BoxShadow {
-                    color: dark,
-                    offset: point(-offset, -offset),
-                    blur_radius: blur,
-                    spread_radius: px(0.),
-                    inset: true,
-                },
-            ],
-            _ => vec![
-                BoxShadow {
-                    color: light,
-                    offset: point(-offset, -offset),
-                    blur_radius: blur,
-                    spread_radius: px(0.),
-                    inset: false,
-                },
-                BoxShadow {
-                    color: dark,
-                    offset: point(offset, offset),
-                    blur_radius: blur,
-                    spread_radius: px(0.),
-                    inset: false,
-                },
-            ],
-        }
+        vec![
+            BoxShadow {
+                color: Background::from(palette.shadow_tight),
+                offset: point(px(0.), px(tight)),
+                blur_radius: px(2.),
+                spread_radius: px(0.),
+                inset: false,
+            },
+            BoxShadow {
+                color: Background::from(palette.shadow_soft),
+                offset: point(px(0.), px(soft / 2.)),
+                blur_radius: px(soft),
+                spread_radius: px(0.),
+                inset: false,
+            },
+        ]
     }
 }
 
-/// The theme of the interface: the colours and the ways to draw with them.
+/// The theme of the interface: the greys and the ways to draw with them.
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
-    /// The colours of the theme.
+    /// The greys of the theme.
     pub palette: Palette,
 }
 
@@ -205,50 +250,55 @@ impl Theme {
         }
     }
 
-    /// The surface of an element: the colour of the background and the
-    /// shadows of the elevation.
+    /// A surface that lies on the background: a card, a group of settings.
     ///
-    /// The radius is the one of the element: it is calculated with
-    /// nested_radius from the radius of the element around it.
-    pub fn surface(&self, element: Div, elevation: Elevation, radius: Pixels) -> Div {
-        let mut element = element.bg(self.palette.background).rounded(radius);
-        element.style().box_shadow = Some(elevation.shadows(&self.palette));
+    /// The surface has a colour of its own, a hairline border of one
+    /// pixel and the shadows of its depth.
+    pub fn surface(&self, element: Div, radius: Pixels, depth: Depth) -> Div {
+        let mut element = element
+            .bg(self.palette.surface)
+            .border_1()
+            .border_color(self.palette.border)
+            .rounded(radius);
+        element.style().box_shadow = Some(depth.shadows(&self.palette));
         element
     }
 
-    /// A button: a raised surface with a label in the middle.
+    /// A surface with a little light on its top edge.
     ///
-    /// The button sinks into the background when it is pressed; the
-    /// pressed state is drawn by the caller with the inset elevation.
-    pub fn button(&self, radius: Pixels, label: impl Into<String>) -> Div {
-        let button = self.surface(
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(Level::Inline.size())
-                .py(px(8.))
-                .text_sm()
-                .text_color(self.palette.text),
-            Elevation::Raised,
-            radius,
-        );
-        button.child(label.into())
+    /// The light is the only gradient of the interface: it says that the
+    /// surface is turned towards the light, and nothing more.
+    pub fn raised(&self, element: Div, radius: Pixels, depth: Depth) -> Div {
+        let mut element = element
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(self.palette.highlight, 0.),
+                linear_color_stop(self.palette.surface, 1.),
+            ))
+            .border_1()
+            .border_color(self.palette.border)
+            .rounded(radius);
+        element.style().box_shadow = Some(depth.shadows(&self.palette));
+        element
     }
 
-    /// A chip: a small raised surface with a label.
-    pub fn chip(&self, radius: Pixels, label: impl Into<String>) -> Div {
-        let chip = self.surface(
-            div()
-                .flex()
-                .items_center()
-                .px(Level::Inline.size())
-                .py(px(4.))
-                .text_xs()
-                .text_color(self.palette.muted),
-            Elevation::Raised,
-            radius,
-        );
-        chip.child(label.into())
+    /// A groove: a surface that is pressed into the background.
+    ///
+    /// gpui has no shadow inside an element, so the groove is a step
+    /// towards the background with a gradient that is dark at the top and
+    /// light at the bottom.
+    pub fn groove(&self, element: Div, radius: Pixels) -> Div {
+        element
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(self.palette.groove_dark, 0.),
+                linear_color_stop(self.palette.groove_light, 1.),
+            ))
+            .rounded(radius)
+    }
+
+    /// The hairline that separates two things.
+    pub fn hairline(&self) -> Div {
+        div().h(px(1.)).bg(self.palette.border)
     }
 }
