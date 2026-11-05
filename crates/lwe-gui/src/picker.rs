@@ -42,6 +42,10 @@ const CHEVRON_LEFT: &[u8] = include_bytes!("../assets/icons/chevron-left.svg");
 /// The smallest width of a card of the grid.
 const MIN_CARD: Pixels = px(220.);
 
+/// The height of a card that is not the preview of the wallpaper: the
+/// name of the wallpaper and its kind.
+const CARD_TEXT_HEIGHT: Pixels = px(70.);
+
 /// The page the picker shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Page {
@@ -303,8 +307,14 @@ fn wallpapers_page(
     // as fit into the window.
     let columns = (((inner + gap) / (MIN_CARD + gap)).floor() as usize).max(1);
     let card_width = (inner - gap * (columns as f32 - 1.)) / columns as f32;
-    let preview_height = (card_width - CARD_GAP * 2.) * 9. / 16.;
-    let card_height = preview_height + px(70.);
+    // The preview of a card is a square: its height is its width, which is
+    // the width of the card without the padding of the card.
+    let preview_height = card_width - CARD_GAP * 2.;
+    let card_height = preview_height + CARD_TEXT_HEIGHT;
+
+    // The rows of the grid are as high as a card and a gap: the gap is
+    // the free space below the cards of the row, so two rows never touch.
+    let row_height = card_height + gap;
 
     let items = state.rows.clone();
     let current = state.current.clone();
@@ -332,7 +342,12 @@ fn wallpapers_page(
                     )
                 });
 
-                div().flex().gap(gap).h(card_height).children(cards)
+                div()
+                    .flex()
+                    .gap(gap)
+                    .h(row_height)
+                    .items_start()
+                    .children(cards)
             })
             .collect()
     })
@@ -360,7 +375,12 @@ fn wallpaper_card(
     let border_strong = theme.palette.border_strong;
 
     let card = theme.card(
-        div().w(width).flex().flex_col().p(CARD_GAP),
+        div()
+            .w(width)
+            .h(preview_height + CARD_TEXT_HEIGHT)
+            .flex()
+            .flex_col()
+            .p(CARD_GAP),
         card_radius(),
         selected,
     );

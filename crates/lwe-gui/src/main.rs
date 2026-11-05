@@ -29,16 +29,119 @@ mod thumbs;
 mod tray;
 
 use std::path::PathBuf;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
-use gpui::{AnyWindowHandle, App, AppContext, AsyncApp, BorrowAppContext, Global};
+use gpui::{AnyWindowHandle, App, AppContext, AsyncApp, BorrowAppContext, Global, Task};
 use linux_wallpaper_engine::engine::{
-    EngineConfig, EngineStatus, WallpaperHandle, WallpaperSource, scan_wallpapers,
+    EngineConfig, EngineError, EngineStatus, WallpaperHandle, WallpaperSource, scan_wallpapers,
 };
 
 use config::{FitMode, GuiConfig, MAX_FPS};
 use picker::{Picker, PickerState, WallpaperState};
+
+/// The slot of the wallpaper.
+///
+/// There is one slot for the wallpaper: the one that runs and the start
+/// that brings it up.  Every start has a number of its own, so that the
+/// handle of a start can be recognised when it arrives: a start that was
+/// abandoned must not take the place of the one that is in flight, or the
+/// wallpaper the user asked for first would run over the one they asked
+/// for last.
+#[derive(Default, Debug)]
+struct Slot {
+    /// The number of the start that is in flight, when there is one.
+    start: Option<u64>,
+    /// The number of the last start that was begun.
+    last: u64,
+}
+
+impl Slot {
+    /// A new start begins: the start that was in flight is abandoned.
+    ///
+    /// The number of the start tells the starts apart.
+    fn begin(&mut self) -> u64 {
+        self.last += 1;
+        self.start = Some(self.last);
+        self.last
+    }
+
+    /// The start that is in flight is abandoned: its handle is not wanted.
+    fn abandon(&mut self) {
+        self.start = None;
+    }
+
+    /// Whether the start with this number is the one that is in flight.
+    fn is_current(&self, id: u64) -> bool {
+        self.start == Some(id)
+    }
+
+    /// The start is over: the handle that comes with it is the one that
+    /// runs.
+    ///
+    /// `false` means that the start was abandoned: the handle must be
+    /// dropped, and its renderer stops with it.
+    fn finish(&mut self, id: u64) -> bool {
+        if !self.is_current(id) {
+            return false;
+        }
+
+        self.start = None;
+        true
+    }
+}
+
+/// The receiver of the handle of a wallpaper that is being brought up.
+///
+/// The receiver is dropped when the start is abandoned: the handle that
+/// arrives afterwards is dropped with it, and its renderer stops.  The
+/// thread that brings the wallpaper up waits for the signal: the
+/// renderer of a wallpaper that was abandoned must be gone before the
+/// next one is created - two wallpapers at the same time crash the
+/// graphics driver.
+struct HandleReceiver {
+    /// The receiver of the handle.
+    receiver: Option<Receiver<Result<WallpaperHandle, EngineError>>>,
+    /// The signal that tells the thread that the handle is gone.
+    gone: std::sync::mpsc::Sender<()>,
+}
+
+impl HandleReceiver {
+    /// The receiver of the handle.
+    ///
+    /// [`None`] when the receiver is already gone: the handle that comes
+    /// with it is dropped, and its renderer stops.
+    fn receiver(&self) -> Option<&Receiver<Result<WallpaperHandle, EngineError>>> {
+        self.receiver.as_ref()
+    }
+}
+
+impl Drop for HandleReceiver {
+    fn drop(&mut self) {
+        // The receiver goes first: the handle that is in it is dropped
+        // with it, and its renderer stops.  Only then the thread that
+        // brings the wallpaper up is told that it is over.
+        drop(self.receiver.take());
+        let _ = self.gone.send(());
+    }
+}
+
+/// A wallpaper that is being brought up.
+struct Start {
+    /// The task that waits for the handle of the wallpaper.
+    ///
+    /// Dropping the task drops the receiver of the handle with it: the
+    /// handle that arrives afterwards is dropped as well, and its
+    /// renderer stops.
+    task: Option<Task<()>>,
+    /// The thread that brings the wallpaper up.
+    ///
+    /// The thread waits for the thread of the start that came before it:
+    /// the renderer of a wallpaper that was abandoned must be gone
+    /// before the next one is created.
+    thread: Option<JoinHandle<()>>,
+}
 
 /// The state the whole application shares.
 ///
@@ -52,7 +155,18 @@ pub struct AppState {
     /// The view of the picker: the window shows it.
     pub view: gpui::Entity<Picker>,
     /// The wallpaper that is running.
+    ///
+    /// There is one slot for the wallpaper: this is the handle of the one
+    /// that runs, and it is the only one that is kept.
     wallpaper: Option<WallpaperHandle>,
+    /// The slot of the wallpaper: the start that is in flight.
+    slot: Slot,
+    /// The start that is in flight, when there is one.
+    ///
+    /// The start is kept until the next wallpaper is chosen: the thread
+    /// of the start waits for the renderer of the wallpaper that was
+    /// abandoned.
+    start: Option<Start>,
     /// The window of the picker.
     window: Option<AnyWindowHandle>,
     /// The channel to the tray thread.
@@ -84,30 +198,34 @@ impl AppState {
     /// Shows a wallpaper: the first one is started, the next ones replace
     /// it.
     pub fn choose(&mut self, row: picker::Row, cx: &mut App) {
-        // A wallpaper that is already running is replaced by a command:
-        // the renderer loads the new one, the window does not wait for it.
-        if let Some(handle) = &self.wallpaper {
-            match handle.switch(row.source.clone()) {
-                Ok(()) => {
-                    self.picker.select(&row);
-                    self.picker.set_running(WallpaperState::Running);
-                    self.sync_tray();
-                    cx.notify(self.view.entity_id());
-                    return;
-                }
-                Err(error) => {
-                    // The renderer is gone: the wallpaper is stopped and
-                    // a new one is started below.
-                    log::warn!("the wallpaper could not be replaced: {}", error.trace());
-                    self.wallpaper = None;
-                }
-            }
-        }
+        // There is one slot for the wallpaper: the one that runs is
+        // dropped here.  Its renderer stops and its surface is destroyed,
+        // so the old wallpaper is cleared before the new one comes up.
+        self.wallpaper = None;
 
-        // The first wallpaper takes a while to come up: it is started on
-        // a thread of its own, so the window stays responsive.
+        // The start that is in flight is abandoned as well: the handle it
+        // brings must not take the place of the new one.
+        let previous = self.abandon_start();
+
+        // The wallpaper takes a while to come up: it is started on a
+        // thread of its own, so the window stays responsive.
         self.picker.select(&row);
-        self.start_wallpaper(row.source.clone(), cx);
+        self.start_wallpaper(previous, row.source.clone(), cx);
+    }
+
+    /// The start that is in flight is abandoned.
+    ///
+    /// The task that waits for the handle is dropped: the receiver of the
+    /// handle goes with it, so the handle that arrives afterwards is
+    /// dropped too and its renderer stops.  The thread of the start is
+    /// returned: the next wallpaper waits for it, so the renderer of the
+    /// abandoned wallpaper is gone before the next one is created.
+    fn abandon_start(&mut self) -> Option<JoinHandle<()>> {
+        let start = self.start.take()?;
+        self.slot.abandon();
+
+        drop(start.task);
+        start.thread
     }
 
     /// Starts the wallpaper with the configuration of the user.
@@ -115,40 +233,70 @@ impl AppState {
     /// The engine starts the renderer on a worker thread of its own and
     /// waits for the wallpaper to come up, so the window stays
     /// responsive.
-    fn start_wallpaper(&mut self, source: WallpaperSource, cx: &mut App) {
+    ///
+    /// The thread waits for the thread of the start that came before it
+    /// (`previous`): the renderer of a wallpaper that was abandoned must
+    /// be gone before the next one is created.
+    fn start_wallpaper(
+        &mut self,
+        previous: Option<JoinHandle<()>>,
+        source: WallpaperSource,
+        cx: &mut App,
+    ) {
         self.picker.set_running(WallpaperState::Starting);
         self.sync_tray();
         cx.notify(self.view.entity_id());
 
         let config = self.engine_config();
         let (sender, receiver) = async_channel::bounded(1);
+        let (gone_sender, gone_receiver) = std::sync::mpsc::channel();
+        // Every start has a number of its own: the handle of a start is
+        // only installed when the start is still the one in flight.
+        let id = self.slot.begin();
 
-        let thread = std::thread::Builder::new()
-            .name("wallpaper-start".into())
-            .spawn(move || {
-                let _ = sender.try_send(WallpaperHandle::spawn(config, source));
-            });
+        let handle_receiver = HandleReceiver {
+            receiver: Some(receiver),
+            gone: gone_sender,
+        };
 
-        if let Err(error) = thread {
-            log::error!("the wallpaper could not be started: {error}");
-            self.picker.set_running(WallpaperState::Stopped);
-            cx.notify(self.view.entity_id());
-            return;
-        }
+        // The task that waits for the handle.
+        let task = cx.spawn(async move |cx| {
+            let Some(receiver) = handle_receiver.receiver() else {
+                // The start was abandoned: the handle is dropped, and its
+                // renderer stops with it.
+                return;
+            };
 
-        cx.spawn(async move |cx| {
             match receiver.recv().await {
                 Ok(Ok(handle)) => {
-                    cx.update_global(|state: &mut AppState, cx| {
-                        state.wallpaper = Some(handle);
+                    // The handle is only installed when its start is
+                    // still the one in flight: a handle that arrives too
+                    // late would run over the wallpaper the user asked
+                    // for.
+                    let mut handle = Some(handle);
+                    let installed = cx.update_global(|state: &mut AppState, cx| {
+                        if !state.slot.finish(id) {
+                            return false;
+                        }
+
+                        state.wallpaper = handle.take();
                         state.picker.set_running(WallpaperState::Running);
                         state.sync_tray();
                         cx.notify(state.view.entity_id());
+                        true
                     });
+
+                    if !installed {
+                        // The start was abandoned: the handle is dropped
+                        // here and its renderer stops with it.
+                        log::info!("the wallpaper was replaced before it came up");
+                    }
                 }
                 Ok(Err(error)) => {
+                    // The wallpaper could not be loaded: the user is told.
                     let trace = error.trace();
                     cx.update_global(|state: &mut AppState, cx| {
+                        state.slot.finish(id);
                         state.picker.set_running(WallpaperState::Stopped);
                         cx.notify(state.view.entity_id());
                     });
@@ -157,8 +305,45 @@ impl AppState {
                 // The thread that starts the wallpaper is gone.
                 Err(_) => {}
             }
-        })
-        .detach();
+        });
+
+        // The thread that brings the wallpaper up.
+        let thread = std::thread::Builder::new()
+            .name("wallpaper-start".into())
+            .spawn(move || {
+                // The renderer of the wallpaper that was abandoned must be
+                // gone before this one is created: two wallpapers at the
+                // same time crash the graphics driver.
+                if let Some(previous) = previous {
+                    let _ = previous.join();
+                }
+
+                let _ = sender.try_send(WallpaperHandle::spawn(config, source));
+
+                // The thread is over when the handle is gone: the
+                // receiver of the handle is dropped when the task that
+                // waits for it is dropped (the start was abandoned) or
+                // when it ends (the handle was installed).
+                let _ = gone_receiver.recv();
+            });
+
+        match thread {
+            Ok(thread) => {
+                self.start = Some(Start {
+                    task: Some(task),
+                    thread: Some(thread),
+                });
+            }
+            Err(error) => {
+                // The thread could not be started: the wallpaper does not
+                // come up, and the user is told.
+                log::error!("the wallpaper could not be started: {error}");
+                drop(task);
+                self.slot.abandon();
+                self.picker.set_running(WallpaperState::Stopped);
+                cx.notify(self.view.entity_id());
+            }
+        }
     }
 
     /// The wallpaper that is running is started again with the
@@ -176,7 +361,11 @@ impl AppState {
         // does not outlive the application.
         self.wallpaper = None;
 
-        self.start_wallpaper(source, cx);
+        // The start that is in flight is abandoned: the new wallpaper
+        // waits for the renderer of the abandoned one to be gone.
+        let previous = self.abandon_start();
+
+        self.start_wallpaper(previous, source, cx);
     }
 
     /// Where the wallpaper that is running lives.
@@ -293,6 +482,10 @@ impl AppState {
         // The handle stops the renderer and waits for it: the wallpaper
         // does not outlive the application.
         self.wallpaper = None;
+
+        // The start that is in flight is abandoned as well: its wallpaper
+        // must not come up after the application is gone.
+        drop(self.abandon_start());
     }
 
     /// Tells the tray what the wallpaper is doing.
@@ -367,6 +560,8 @@ fn start(cx: &mut App, actions: Receiver<tray::TrayAction>, commands: Sender<tra
         picker: PickerState::default(),
         view,
         wallpaper: None,
+        slot: Slot::default(),
+        start: None,
         window: None,
         tray: commands,
     });
@@ -661,4 +856,53 @@ fn quit(cx: &mut App) {
     // The tray thread and the name of the tray on the bus have to go away
     // as well.
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A new start abandons the start that is in flight: there is one slot
+    /// for the wallpaper.
+    #[test]
+    fn a_new_start_abandons_the_one_that_is_in_flight() {
+        let mut slot = Slot::default();
+
+        let first = slot.begin();
+        assert!(slot.is_current(first));
+
+        let second = slot.begin();
+        assert!(slot.is_current(second));
+        assert!(!slot.is_current(first));
+    }
+
+    /// The handle of a start that was abandoned is not the one that runs:
+    /// it is dropped, and its renderer stops with it.
+    #[test]
+    fn the_handle_of_an_abandoned_start_is_dropped() {
+        let mut slot = Slot::default();
+
+        let first = slot.begin();
+        let second = slot.begin();
+
+        // The handle of the first start arrives too late: it is dropped.
+        assert!(!slot.finish(first));
+        assert!(slot.is_current(second));
+
+        // The handle of the start that is in flight is the one that runs.
+        assert!(slot.finish(second));
+        assert!(!slot.is_current(second));
+    }
+
+    /// An abandoned start leaves no start in flight.
+    #[test]
+    fn an_abandoned_start_leaves_no_start_in_flight() {
+        let mut slot = Slot::default();
+        let id = slot.begin();
+
+        slot.abandon();
+
+        assert!(!slot.is_current(id));
+        assert!(!slot.finish(id));
+    }
 }
